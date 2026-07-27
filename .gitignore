@@ -49,9 +49,14 @@ web-build/
 # Convex
 # ---------------------------------------------------------------------------
 .convex/
-# Ignore the contents, not the directory, so a .gitkeep can still be tracked.
-packages/backend/convex/_generated/*
-!packages/backend/convex/_generated/.gitkeep
+# NOTE: `packages/backend/convex/_generated/` is deliberately NOT ignored.
+# It looks like build output but is not: `dataModel.d.ts` is the typed data model
+# derived from `schema.ts`, and nothing in packages/backend — or in any app that
+# imports it — typechecks without it. The Convex CLI says so in the file header
+# it writes. It is also what makes a fresh clone work offline: `convex codegen`
+# refuses to run without deployment configuration, so these files must be in git.
+# Convex's own local state (deployment name, admin key) lives in
+# packages/backend/.env.local and IS ignored, by the .env rules below.
 
 # ---------------------------------------------------------------------------
 # Environment — never commit real values. Only .env.example is tracked.
