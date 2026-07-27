@@ -1,0 +1,5 @@
+{
+  "extends": "@partybooth/config-typescript/library.json",
+  "include": ["src/**/*.ts", "vitest.config.ts", "eslint.config.mjs"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

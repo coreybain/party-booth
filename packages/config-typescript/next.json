@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "PartyBooth Next.js App Router",
+  "extends": "./base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "DOM.AsyncIterable", "ES2024"],
+    "jsx": "preserve",
+    "allowJs": true,
+    "types": ["node"],
+    "plugins": [{ "name": "next" }]
+  }
+}

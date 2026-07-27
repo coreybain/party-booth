@@ -1,0 +1,16 @@
+{
+  "name": "@partybooth/config-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "files": [
+    "base.json",
+    "library.json",
+    "node.json",
+    "next.json",
+    "expo.json"
+  ],
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

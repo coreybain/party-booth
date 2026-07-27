@@ -1,0 +1,18 @@
+# Owner-authored planning docs — Prettier must not churn them.
+PLAN.md
+TODO.md
+
+node_modules
+pnpm-lock.yaml
+.turbo
+.next
+.expo
+.vercel
+dist
+build
+out
+coverage
+playwright-report
+test-results
+packages/backend/convex/_generated
+*.tsbuildinfo

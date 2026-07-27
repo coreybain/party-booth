@@ -1,0 +1,32 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# React Native / Metro and the Next.js + Convex bundlers are all happier with a
+# flat node_modules tree. This is Expo's documented remedy for pnpm monorepos.
+nodeLinker: hoisted
+
+# Keep peer-dependency noise from blocking installs during the launch sprint.
+autoInstallPeers: true
+strictPeerDependencies: false
+
+# Packages allowed to run install scripts (pnpm 10 blocks them by default).
+onlyBuiltDependencies:
+  - "@sentry/cli"
+  - "@swc/core"
+  - core-js
+  - esbuild
+  - sharp
+  - unrs-resolver
+
+# Single source of truth for cross-cutting dependency versions.
+# Reference these from any workspace package as e.g. "zod": "catalog:".
+catalog:
+  "@types/node": ^26.0.0
+  "@vitest/coverage-v8": ^4.1.10
+  convex: ^1.42.3
+  eslint: ^10.8.0
+  prettier: ^3.9.6
+  typescript: ~6.0.3
+  vitest: ^4.1.10
+  zod: ^4.4.3
