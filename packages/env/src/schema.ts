@@ -221,6 +221,10 @@ export const clientVars = {
 export const mobileVars = {
   EXPO_PUBLIC_SITE_URL: envVar(httpUrl, "Same value as SITE_URL — used for universal links."),
   EXPO_PUBLIC_CONVEX_URL: envVar(httpUrl, "Same value as CONVEX_URL."),
+  EXPO_PUBLIC_CONVEX_SITE_URL: envVar(
+    httpUrl.optional(),
+    "Same value as CONVEX_SITE_URL (https://<name>.convex.site) — Better Auth is mounted there. Optional: the app derives it from EXPO_PUBLIC_CONVEX_URL when unset. Set it explicitly for self-hosted or proxied Convex deployments.",
+  ),
   EXPO_PUBLIC_SENTRY_DSN: envVar(
     httpUrl.optional(),
     "Sentry → partybooth-mobile → Client Keys (DSN). Unset = mobile error reporting disabled.",

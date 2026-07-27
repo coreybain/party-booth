@@ -18,6 +18,7 @@ export type MobileEnv = InferEnv<MobileVars>;
  * export const env = createMobileEnv({
  *   EXPO_PUBLIC_SITE_URL: process.env.EXPO_PUBLIC_SITE_URL,
  *   EXPO_PUBLIC_CONVEX_URL: process.env.EXPO_PUBLIC_CONVEX_URL,
+ *   EXPO_PUBLIC_CONVEX_SITE_URL: process.env.EXPO_PUBLIC_CONVEX_SITE_URL,
  *   EXPO_PUBLIC_SENTRY_DSN: process.env.EXPO_PUBLIC_SENTRY_DSN,
  *   EXPO_PUBLIC_EAS_PROJECT_ID: process.env.EXPO_PUBLIC_EAS_PROJECT_ID,
  * });
@@ -39,6 +40,7 @@ export function createMobileEnv(runtimeEnv: RuntimeEnv<MobileVars>): MobileEnv {
 export const mobileEnv: MobileEnv = createMobileEnv({
   EXPO_PUBLIC_SITE_URL: process.env.EXPO_PUBLIC_SITE_URL,
   EXPO_PUBLIC_CONVEX_URL: process.env.EXPO_PUBLIC_CONVEX_URL,
+  EXPO_PUBLIC_CONVEX_SITE_URL: process.env.EXPO_PUBLIC_CONVEX_SITE_URL,
   EXPO_PUBLIC_SENTRY_DSN: process.env.EXPO_PUBLIC_SENTRY_DSN,
   EXPO_PUBLIC_EAS_PROJECT_ID: process.env.EXPO_PUBLIC_EAS_PROJECT_ID,
 });
