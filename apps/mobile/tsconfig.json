@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": ["expo/tsconfig.base", "@partybooth/config-typescript/expo.json"],
+  "compilerOptions": {
+    /**
+     * `expo/tsconfig.base` contributes `customConditions: ["react-native"]`, which is
+     * what makes package `exports` maps resolve to their React Native builds. Our own
+     * preset is listed second so PartyBooth's strictness flags win where they overlap.
+     *
+     * Paths are declared *here* rather than in the shared preset because TypeScript
+     * resolves `paths` relative to the file that declares them — a preset inside
+     * node_modules would point at the wrong directory.
+     */
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["node"]
+  },
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "app.config.ts",
+    "vitest.config.ts",
+    "expo-env.d.ts",
+    ".expo/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", ".expo", "ios", "android"]
+}
