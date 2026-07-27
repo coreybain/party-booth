@@ -1,0 +1,115 @@
+import { z } from "zod";
+
+import { createStateMachine, type TransitionTable } from "./state-machine";
+
+/**
+ * Event lifecycle.
+ *
+ * - `draft` — being set up. Not joinable, invisible to guests.
+ * - `scheduled` — set up and dated. **Joinable**, so printed QR signage works
+ *   before the doors open, but uploads are refused until it goes live.
+ * - `live` — the party. The only state that accepts uploads.
+ * - `paused` — the host hit pause. Guests keep their membership and the gallery,
+ *   uploads are refused.
+ * - `archived` — over. Read-only gallery, slideshow still presentable.
+ * - `deletionScheduled` — queued for removal. Access revoked; the purge job is
+ *   post-launch (P1).
+ */
+export const EVENT_STATES = [
+  "draft",
+  "scheduled",
+  "live",
+  "paused",
+  "archived",
+  "deletionScheduled",
+] as const;
+
+export type EventState = (typeof EVENT_STATES)[number];
+
+export const eventStateSchema = z.enum(EVENT_STATES);
+
+const EVENT_TRANSITIONS: TransitionTable<EventState> = {
+  draft: ["scheduled", "live", "archived", "deletionScheduled"],
+  scheduled: ["draft", "live", "archived", "deletionScheduled"],
+  live: ["paused", "archived", "deletionScheduled"],
+  paused: ["live", "archived", "deletionScheduled"],
+  // Re-opening a finished party is a real thing (the after-party); allow it.
+  archived: ["live", "deletionScheduled"],
+  // Admin "restore deletion" puts the event back where it can do least harm.
+  deletionScheduled: ["archived"],
+};
+
+export const eventStateMachine = createStateMachine("Event", EVENT_STATES, EVENT_TRANSITIONS);
+
+/**
+ * States in which a six-digit code / QR token resolves to a joinable event.
+ * Codes must be unique **among these** — see `codes.ts`.
+ */
+export const JOINABLE_EVENT_STATES = [
+  "scheduled",
+  "live",
+  "paused",
+] as const satisfies readonly EventState[];
+
+/** The only state that accepts new uploads. */
+export const UPLOADABLE_EVENT_STATES = ["live"] as const satisfies readonly EventState[];
+
+/** States in which the approved gallery and slideshow render. */
+export const VIEWABLE_EVENT_STATES = [
+  "live",
+  "paused",
+  "archived",
+] as const satisfies readonly EventState[];
+
+/** States in which host settings may still be edited. */
+export const EDITABLE_EVENT_STATES = [
+  "draft",
+  "scheduled",
+  "live",
+  "paused",
+] as const satisfies readonly EventState[];
+
+export function isJoinableEventState(state: EventState): boolean {
+  return (JOINABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+export function acceptsUploads(state: EventState): boolean {
+  return (UPLOADABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+export function isViewableEventState(state: EventState): boolean {
+  return (VIEWABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+export function isEditableEventState(state: EventState): boolean {
+  return (EDITABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Moderation mode                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `ai` is defined here so the schema and the union never need a migration, but
+ * it is **not selectable at launch** — see {@link LAUNCH_MODERATION_MODES}.
+ * P1 turns it on.
+ */
+export const MODERATION_MODES = ["manual", "automatic", "ai"] as const;
+
+export type ModerationMode = (typeof MODERATION_MODES)[number];
+
+export const moderationModeSchema = z.enum(MODERATION_MODES);
+
+export const LAUNCH_MODERATION_MODES = [
+  "manual",
+  "automatic",
+] as const satisfies readonly ModerationMode[];
+
+export type LaunchModerationMode = (typeof LAUNCH_MODERATION_MODES)[number];
+
+/** Modes an organiser may actually pick today. Reject anything else at the API edge. */
+export const launchModerationModeSchema = z.enum(LAUNCH_MODERATION_MODES);
+
+export function isLaunchModerationMode(mode: ModerationMode): mode is LaunchModerationMode {
+  return (LAUNCH_MODERATION_MODES as readonly ModerationMode[]).includes(mode);
+}
