@@ -1,31 +1,36 @@
 import { z } from "zod";
 
-import {
-  constantTimeEqual,
-  defaultRandomBytes,
-  generateEventCode,
-  type RandomBytes,
-} from "./codes";
+import { defaultRandomBytes, generateEventCode, type RandomBytes } from "./codes";
 
 /**
  * Six-digit email OTP policy, as pure logic.
  *
  * PLAN.md fixes the numbers: **10-minute expiry, five attempts, 60-second
- * resend cooldown**. They live here rather than inside the Better Auth
- * configuration so that the web organiser login, the `/admin` login, the guest
- * web login and the App Review demo login all enforce one policy, and so the
- * policy is testable without a deployment.
+ * resend cooldown**, plus the per-address send ceiling that closes the
+ * enumeration hole.
+ *
+ * Two halves, with a hard line between them:
+ *
+ * - **Verification** — expiry, the five-guess budget, single use, hashing at
+ *   rest — is enforced by Better Auth's `emailOTP` plugin. The numbers below
+ *   are handed to it in `packages/backend/convex/lib/otp.ts`. There is
+ *   deliberately no second implementation here: a parallel `verifyOtp` with its
+ *   own tests and no callers reads as a guarantee and is not one.
+ * - **Sending** — the 60-second cooldown and the hourly ceiling — is enforced by
+ *   *us*, in `packages/backend/convex/otp.ts`, because Better Auth's own rate
+ *   limiter defaults to an in-memory store that Convex's recycled isolates do
+ *   not share. {@link canSendOtp} and {@link registerOtpSend} are what that
+ *   mutation calls.
  *
  * Nothing here touches a clock or a database: every function takes `now` and a
- * plain state object and returns the next state. The Convex layer is
- * responsible for persisting it.
+ * plain state object and returns the next state.
  */
 export const OTP_POLICY = {
   /** Digits in the emailed code. */
   codeLength: 6,
-  /** How long a code stays usable. */
+  /** How long a code stays usable. Enforced by the `emailOTP` plugin. */
   ttlMs: 10 * 60 * 1000,
-  /** Wrong guesses allowed before the challenge is burned. */
+  /** Wrong guesses allowed before the code is burned. Enforced by the plugin. */
   maxAttempts: 5,
   /** Minimum gap between "send me another code" requests. */
   resendCooldownMs: 60 * 1000,
@@ -55,70 +60,36 @@ export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 
 export const otpPurposeSchema = z.enum(OTP_PURPOSES);
 
+/* -------------------------------------------------------------------------- */
+/* Sending                                                                    */
+/* -------------------------------------------------------------------------- */
+
 /**
- * The persisted half of a challenge. The code itself is **not** here on
- * purpose: it lives wherever Better Auth stores verification values, and
- * {@link verifyOtp} takes the expected value as an argument so this module
- * never has an opinion about hashing.
+ * What we persist per normalised email address, and nothing more.
+ *
+ * The code itself is **not** here on purpose: it lives wherever Better Auth
+ * stores verification values, hashed. Neither are attempt counters — the plugin
+ * owns those, and duplicating them here would mean two sources of truth for
+ * whether a code is still usable.
  */
-export interface OtpChallengeState {
-  /** When the current code was created. */
-  issuedAt: number;
-  /** When the current code stops working. */
-  expiresAt: number;
-  /** Failed verification attempts against the current code. */
-  attempts: number;
+export interface OtpSendState {
   /** When a code was last emailed (drives the resend cooldown). */
   lastSentAt: number;
   /** Codes sent in the current send window (drives enumeration protection). */
   sendCount: number;
-  /** Set once the code has been redeemed; a code is strictly single-use. */
-  consumedAt?: number | undefined;
   /** Start of the current send window. */
   windowStartedAt: number;
 }
-
-export function otpExpiresAt(issuedAt: number): number {
-  return issuedAt + OTP_POLICY.ttlMs;
-}
-
-/** A brand-new challenge for an address that has none. */
-export function createOtpChallenge(now: number): OtpChallengeState {
-  return {
-    issuedAt: now,
-    expiresAt: otpExpiresAt(now),
-    attempts: 0,
-    lastSentAt: now,
-    sendCount: 1,
-    windowStartedAt: now,
-    consumedAt: undefined,
-  };
-}
-
-export function isOtpExpired(state: OtpChallengeState, now: number): boolean {
-  return now >= state.expiresAt;
-}
-
-export function isOtpConsumed(state: OtpChallengeState): boolean {
-  return state.consumedAt !== undefined;
-}
-
-export function isOtpLockedOut(state: OtpChallengeState): boolean {
-  return state.attempts >= OTP_POLICY.maxAttempts;
-}
-
-export function otpAttemptsRemaining(state: OtpChallengeState): number {
-  return Math.max(0, OTP_POLICY.maxAttempts - state.attempts);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Sending                                                                    */
-/* -------------------------------------------------------------------------- */
 
 export type OtpSendDenial = "cooldown" | "rateLimited";
 
 export type OtpSendDecision =
   { allowed: true } | { allowed: false; reason: OtpSendDenial; retryAfterMs: number };
+
+/** The state recorded for an address that has never been sent a code. */
+export function createOtpSendState(now: number): OtpSendState {
+  return { lastSentAt: now, sendCount: 1, windowStartedAt: now };
+}
 
 /**
  * May we send (or resend) a code right now?
@@ -128,7 +99,7 @@ export type OtpSendDecision =
  * but must **not** vary the response by whether the address exists — that is
  * the enumeration hole this whole policy exists to close.
  */
-export function canSendOtp(state: OtpChallengeState | undefined, now: number): OtpSendDecision {
+export function canSendOtp(state: OtpSendState | undefined, now: number): OtpSendDecision {
   if (state === undefined) return { allowed: true };
 
   const windowElapsed = now - state.windowStartedAt;
@@ -155,98 +126,34 @@ export function canSendOtp(state: OtpChallengeState | undefined, now: number): O
 }
 
 /**
- * The state after a code has been emailed. Resetting `attempts` is deliberate:
- * a new code is a new secret, so the five guesses apply to it, while the send
- * ceiling (which is the real brake on abuse) keeps counting.
+ * The state after a code has been emailed. The send ceiling keeps counting
+ * across the whole window — that, not the cooldown, is the real brake on abuse.
  */
-export function registerOtpSend(
-  state: OtpChallengeState | undefined,
-  now: number,
-): OtpChallengeState {
-  if (state === undefined) return createOtpChallenge(now);
+export function registerOtpSend(state: OtpSendState | undefined, now: number): OtpSendState {
+  if (state === undefined) return createOtpSendState(now);
 
   const windowIsCurrent = now - state.windowStartedAt < OTP_POLICY.sendWindowMs;
 
   return {
-    issuedAt: now,
-    expiresAt: otpExpiresAt(now),
-    attempts: 0,
     lastSentAt: now,
     sendCount: windowIsCurrent ? state.sendCount + 1 : 1,
     windowStartedAt: windowIsCurrent ? state.windowStartedAt : now,
-    consumedAt: undefined,
-  };
-}
-
-/* -------------------------------------------------------------------------- */
-/* Verifying                                                                  */
-/* -------------------------------------------------------------------------- */
-
-export type OtpFailureReason = "notFound" | "consumed" | "expired" | "lockedOut" | "mismatch";
-
-export type OtpVerification =
-  | { ok: true; state: OtpChallengeState }
-  | {
-      ok: false;
-      reason: OtpFailureReason;
-      state: OtpChallengeState | undefined;
-      attemptsRemaining: number;
-    };
-
-/**
- * Check a submitted code against the expected one and return the next state.
- *
- * `expected` may be the raw code or a hash, as long as `submitted` has been put
- * through the same transform — the comparison is constant-time either way.
- *
- * Order matters: consumed → expired → locked out → mismatch. A malformed
- * submission is treated as a mismatch and **burns an attempt**, so garbage
- * input cannot be used to probe for free.
- */
-export function verifyOtp(
-  state: OtpChallengeState | undefined,
-  submitted: string,
-  expected: string,
-  now: number,
-): OtpVerification {
-  if (state === undefined) {
-    return { ok: false, reason: "notFound", state: undefined, attemptsRemaining: 0 };
-  }
-  if (isOtpConsumed(state)) {
-    return { ok: false, reason: "consumed", state, attemptsRemaining: 0 };
-  }
-  if (isOtpExpired(state, now)) {
-    return { ok: false, reason: "expired", state, attemptsRemaining: 0 };
-  }
-  if (isOtpLockedOut(state)) {
-    return { ok: false, reason: "lockedOut", state, attemptsRemaining: 0 };
-  }
-
-  if (constantTimeEqual(submitted, expected)) {
-    return { ok: true, state: { ...state, consumedAt: now } };
-  }
-
-  const next: OtpChallengeState = { ...state, attempts: state.attempts + 1 };
-  return {
-    ok: false,
-    reason: isOtpLockedOut(next) ? "lockedOut" : "mismatch",
-    state: next,
-    attemptsRemaining: otpAttemptsRemaining(next),
   };
 }
 
 /**
- * User-facing copy. Every failure except `cooldown`/`rateLimited` is
- * deliberately vague about *which* thing went wrong on the sign-in screen; the
- * distinctions matter for the audit log, not for the person typing.
+ * User-facing copy for a refused send. Deliberately identical whether or not
+ * the address has ever been seen before — the decision depends only on send
+ * history for that address, which is all an attacker already controls.
  */
-export const OTP_FAILURE_MESSAGES: Record<OtpFailureReason, string> = {
-  notFound: "That code has expired. Request a new one.",
-  consumed: "That code has already been used. Request a new one.",
-  expired: "That code has expired. Request a new one.",
-  lockedOut: "Too many incorrect codes. Request a new one.",
-  mismatch: "That code is not right.",
+export const OTP_SEND_DENIAL_MESSAGES: Record<OtpSendDenial, string> = {
+  cooldown: "Wait a moment before asking for another code.",
+  rateLimited: "Too many codes requested for that address. Try again later.",
 };
+
+/* -------------------------------------------------------------------------- */
+/* Generation                                                                 */
+/* -------------------------------------------------------------------------- */
 
 /** Generate a code to email. Server-side only — see `codes.ts`. */
 export function generateOtpCode(randomBytes: RandomBytes = defaultRandomBytes): string {

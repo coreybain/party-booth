@@ -16,6 +16,7 @@
     "./codes": "./src/codes.ts",
     "./otp": "./src/otp.ts",
     "./analytics": "./src/analytics.ts",
+    "./scrub": "./src/scrub.ts",
     "./storage": "./src/storage.ts",
     "./schemas": "./src/schemas.ts"
   },

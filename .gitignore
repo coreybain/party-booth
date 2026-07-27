@@ -13,9 +13,16 @@ yarn-error.log*
 dist/
 build/
 out/
-lib/
 *.tsbuildinfo
 .tsbuildinfo
+
+# NOTE: there is deliberately **no** `lib/` rule. Every package here is consumed
+# as TypeScript source (see `packages/contracts/README.md`), so nothing ever
+# emits a `lib/` build directory — but three real source directories are named
+# `lib`: `apps/web/src/lib`, `apps/mobile/src/lib` and
+# `packages/backend/convex/lib`. An unanchored `lib/` silently excluded all of
+# them, so a fresh clone could not typecheck, test or build. If a package ever
+# does emit a compiled `lib/`, ignore it by its exact path.
 
 # ---------------------------------------------------------------------------
 # Turborepo

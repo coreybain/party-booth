@@ -73,6 +73,10 @@ describe("tables", () => {
         "organiserInvitations",
         "pushDevices",
         "users",
+        // Not in the Sprint 1 list, but required by it: "rate limits +
+        // enumeration protection on ... OTP" cannot be enforced without a
+        // shared counter, and Better Auth's default one is per-isolate.
+        "otpChallenges",
       ].sort(),
     );
   });

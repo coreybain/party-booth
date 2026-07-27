@@ -1,12 +1,16 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { PreviewModeBanner } from "@/components/backend-not-configured";
 import { AppShell } from "@/components/layout/app-shell";
 import { ShieldIcon } from "@/components/icons";
 import { SignOutButton } from "@/components/sign-out-button";
-import { isAuthenticated, isServerBackendConfigured } from "@/lib/auth-server";
+import {
+  isAuthenticated,
+  isGlobalAdminAuthorised,
+  isServerBackendConfigured,
+} from "@/lib/auth-server";
 
 /**
  * The authenticated global-admin shell.
@@ -20,9 +24,16 @@ import { isAuthenticated, isServerBackendConfigured } from "@/lib/auth-server";
  * deployment there is no session and no data, so the shell renders behind a
  * banner. With a deployment configured the gate fails closed.
  *
- * TODO(Sprint 5): being signed in is necessary but not sufficient — the
- * `ADMIN_EMAIL_ALLOWLIST` check happens in Convex and must be re-asserted here
- * before any admin data is fetched.
+ * **Being signed in is necessary but not sufficient.** The `emailOTP` plugin
+ * has no `disableSignUp`, so any address on earth can request a code at
+ * `/admin/login` and end up with a valid session — the allowlist is what makes
+ * this staff tooling, and it is asserted here before anything renders. It is
+ * defence in depth, not the boundary: every Convex query and mutation the
+ * console gains from Sprint 5 must call `requireGlobalAdmin` itself.
+ *
+ * A non-admin gets `notFound()` rather than a redirect. A bounce to
+ * `/admin/login` from a page they are already signed in for confirms that the
+ * console exists and that they are simply not on the list; a 404 says nothing.
  */
 
 /** Never prerender the admin shell. See the organiser layout for the rationale. */
@@ -30,8 +41,9 @@ export const dynamic = "force-dynamic";
 export default async function AdminConsoleLayout({ children }: { readonly children: ReactNode }) {
   const previewMode = !isServerBackendConfigured;
 
-  if (!previewMode && !(await isAuthenticated())) {
-    redirect("/admin/login");
+  if (!previewMode) {
+    if (!(await isAuthenticated())) redirect("/admin/login");
+    if (!(await isGlobalAdminAuthorised())) notFound();
   }
 
   return (

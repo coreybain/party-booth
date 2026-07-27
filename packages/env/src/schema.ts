@@ -38,6 +38,17 @@ export const serverVars = {
     "Set by the runtime; you never write this by hand.",
   ),
 
+  /**
+   * The explicit deployment marker. **Not** `NODE_ENV`: Convex never sets that,
+   * so anything gated on it is dead code inside the backend — which is how the
+   * console email sender ended up printing OTP codes into a production log
+   * stream while believing it was in development.
+   */
+  DEPLOYMENT_ENVIRONMENT: envVar(
+    z.enum(["development", "preview", "production"]).default("development"),
+    "Which deployment this is: development / preview / production. Set it to `production` in the Convex production deployment and in Vercel Production — safety rails that must not depend on NODE_ENV key off this.",
+  ),
+
   /* --- Site ------------------------------------------------------------- */
   SITE_URL: envVar(
     httpUrl,
@@ -122,6 +133,10 @@ export const serverVars = {
     nonEmpty.default("PartyBooth"),
     "Display name on outgoing email. Defaults to PartyBooth.",
   ),
+  EMAIL_DEBUG_LOG_CODES: envVar(
+    z.enum(["0", "1"]).default("0"),
+    "Set to 1 (local development only) to print the full body of an unsent email — including the OTP — to the logs. Ignored outside DEPLOYMENT_ENVIRONMENT=development.",
+  ),
 
   /* --- UploadThing (private media storage) ------------------------------ */
   UPLOADTHING_TOKEN: envVar(
@@ -160,6 +175,10 @@ export const serverVars = {
     "Sentry → Settings → Auth Tokens (project:releases). Build-time only; never set it in the browser.",
     { secret: true },
   ),
+  SENTRY_URL: envVar(
+    httpUrl.optional(),
+    "Sentry instance URL, read by apps/mobile/app.config.ts for source-map upload. Only set it for self-hosted Sentry; defaults to https://sentry.io/.",
+  ),
 
   /* --- Admin console + App Review demo account -------------------------- */
   ADMIN_EMAIL_ALLOWLIST: envVar(
@@ -188,6 +207,10 @@ export const serverVars = {
   EAS_PROJECT_ID: envVar(
     z.uuid().optional(),
     "expo.dev → your project → Project ID (UUID). Required to send Expo push notifications.",
+  ),
+  EXPO_OWNER: envVar(
+    nonEmpty.optional(),
+    "Expo account or organisation that owns the EAS project, read by apps/mobile/app.config.ts. Build-time only; unset until `eas init` has run.",
   ),
 } as const;
 

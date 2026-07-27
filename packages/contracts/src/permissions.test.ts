@@ -58,7 +58,7 @@ const EXPECTED_CAPABILITIES: Record<Action, readonly Role[]> = {
   // -- Memberships ---------------------------------------------------------
   "membership.list": ["globalAdmin", "owner", "cohost"],
   "membership.inviteCohost": ["owner"],
-  "membership.revoke": ["globalAdmin", "owner"],
+  "membership.revoke": ["globalAdmin", "owner", "cohost"],
   "membership.leave": ["cohost", "guest"],
 
   // -- Media ---------------------------------------------------------------
@@ -196,6 +196,15 @@ describe("can() — membership gates", () => {
 
   it("never lets someone revoke themselves", () => {
     expect(can("owner", "membership.revoke", membership({ isSelf: true }))).toBe(false);
+    expect(can("cohost", "membership.revoke", membership({ isSelf: true }))).toBe(false);
+  });
+
+  it("lets a co-host revoke a guest, but never the owner", () => {
+    // docs/domain-model.md grants this, and PLAN.md risk #4 (solo moderation)
+    // is why: a co-host who can decline photos but not remove the person
+    // posting them is not much help at 1am.
+    expect(can("cohost", "membership.revoke", membership({ targetRole: "guest" }))).toBe(true);
+    expect(can("cohost", "membership.revoke", membership({ targetRole: "owner" }))).toBe(false);
   });
 
   it("lets guests and cohosts leave, but only their own membership", () => {

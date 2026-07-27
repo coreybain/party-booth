@@ -19,5 +19,6 @@ export * from "./otp";
 export * from "./permissions";
 export * from "./roles";
 export * from "./schemas";
+export * from "./scrub";
 export * from "./state-machine";
 export * from "./storage";

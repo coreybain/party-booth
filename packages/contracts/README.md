@@ -85,12 +85,36 @@ the `normalize*` / `isValid*` halves. Both generators take an injectable
 
 ## OTP policy
 
-`OTP_POLICY` and the pure functions around it encode PLAN.md's numbers — six
-digits, 10-minute expiry, five attempts, 60-second resend cooldown — plus a
-per-hour send ceiling for enumeration protection. Nothing here reads a clock or
-a database: every function takes `now` and a state object and returns the next
-one, so the whole policy is testable without a deployment.
-`packages/backend/convex/lib/otp.ts` is what hands these numbers to Better Auth.
+`OTP_POLICY` encodes PLAN.md's numbers — six digits, 10-minute expiry, five
+attempts, 60-second resend cooldown — plus a per-hour send ceiling for
+enumeration protection.
+
+The module is split along the line of **who enforces what**, and holds nothing
+that nobody calls:
+
+- **Verification** (expiry, the five-guess budget, single use, hashing at rest)
+  is Better Auth's `emailOTP` plugin. `packages/backend/convex/lib/otp.ts` hands
+  it the numbers. There is deliberately no second `verifyOtp` here: a parallel
+  implementation with its own tests and no callers reads as a guarantee and is
+  not one.
+- **Sending** is ours. `canSendOtp` / `registerOtpSend` / `OtpSendState` are
+  called by `packages/backend/convex/otp.ts` on every OTP request, because
+  Better Auth's own limiter defaults to per-isolate in-memory storage that
+  Convex does not share.
+
+Nothing here reads a clock or a database: every function takes `now` and a state
+object and returns the next one, so the policy is testable without a deployment.
+
+## Scrubbing
+
+`@partybooth/contracts/scrub` is the single implementation of the Sentry
+redaction rules — emails, JWTs, `Bearer` credentials, provider keys, inline
+`token=`/`secret=` assignments, standalone six-digit OTP / join codes, signed
+URLs and `/join/<token>` paths, plus wholesale replacement of sensitive keys.
+`apps/web/src/lib/sentry-scrub.ts`, `apps/mobile/src/lib/scrub.ts` and
+`packages/backend/convex/lib/sentry.ts` are all thin re-exports of it. It lives
+here rather than in an app because three divergent copies is how an OTP ends up
+scrubbed in one runtime and shipped verbatim from another.
 
 ## Adding to this package
 

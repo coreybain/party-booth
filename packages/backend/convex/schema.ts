@@ -105,6 +105,28 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_email_and_status", ["email", "status"]),
 
+  /**
+   * Per-address OTP send throttle.
+   *
+   * Better Auth's own rate limiter is not usable for this: it defaults to an
+   * in-memory `Map` per isolate, and Convex recycles and parallelises isolates,
+   * so the counters are never shared. This table is what actually enforces the
+   * 60-second resend cooldown and the hourly send ceiling from PLAN.md
+   * ("rate limits + enumeration protection on join and OTP").
+   *
+   * It holds **no code and no attempt counter** — Better Auth owns verification
+   * and stores the code hashed. One row per normalised email address, upserted
+   * on every send.
+   */
+  otpChallenges: defineTable({
+    /** Trimmed, lower-cased. The rate-limit key, not a user reference. */
+    email: v.string(),
+    lastSentAt: v.number(),
+    sendCount: v.number(),
+    windowStartedAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_email", ["email"]),
+
   /* ------------------------------------------------------------------ */
   /* Events                                                              */
   /* ------------------------------------------------------------------ */

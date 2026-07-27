@@ -5,10 +5,13 @@
   "type": "module",
   "license": "UNLICENSED",
   "description": "PartyBooth Convex backend — schema, Better Auth wiring, guards and audit.",
+  "//exports": "`./dataModel` is types-only on purpose: Convex codegen emits dataModel.d.ts and no dataModel.js, so a runtime target would be ERR_MODULE_NOT_FOUND. `./api` and `./auth` do have runtime modules.",
   "exports": {
     ".": "./src/index.ts",
     "./api": "./convex/_generated/api.js",
-    "./dataModel": "./convex/_generated/dataModel.js",
+    "./dataModel": {
+      "types": "./convex/_generated/dataModel.d.ts"
+    },
     "./auth": "./convex/auth.ts"
   },
   "main": "./src/index.ts",

@@ -8,16 +8,27 @@ import { EventSwitcher } from "@/components/layout/event-switcher";
 import { OrganiserNav } from "@/components/layout/organiser-nav";
 import { PartyBoothWordmark } from "@/components/layout/centred-pane";
 import { SignOutButton } from "@/components/sign-out-button";
-import { isAuthenticated, isServerBackendConfigured } from "@/lib/auth-server";
+import {
+  isAuthenticated,
+  isOrganiserAuthorised,
+  isServerBackendConfigured,
+} from "@/lib/auth-server";
 
 /**
  * The authenticated organiser shell.
  *
- * Auth gate: signed out → back to `/`. The one exception is **preview mode** —
- * when no Convex deployment is configured there is no session to check and no
- * data to protect, so the shell renders with a banner instead of bouncing to a
- * login page that also cannot work. As soon as `CONVEX_URL` is set the gate is
- * live and fails closed (`isAuthenticated()` returns `false` on any error).
+ * Two gates, not one. Signed out → back to `/`. Signed in but **not an
+ * organiser** → also back to `/`: PLAN.md makes the private beta
+ * invitation-only, so a valid Better Auth session is authentication, and
+ * `users.isOrganiser` (set only by accepting an organiser invitation) or
+ * membership of `ADMIN_EMAIL_ALLOWLIST` is authorisation. Checking only the
+ * former would let any address that can receive an OTP into the console.
+ *
+ * The one exception is **preview mode** — when no Convex deployment is
+ * configured there is no session to check and no data to protect, so the shell
+ * renders with a banner instead of bouncing to a login page that also cannot
+ * work. As soon as `CONVEX_URL` is set both gates are live and fail closed
+ * (every helper returns `false` on any error).
  */
 
 /**
@@ -29,8 +40,9 @@ export const dynamic = "force-dynamic";
 export default async function OrganiserLayout({ children }: { readonly children: ReactNode }) {
   const previewMode = !isServerBackendConfigured;
 
-  if (!previewMode && !(await isAuthenticated())) {
-    redirect("/");
+  if (!previewMode) {
+    if (!(await isAuthenticated())) redirect("/");
+    if (!(await isOrganiserAuthorised())) redirect("/?needs=invitation");
   }
 
   return (

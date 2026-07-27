@@ -191,11 +191,15 @@ export type ResourceFor<TAction extends Action> = Extract<
  *
  * - `globalAdmin` has **no** `media.*` capability at all and cannot impersonate.
  *   Admins manage accounts, events and audit; they never look at guests' photos.
- * - `cohost` gets every host power except the three that change who owns the
+ * - `cohost` gets every host power except the ones that change who owns the
  *   party: `event.delete`, `event.transferOwnership`, and event settings
  *   (`event.update` / `changeModerationMode` / `changeState`). It also cannot
- *   invite further co-hosts or revoke memberships, and it cannot hard-delete
- *   another guest's media — only decline it.
+ *   invite *further* co-hosts — only the owner grows the host list — and it
+ *   cannot hard-delete another guest's media, only decline it. It **can**
+ *   revoke a guest membership: PLAN.md risk #4 is solo moderation, and a
+ *   co-host who can decline a guest's photos but not remove them is not much
+ *   help at 1am. `membershipGate` still blocks revoking yourself and revoking
+ *   an owner, so this cannot be turned on the host.
  * - Nobody, ever, gets `platform.viewMedia` or `platform.impersonateUser`. They
  *   exist purely so the rule is written down and tested rather than implied.
  */
@@ -258,6 +262,7 @@ const CAPABILITIES = {
     "event.presentSlideshow",
     "event.viewStats",
     "membership.list",
+    "membership.revoke",
     "membership.leave",
     "media.upload",
     "media.viewOwn",

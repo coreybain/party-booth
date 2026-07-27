@@ -54,14 +54,17 @@ convex/
   auth.ts              component client, user-mirroring triggers, createAuth
   http.ts              mounts Better Auth at /api/auth/*
   users.ts             currentUser query
+  otp.ts               registerSend — the transactional OTP send throttle
   lib/
     validators.ts      Convex validators derived from @partybooth/contracts
     guards.ts          requireUser / requireEventActor / requirePermission
     audit.ts           the append-only audit writer
+    account-deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
     errors.ts          ConvexError payloads with machine-readable codes
     config.ts          base URLs, admin allowlist, demo login
     otp.ts             OTP policy → Better Auth options
     providers.ts       Google / Apple, each optional
+    sentry.ts          envelope reporter, scrubbed via @partybooth/contracts
     email/             EmailSender interface, Resend + console implementations
 ```
 
@@ -90,13 +93,64 @@ Guards go through our table, not the component, so they can see `accountState`.
 
 ### Degrading without credentials
 
-| Missing                                | Behaviour                                                                                                                                   |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | OTP emails print to the Convex logs, code included. Sign-in works.                                                                          |
-| `GOOGLE_CLIENT_ID` / `_SECRET`         | Google provider is not registered. Email OTP still works.                                                                                   |
-| `APPLE_CLIENT_ID` / bundle id          | Apple provider is not registered.                                                                                                           |
-| `ADMIN_EMAIL_ALLOWLIST`                | Nobody is an admin. A _malformed_ value is ignored with a loud log rather than throwing — a typo must not take down sign-in on party night. |
-| `DEMO_LOGIN_*`                         | No reviewer bypass exists.                                                                                                                  |
+| Missing                                | Behaviour                                                                                                                                                                                                                            |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BETTER_AUTH_SECRET`                   | **Every auth request fails, loudly.** This is deliberate — see below.                                                                                                                                                                |
+| `DEPLOYMENT_ENVIRONMENT`               | Treated as `development`: the console email sender is allowed to report success. Set it to `production` on the real deployment or OTP delivery silently becomes a log line.                                                          |
+| `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | On a `development` deployment, OTP emails print to the Convex logs — recipient and subject only, unless `EMAIL_DEBUG_LOG_CODES=1`. Anywhere else the send **fails** rather than faking a success. A malformed key counts as missing. |
+| `GOOGLE_CLIENT_ID` / `_SECRET`         | Google provider is not registered. Email OTP still works.                                                                                                                                                                            |
+| `APPLE_CLIENT_ID` / bundle id          | Apple provider is not registered.                                                                                                                                                                                                    |
+| `ADMIN_EMAIL_ALLOWLIST`                | Nobody is an admin. A _malformed_ value is ignored with a loud log rather than throwing — a typo must not take down sign-in on party night.                                                                                          |
+| `DEMO_LOGIN_*`                         | No reviewer bypass exists.                                                                                                                                                                                                           |
+| `SENTRY_DSN`                           | Error reporting is a no-op; errors fall back to a **scrubbed** `console.error`.                                                                                                                                                      |
+
+### `BETTER_AUTH_SECRET` is the one variable that must not degrade
+
+`createAuth` passes `secret: serverEnv.BETTER_AUTH_SECRET` explicitly, and
+`@partybooth/env` throws for a missing or too-short value. That is on purpose.
+
+Left unset, Better Auth resolves the secret itself and falls back to a
+hard-coded constant that is published in its own source. Its guard against
+shipping that is `NODE_ENV === "production"` — and **Convex never sets
+`NODE_ENV`**, so the guard is dead code here. A deployment with a typo'd secret
+would boot happily and sign every session cookie and Convex identity JWT with a
+value anyone can read off npm, which is enough to mint a session for an
+arbitrary `authId` and walk straight past `requireGlobalAdmin`.
+
+Failing at the first auth request is the cheap outcome. Set it in the Convex
+dashboard, and set the same value in Vercel.
+
+### Rate limiting and the OTP send ceiling
+
+Two brakes, because Better Auth's own one cannot be trusted inside Convex:
+
+- `createAuth` sets `rateLimit: { enabled: true, storage: "database" }`. The
+  default is `enabled: isProduction` (dead, per `NODE_ENV` above) with in-memory
+  storage that Convex's recycled, parallel isolates do not share.
+- `convex/otp.ts` (`registerSend`) is the one that actually holds. It runs as a
+  Convex mutation, so the read-decide-write is transactional, and it enforces
+  both the 60-second resend cooldown and the hourly per-address ceiling from
+  `OTP_POLICY`. `sendVerificationOTP` calls it before any mail goes out and
+  throws `TOO_MANY_REQUESTS` when it refuses. The decision depends only on send
+  history for the address, never on whether an account exists.
+
+### Deletion
+
+Better Auth's `deleteUser` is enabled (Apple requires in-app account deletion).
+Its `onDelete` trigger routes through `lib/account-deletion.ts`, which moves the
+account to **`deletionScheduled`**, records a `deletionJobs` row due in 30 days
+and writes an audit row. Nothing in the codebase sets `deleted` — that belongs
+to the P1 purge worker, and reserving it is what keeps the restore window real
+(`deleted` is terminal in the account state machine).
+
+### Sentry
+
+`lib/sentry.ts` posts a Sentry envelope over `fetch` rather than initialising
+`@sentry/node`, which cannot run in Convex's isolate at all. `beforeSend` is the
+same `scrubEvent` from `@partybooth/contracts/scrub` that the browser, the
+Next.js server and the Expo app use — one implementation, one set of tests. With
+no DSN, and in contexts with no `fetch` (queries and mutations), it falls back to
+a scrubbed `console.error`.
 
 **Apple deliberately has no client secret.** PLAN.md makes Sign in with Apple
 app-only, and the native id-token flow verifies against Apple's public keys
