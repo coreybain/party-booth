@@ -1,5 +1,42 @@
 {
   "name": "@partybooth/web",
   "version": "0.1.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf .next .turbo coverage tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "^0.12.5",
+    "@partybooth/backend": "workspace:*",
+    "@partybooth/contracts": "workspace:*",
+    "@partybooth/env": "workspace:*",
+    "@sentry/nextjs": "^10.68.0",
+    "better-auth": "^1.6.25",
+    "convex": "catalog:",
+    "next": "^16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@partybooth/config-eslint": "workspace:*",
+    "@partybooth/config-typescript": "workspace:*",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "catalog:",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "catalog:",
+    "tailwindcss": "^4.3.3",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
 }

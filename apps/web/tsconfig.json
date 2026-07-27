@@ -1,0 +1,24 @@
+{
+  "extends": "@partybooth/config-typescript/next.json",
+  "compilerOptions": {
+    // No `baseUrl`: it is deprecated in TS 6 and removed in TS 7. Path mappings
+    // resolve relative to this file instead.
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "next.config.ts",
+    "instrumentation.ts",
+    "instrumentation-client.ts",
+    "sentry.server.config.ts",
+    "sentry.edge.config.ts",
+    "vitest.config.ts",
+    "eslint.config.mjs",
+    "postcss.config.mjs",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".next", ".turbo", "coverage"]
+}
