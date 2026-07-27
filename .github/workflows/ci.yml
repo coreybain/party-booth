@@ -1,5 +1,8 @@
 name: CI
 
+# Fast and boring: one job, no secrets, no deploys.
+# Everything here must pass fully offline — see CONTRIBUTING.md.
+
 on:
   push:
     branches: [main]
@@ -7,42 +10,68 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: 1
+  NEXT_TELEMETRY_DISABLED: 1
+  DO_NOT_TRACK: 1
 
 jobs:
   check:
     name: typecheck · lint · test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # No secrets are used: everything must typecheck and unit-test fully offline.
-    env:
-      TURBO_TELEMETRY_DISABLED: 1
-      DO_NOT_TRACK: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      # pnpm must exist before setup-node so `cache: pnpm` can find the store.
+      # Version comes from the `packageManager` field in package.json.
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # Turborepo's local cache. Unchanged packages are replayed instead of rerun.
+      - name: Restore Turborepo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
       - name: Install
+        id: install
         run: pnpm install --frozen-lockfile
 
+      # The remaining steps run even after one fails, so a single push surfaces
+      # every problem at once instead of one per round-trip.
       - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm typecheck
 
       - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
 
       - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm test
 
       - name: Formatting
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm format:check
+
+      # `next build` with a deliberately empty environment. It catches what unit
+      # tests cannot — bundler resolution, RSC boundaries, and any code path that
+      # reads a variable at module scope instead of degrading gracefully.
+      # No secrets: a build that needs one has the read in the wrong place.
+      - name: Build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm build
