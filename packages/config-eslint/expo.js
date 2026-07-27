@@ -17,7 +17,9 @@ export const expoConfig = defineConfig([
   },
   {
     // Expo config files and Metro config run in Node.
-    files: ["app.config.{js,ts}", "metro.config.js", "babel.config.js", "eas.json"],
+    // `eas.json` is deliberately absent: it is data, not a script, and listing it
+    // here makes ESLint parse JSON as JavaScript ("Parsing error: Unexpected token :").
+    files: ["app.config.{js,ts}", "metro.config.js", "babel.config.js"],
     languageOptions: { globals: { ...globals.node } },
   },
 ]);
