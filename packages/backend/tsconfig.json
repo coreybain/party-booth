@@ -1,0 +1,14 @@
+{
+  "extends": "@partybooth/config-typescript/node.json",
+  "compilerOptions": {
+    /* Convex generates `_generated/*.js` alongside `.d.ts`, and the generated
+       modules import each other with explicit `.js` specifiers. */
+    "allowJs": true,
+    "checkJs": false,
+    /* `vite/client` supplies `import.meta.glob`, which convex-test needs to be
+       handed the function module map (see `convex/guards.test.ts`). */
+    "types": ["node", "vite/client"]
+  },
+  "include": ["convex/**/*.ts", "src/**/*.ts", "vitest.config.ts", "eslint.config.mjs"],
+  "exclude": ["node_modules", "dist", "coverage", "convex/_generated/*.js"]
+}

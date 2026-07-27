@@ -1,0 +1,5 @@
+# Convex CLI local state (deployment name, admin key) — never commit.
+#
+# Why there is nothing here about `convex/_generated/`: those files ARE committed,
+# and the root .gitignore explains why. Do not add an ignore rule for them.
+.env.local

@@ -1,5 +1,45 @@
 {
   "name": "@partybooth/backend",
   "version": "0.1.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "description": "PartyBooth Convex backend — schema, Better Auth wiring, guards and audit.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./convex/_generated/api.js",
+    "./dataModel": "./convex/_generated/dataModel.js",
+    "./auth": "./convex/auth.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "convex",
+    "src"
+  ],
+  "scripts": {
+    "codegen": "convex codegen",
+    "dev": "convex dev",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "^0.12.5",
+    "@partybooth/contracts": "workspace:*",
+    "@partybooth/env": "workspace:*",
+    "better-auth": "^1.6.25",
+    "convex": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "@partybooth/config-eslint": "workspace:*",
+    "@partybooth/config-typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "convex-test": "^0.0.54",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
 }
