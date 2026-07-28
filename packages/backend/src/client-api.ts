@@ -44,8 +44,10 @@ import type {
   ModerationMode,
 } from "@partybooth/contracts/events";
 import type { JoinResult } from "@partybooth/contracts/join";
+import type { MediaSource, MediaState, MediaType } from "@partybooth/contracts/media";
 import type { EventRole } from "@partybooth/contracts/roles";
 import type { StorageRegion } from "@partybooth/contracts/storage";
+import type { GrantResult, UploadCompletionOutcome } from "@partybooth/contracts/upload";
 import type { DefaultFunctionArgs, FunctionReference } from "convex/server";
 
 import { api as generatedApi } from "../convex/_generated/api";
@@ -207,6 +209,93 @@ export interface SetEventStateResult {
   readonly reissuedCode?: string;
 }
 
+/* ---- Media ---------------------------------------------------------------- */
+
+export type MediaId = string;
+export type UploadGrantId = string;
+
+/**
+ * `media.ts → mediaViewValidator` — one item, as a client is allowed to see it.
+ *
+ * There is deliberately **no file key** on this type and there must never be
+ * one. A provider key names an object directly, so handing one to a client
+ * turns a permission-checked read into a bearer credential that never expires.
+ * `url` is a short-lived signed URL minted after the permission check, and
+ * `urlExpiresAt` is when a client should stop trusting it — a Convex query
+ * re-runs when its data changes, not when the clock moves, so a long-lived
+ * subscription has to refresh rather than assume.
+ *
+ * `url` is absent while an item is still `processing`, and also when the
+ * deployment has no storage credentials: a gallery that renders a status with no
+ * thumbnail is a better failure than one that throws.
+ */
+export interface MediaItem {
+  readonly id: MediaId;
+  readonly eventId: EventId;
+  readonly captureId: string;
+  readonly state: MediaState;
+  readonly mediaType: MediaType;
+  readonly fromLibrary: boolean;
+  readonly byteSize: number;
+  readonly mimeType: string;
+  readonly durationSeconds?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly uploaderUserId: UserId;
+  readonly uploaderDisplayName: string;
+  readonly isOwn: boolean;
+  readonly createdAt: number;
+  readonly capturedAt?: number;
+  readonly uploadedAt?: number;
+  readonly moderatedAt?: number;
+  readonly url?: string;
+  readonly urlExpiresAt?: number;
+  readonly previewUrl?: string;
+  readonly previewUrlExpiresAt?: number;
+}
+
+/**
+ * `media.requestUploadGrant` arguments. Mirrors `uploadGrantRequestSchema`.
+ *
+ * The index signature is what `DefaultFunctionArgs` requires of anything that
+ * crosses the wire as a Convex argument object; it is not an invitation to send
+ * extra fields — the mutation's own validator rejects them.
+ */
+export interface UploadGrantRequestArgs {
+  readonly [key: string]: unknown;
+  readonly eventId: EventId;
+  /** Client-generated and stable across retries. Uploads are idempotent on it. */
+  readonly captureId: string;
+  readonly mediaType: MediaType;
+  readonly byteSize: number;
+  readonly mimeType: string;
+  /** Lower-case hex SHA-256 of the exact bytes about to be sent. */
+  readonly checksum: string;
+  readonly durationSeconds?: number;
+  readonly capturedAt?: number;
+  readonly mediaSource?: MediaSource;
+  readonly fromLibrary?: boolean;
+  /** Whether the client re-encoded away EXIF/GPS first — see ADR 0004. */
+  readonly sourceMetadataStripped?: boolean;
+}
+
+/** `media.completeUpload` — the outcome of registering a stored file. */
+export interface UploadCompletionResult {
+  readonly outcome: UploadCompletionOutcome;
+  readonly mediaId?: MediaId;
+  readonly state?: MediaState;
+  readonly reason?: string;
+}
+
+/** `media.storageStatus` — host-only diagnostics. Never contains a token. */
+export interface StorageStatus {
+  readonly region: StorageRegion;
+  readonly provider: string;
+  readonly configured: boolean;
+  readonly appId?: string;
+  readonly callbackConfigured: boolean;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The surface                                                                */
 /* -------------------------------------------------------------------------- */
@@ -251,6 +340,56 @@ export interface BackendApi {
     readonly myEvents: Query<NoArgs, EventSummary[]>;
     readonly activeEvent: Query<NoArgs, EventSummary | null>;
     readonly home: Query<{ eventId: EventId }, EventHome>;
+  };
+  readonly media: {
+    /**
+     * Short-lived, single-use permission to send one exact file.
+     *
+     * The result is a **value**, not an exception, for every outcome — including
+     * "the host paused the party" and "that photo is too big". A Convex mutation
+     * that throws rolls its own writes back, so a handler that charges a
+     * throttle and then raises has charged nothing; the same shape also keeps
+     * the client's error copy in one place.
+     */
+    readonly requestUploadGrant: Mutation<
+      UploadGrantRequestArgs,
+      GrantResult<UploadGrantId, EventId>
+    >;
+    /**
+     * The client says its own upload finished. Creates the media row if the
+     * provider callback has not got here first, and asserts nothing about what
+     * is actually in storage.
+     */
+    readonly confirmUpload: Mutation<
+      { secret: string },
+      { mediaId: MediaId | null; state: MediaState | null }
+    >;
+    /**
+     * **Server-only** — the UploadThing route handler in `apps/web`, never a
+     * browser or the app. Needs `UPLOAD_CALLBACK_SECRET` as well as the grant.
+     */
+    readonly completeUpload: Mutation<
+      {
+        callbackSecret: string;
+        secret: string;
+        fileKey: string;
+        byteSize: number;
+        mimeType?: string;
+        checksum?: string;
+        width?: number;
+        height?: number;
+        durationSeconds?: number;
+      },
+      UploadCompletionResult
+    >;
+    /** Submitter-only, any state, permanent. */
+    readonly withdraw: Mutation<{ mediaId: MediaId; reason?: string }, { state: MediaState }>;
+    readonly myMedia: Query<{ eventId: EventId }, MediaItem[]>;
+    readonly eventMedia: Query<
+      { eventId: EventId; states?: readonly MediaState[]; limit?: number },
+      MediaItem[]
+    >;
+    readonly storageStatus: Query<{ eventId: EventId }, StorageStatus>;
   };
   readonly join: {
     readonly join: Mutation<

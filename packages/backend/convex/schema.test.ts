@@ -3,6 +3,7 @@ import {
   AUDIT_ACTION_NAMES,
   EVENT_ROLES,
   EVENT_STATES,
+  GRANT_STATUSES,
   MEDIA_STATES,
   MEDIA_TYPES,
   MODERATION_MODES,
@@ -88,6 +89,14 @@ describe("tables", () => {
         // Additional addresses proven by OTP, so an Apple private-relay user
         // has something for verified-email matching to match.
         "userEmails",
+
+        /* Sprint 3 ------------------------------------------------------- */
+        // The short-lived single-use capability a guest exchanges for the right
+        // to put one exact file in storage. Its secret is stored hashed.
+        "uploadGrants",
+        // The per-account grant counter. Separate from `joinAttempts` because
+        // it throttles successes, not failures — see the schema comment.
+        "uploadAttempts",
       ].sort(),
     );
   });
@@ -111,6 +120,9 @@ describe("enums come from @partybooth/contracts", () => {
     ["media", "state", MEDIA_STATES],
     ["media", "mediaType", MEDIA_TYPES],
     ["media", "storageRegion", STORAGE_REGIONS],
+    ["uploadGrants", "status", GRANT_STATUSES],
+    ["uploadGrants", "mediaType", MEDIA_TYPES],
+    ["uploadGrants", "storageRegion", STORAGE_REGIONS],
     ["auditEvents", "action", AUDIT_ACTION_NAMES],
   ])("%s.%s matches the contract", (table, field, expected) => {
     expect(unionValues(table, field)).toEqual([...expected]);
@@ -144,7 +156,30 @@ describe("indexes", () => {
         "by_user_and_status",
       ],
     ],
-    ["media", ["by_event", "by_event_and_state", "by_event_and_capture", "by_uploader"]],
+    [
+      "media",
+      [
+        "by_event",
+        "by_event_and_state",
+        "by_event_and_capture",
+        "by_uploader",
+        // `media.myMedia` — one guest's own submissions for one event.
+        "by_event_and_uploader",
+      ],
+    ],
+    [
+      "uploadGrants",
+      [
+        // The only lookup the completion callback has: a hash of the secret.
+        "by_secretHash",
+        // Retiring every unspent grant when a capture is withdrawn.
+        "by_event_and_capture",
+        "by_user_and_status",
+        // The P1 sweep of grants nothing ever came back for.
+        "by_status_and_expiresAt",
+      ],
+    ],
+    ["uploadAttempts", ["by_key"]],
     ["moderationDecisions", ["by_media", "by_event"]],
     ["pushDevices", ["by_user", "by_token"]],
     ["deletionJobs", ["by_state", "by_subject"]],
@@ -170,6 +205,14 @@ describe("indexes", () => {
   it("can find a media row by (event, captureId) for idempotent callbacks", () => {
     const index = indexesOf("media").find((i) => i.indexDescriptor === "by_event_and_capture");
     expect(index?.fields).toEqual(["eventId", "captureId"]);
+  });
+
+  it("can find a grant by the hash of the secret its holder presents", () => {
+    // By hash, and only by hash: the plaintext never reaches a query, so a leak
+    // of `uploadGrants` is not a leak of usable capabilities.
+    const index = indexesOf("uploadGrants").find((i) => i.indexDescriptor === "by_secretHash");
+    expect(index?.fields).toEqual(["secretHash"]);
+    expect(Object.keys(tables["uploadGrants"]?.validator.fields ?? {})).not.toContain("secret");
   });
 
   it("names every index by_<fields>", () => {

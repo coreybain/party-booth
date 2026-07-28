@@ -58,6 +58,18 @@ export const serverFeatures = {
   get uploadthing(): boolean {
     return envHas(serverEnv, "UPLOADTHING_TOKEN");
   },
+  /**
+   * Whether the upload-completion callback can be authenticated at all.
+   *
+   * Separate from {@link uploadthing} because the two are set in different
+   * dashboards and a deployment can plausibly have one without the other. With
+   * this unset, `media.completeUpload` refuses every call — so uploads reach
+   * storage and never leave `processing`, which is a visible, diagnosable
+   * failure rather than an open door.
+   */
+  get uploadCallback(): boolean {
+    return envHas(serverEnv, "UPLOAD_CALLBACK_SECRET");
+  },
   /** Expo push notifications. */
   get expoPush(): boolean {
     return envHas(serverEnv, "EAS_PROJECT_ID");

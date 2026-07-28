@@ -12,10 +12,17 @@ import {
 } from "convex/server";
 
 import type { Doc, Id } from "./_generated/dataModel";
+import { setStorageAdapterOverride } from "./lib/storage";
+import {
+  createFakeStorageAdapter,
+  type FakeStorageAdapter,
+  type FakeStorageOptions,
+} from "./lib/storage/fake";
 import type * as emails from "./emails";
 import type * as events from "./events";
 import type * as invites from "./invites";
 import type * as join from "./join";
+import type * as media from "./media";
 import type * as otp from "./otp";
 import schema from "./schema";
 import type * as users from "./users";
@@ -69,6 +76,7 @@ type FullApi = ApiFromModules<{
   events: typeof events;
   invites: typeof invites;
   join: typeof join;
+  media: typeof media;
   otp: typeof otp;
   users: typeof users;
 }>;
@@ -222,6 +230,127 @@ export async function seedInviteVersion(
   });
 
   return { inviteVersionId, code, token };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Storage                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Point the storage seam at an in-memory fake for the duration of a test.
+ *
+ * Returns the fake so the suite can assert the two facts only the provider
+ * knows: whether a file still exists, and what was asked to be deleted. Always
+ * pair it with `useFakeStorage(undefined)` — or the `afterEach` below — because
+ * convex-test shares the module registry across a file.
+ */
+export function useFakeStorage(options: FakeStorageOptions = {}): FakeStorageAdapter {
+  const adapter = createFakeStorageAdapter(options);
+  setStorageAdapterOverride(() => adapter);
+  return adapter;
+}
+
+export function clearFakeStorage(): void {
+  setStorageAdapterOverride(undefined);
+}
+
+/**
+ * Run everything `ctx.scheduler.runAfter(0, …)` queued, and wait for it.
+ *
+ * convex-test implements the scheduler with a real `setTimeout`, so a job
+ * queued by the mutation you just awaited is still `pending` when the next line
+ * of the test runs — `finishInProgressScheduledFunctions()` on its own waits
+ * only for jobs whose timer has already fired, which is none of them. Yielding
+ * to the macrotask queue first is what lets the timer fire; the loop covers a
+ * job that schedules another job.
+ *
+ * Without this, a withdrawal's file delete executes *after* the test has
+ * finished and `afterEach` has torn the fake adapter down, and the failure it
+ * produces looks like a bug in the storage seam rather than a race in the
+ * harness.
+ */
+export async function runScheduled(t: T, rounds = 5): Promise<void> {
+  for (let round = 0; round < rounds; round += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
+/**
+ * The shared secret `media.completeUpload` demands. Set it around any test that
+ * exercises the provider callback, and clear it again — an unset secret is the
+ * production default and other suites depend on that.
+ */
+export const CALLBACK_SECRET = "test-callback-secret-that-is-long-enough-000";
+
+export function setCallbackSecret(value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env["UPLOAD_CALLBACK_SECRET"];
+  } else {
+    process.env["UPLOAD_CALLBACK_SECRET"] = value;
+  }
+  resetEnvCache(serverEnv);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Media                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface SeedMediaOptions {
+  state?: Doc<"media">["state"];
+  captureId?: string;
+  mediaType?: Doc<"media">["mediaType"];
+  storageKey?: string;
+  byteSize?: number;
+  fromLibrary?: boolean;
+  createdAt?: number;
+}
+
+/**
+ * A media row as `completeUpload` would have left it, without going through the
+ * grant machinery — for the read-path and withdrawal suites, which are about
+ * what happens *after* an upload rather than about how it got there.
+ *
+ * Counters are updated the way the real path does, so a suite that seeds three
+ * pending items and then withdraws one can still assert the badge.
+ */
+export async function seedMedia(
+  t: T,
+  eventId: Id<"events">,
+  uploaderUserId: Id<"users">,
+  over: SeedMediaOptions = {},
+): Promise<Id<"media">> {
+  const now = over.createdAt ?? Date.now();
+  const state = over.state ?? "pending";
+  const storageKey = over.storageKey ?? `key_${Math.random().toString(36).slice(2, 10)}`;
+
+  return await t.run(async (ctx) => {
+    const mediaId = await ctx.db.insert("media", {
+      eventId,
+      uploaderUserId,
+      captureId: over.captureId ?? `capture-${Math.random().toString(36).slice(2, 12)}`,
+      state,
+      mediaType: over.mediaType ?? "photo",
+      ...(state === "processing" && over.storageKey === undefined ? {} : { storageKey }),
+      storageRegion: "pdx1",
+      byteSize: over.byteSize ?? 1024,
+      mimeType: "image/jpeg",
+      checksum: "a".repeat(64),
+      fromLibrary: over.fromLibrary ?? false,
+      uploadedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const event = await ctx.db.get(eventId);
+    if (event) {
+      const counts = { ...event.counts };
+      if (state === "pending" || state === "approved" || state === "declined") counts[state] += 1;
+      if (state !== "deleted") counts.total += 1;
+      await ctx.db.patch(eventId, { counts });
+    }
+    return mediaId;
+  });
 }
 
 /** Every audit row, newest last. */

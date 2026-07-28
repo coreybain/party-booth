@@ -5,6 +5,8 @@ import {
   CAPTURE_STATES,
   EVENT_ROLES,
   EVENT_STATES,
+  GRANT_STATUSES,
+  MEDIA_SOURCES,
   MEDIA_STATES,
   MEDIA_TYPES,
   MODERATION_ACTORS,
@@ -52,6 +54,8 @@ export const moderationDecision = literalUnion(MODERATION_DECISIONS);
 export const moderationActor = literalUnion(MODERATION_ACTORS);
 export const mediaState = literalUnion(MEDIA_STATES);
 export const mediaType = literalUnion(MEDIA_TYPES);
+export const mediaSource = literalUnion(MEDIA_SOURCES);
+export const uploadGrantStatus = literalUnion(GRANT_STATUSES);
 export const captureState = literalUnion(CAPTURE_STATES);
 export const storageRegion = literalUnion(STORAGE_REGIONS);
 export const pushPlatform = literalUnion(PUSH_PLATFORMS);

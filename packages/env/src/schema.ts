@@ -152,6 +152,14 @@ export const serverVars = {
     z.enum(STORAGE_REGIONS).default("pdx1"),
     "UploadThing region new events are created in. Beta is pdx1 (Portland) only.",
   ),
+  UPLOAD_CALLBACK_SECRET: envVar(
+    z
+      .string()
+      .min(32, "must be at least 32 characters — it authenticates the upload callback")
+      .optional(),
+    "Shared secret proving an upload-completion call came from the apps/web route handler rather than from a guest replaying the grant they were legitimately given. Generate with `openssl rand -base64 48` and set the SAME value in Vercel and in the Convex dashboard. Unset = completion callbacks are refused, so nothing ever leaves `processing`.",
+    { secret: true },
+  ),
 
   /* --- Sentry ----------------------------------------------------------- */
   SENTRY_DSN: envVar(
