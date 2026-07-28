@@ -29,6 +29,7 @@ function queued(overrides: Partial<QueueItem> & { captureId: string }): QueueIte
     checksum: "a".repeat(64),
     capturedAt: NOW,
     sourceMetadataStripped: true,
+    derivatives: [],
     autoSend: true,
     sendAt: NOW,
     undoDelayMs: 15_000,

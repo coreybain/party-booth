@@ -39,57 +39,75 @@
  *
  * ## Video
  *
- * `mode="picture"`. Hold-to-record is Sprint 4 (PLAN.md), and the hold gesture
- * answers rather than doing nothing — a guest will absolutely try it, and
- * silence reads as a broken button.
+ * Hold the shutter to record, up to sixty seconds, release to stop. The gesture
+ * itself is a pure state machine in `src/lib/shutter.ts` — this screen owns only
+ * the promises and the one awkward fact that makes it non-trivial:
+ * **`expo-camera` records only in `mode="video"`, and changing `mode` rebuilds
+ * the capture session.** So the machine has an `arming` phase, the screen flips
+ * `mode` on entering it, and `recordAsync` is called when `onCameraReady` fires
+ * again — not after a guessed delay. The recording ring therefore starts when
+ * the recorder started, so the sixty seconds a guest watches is the sixty
+ * seconds they get.
+ *
+ * The camera stays in `mode="picture"` at rest, which is what keeps the tap path
+ * exactly as fast as it was in Sprint 3.
  */
 
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import * as Device from "expo-device";
 import { useIsFocused, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { Linking, Platform, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import {
+  Linking,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 
 import {
   FlashButton,
   FlipButton,
   LibraryButton,
   PendingBadge,
+  RecordingIndicator,
   ShutterButton,
+  TorchButton,
   type FlashMode,
 } from "@/components/camera-controls";
 import { UndoPill } from "@/components/undo-pill";
 import { Button, EmptyState, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
 import { useCapture } from "@/hooks/use-capture";
 import { describeEventState } from "@/lib/events";
+import { useShutter, type RecordedClip } from "@/hooks/use-shutter";
 import { captureHandledError } from "@/lib/sentry";
 import { useSession } from "@/providers/session";
 import { useUploadQueue } from "@/upload/queue-provider";
 import { colors, radius, spacing, typography } from "@/theme";
 
+import { VIDEO_MAX_DURATION_SECONDS } from "@partybooth/contracts/media";
+
 import type { CameraType } from "expo-camera";
 import type { ReactNode } from "react";
-
-/**
- * What the hold gesture says until Sprint 4 lands.
- *
- * Named rather than inlined so the test can assert on the promise rather than
- * on a string literal typed twice.
- */
-export const VIDEO_COMING_SOON =
-  "Hold-to-record video is coming in the next update. Tap for a photo for now.";
 
 /**
  * The one line under the controls.
  *
  * `accessibilityHint` on the shutter says the same thing, but a hint is read
  * only by a screen reader and only after a pause — which leaves a sighted guest
- * to discover the gesture by holding a button and getting an apology. Saying it
- * on screen is cheaper than the disappointment.
+ * to discover the gesture by holding a button. Saying it on screen is cheaper
+ * than the discovery.
  */
-export const SHUTTER_HINT = "Tap for a photo. Hold for video — coming in the next update.";
+export const SHUTTER_HINT = `Tap for a photo. Hold to record video, up to ${String(VIDEO_MAX_DURATION_SECONDS)} seconds.`;
+
+/** What the shutter says when the microphone has been refused. */
+export const SHUTTER_HINT_NO_VIDEO = "Tap for a photo.";
 
 const PICKER_FAILED = "That photo couldn't be opened. Try choosing it again.";
+const MICROPHONE_REFUSED =
+  "Video needs the microphone, and PartyBooth doesn't have it. Turn it on in Settings if you'd like to record clips — photos work either way.";
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -99,15 +117,16 @@ export default function CameraScreen() {
 
   const { activeEvent, eventsLoading } = useSession();
   const queue = useUploadQueue();
-  const { busy, capture } = useCapture(activeEvent);
+  const { busy, capture, captureVideo } = useCapture(activeEvent);
 
   const cameraRef = useRef<CameraView | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const [microphone, requestMicrophone] = useMicrophonePermissions();
   const [facing, setFacing] = useState<CameraType>("back");
   const [flash, setFlash] = useState<FlashMode>("off");
-  const [ready, setReady] = useState(false);
+  const [torch, setTorch] = useState(false);
   const [mountError, setMountError] = useState<string | null>(null);
-  /** One transient sentence under the controls: a refusal, or "coming soon". */
+  /** One transient sentence under the controls — always a refusal, verbatim. */
   const [notice, setNotice] = useState<string | null>(null);
 
   // A simulator has no camera and `CameraView` fails to mount on it. Knowing
@@ -121,6 +140,17 @@ export default function CameraScreen() {
   const pending = queue.pendingFor(activeEvent?.id);
   const undoable = queue.undoableFor(activeEvent?.id);
   const allowLibrary = activeEvent?.allowLibraryImport === true;
+
+  /*
+   * Video is offered only once the microphone has actually been granted.
+   *
+   * `recordAudioAndroid: true` in the config plugin means a recording without
+   * the permission fails outright rather than producing a silent clip, so a
+   * shutter that offered the hold gesture would be offering a gesture that
+   * cannot work. `null` is "not read yet" and is treated as "not yet" — the hint
+   * corrects itself within a frame of the OS answering.
+   */
+  const videoEnabled = microphone?.granted === true;
 
   /* ---------------------------------------------------------------- */
   /* Actions                                                          */
@@ -182,10 +212,67 @@ export default function CameraScreen() {
     })();
   }, [runCapture]);
 
-  const onHold = useCallback(() => setNotice(VIDEO_COMING_SOON), []);
+  /* ---------------------------------------------------------------- */
+  /* Recording                                                        */
+  /* ---------------------------------------------------------------- */
+
+  const onClip = useCallback(
+    (clip: RecordedClip) => {
+      void (async () => {
+        const outcome = await captureVideo({
+          source: { uri: clip.uri, durationSeconds: clip.durationSeconds },
+          capturedAt: clip.startedAt,
+        });
+        setNotice(outcome.status === "refused" ? outcome.message : null);
+      })();
+    },
+    [captureVideo],
+  );
+
+  /*
+   * Never leave the torch burning after a clip. It is the single most visible
+   * way to flatten a phone at a party, and it has to happen on the failure path
+   * too — which is why the hook calls it rather than the success branch here.
+   */
+  const onRecordingEnd = useCallback(() => setTorch(false), []);
+
+  const shutter = useShutter({
+    camera: cameraRef,
+    onPhoto: onShutter,
+    onClip,
+    onError: setNotice,
+    onRecordingEnd,
+    // The tab losing focus, the preview erroring, the party pausing mid-hold.
+    // None of them produce a release event, so the hook has to be told.
+    disabled: !isFocused || !uploadsOpen || mountError !== null || !hasCamera,
+    // Photos still work without the microphone; a hold simply stays a tap.
+    videoEnabled,
+  });
+
+  const recording = shutter.recording;
+
   const onFlip = useCallback(() => {
+    // Flipping mid-recording stops it on both platforms, so the control is
+    // disabled while recording rather than being allowed to end a clip by
+    // surprise. This is the belt for that braces.
+    if (recording) return;
     setFacing((current) => (current === "back" ? "front" : "back"));
-  }, []);
+  }, [recording]);
+
+  /**
+   * Ask for the microphone the first time video is plausible.
+   *
+   * Not on mount: a permission prompt is the first thing a guest sees on the
+   * Camera tab and asking for two at once reads as greedy. This fires when the
+   * guest reaches for video without the permission, which is the moment the
+   * request explains itself.
+   */
+  const onRequestMicrophone = useCallback(() => {
+    void (async () => {
+      const result = await requestMicrophone();
+      if (!result.granted) setNotice(MICROPHONE_REFUSED);
+    })();
+  }, [requestMicrophone]);
 
   /* ---------------------------------------------------------------- */
   /* Gates, outermost first                                           */
@@ -264,7 +351,10 @@ export default function CameraScreen() {
   /* The viewfinder                                                   */
   /* ---------------------------------------------------------------- */
 
-  const shutterDisabled = !uploadsOpen || !hasCamera || mountError !== null || !ready;
+  // While recording, the button is the *stop* control and must stay live even
+  // though `shutter.ready` was reset by the mode flip.
+  const shutterDisabled =
+    !recording && (!uploadsOpen || !hasCamera || mountError !== null || !shutter.ready);
 
   return (
     // Full-bleed and edge-to-edge: the tab shell's header owns the notch, and a
@@ -277,12 +367,26 @@ export default function CameraScreen() {
             style={StyleSheet.absoluteFill}
             facing={facing}
             flash={flash}
-            mode="picture"
+            // Flipped by the shutter machine's `arming` phase and back again when
+            // the clip is done. `recordAsync` refuses in `picture` mode, and
+            // changing this rebuilds the capture session — which is exactly why
+            // `arming` exists and why `onCameraReady` is what starts the
+            // recorder rather than a delay.
+            mode={shutter.videoMode ? "video" : "picture"}
+            videoQuality="1080p"
+            /*
+             * Derived rather than stored, so the torch physically cannot be on
+             * when there is nothing recording: the control that toggles it only
+             * exists during a recording, and a torch with no visible off switch
+             * is the fastest way to flatten a phone at a party. `onRecordingEnd`
+             * also clears the state, which covers the failure path.
+             */
+            enableTorch={torch && recording}
             // The camera session stops when the guest moves to Photos or Host.
             // A live capture session behind another tab is battery and a hot
             // phone for a preview nobody is looking at.
             active={isFocused}
-            onCameraReady={() => setReady(true)}
+            onCameraReady={shutter.onCameraReady}
             onMountError={(event) => {
               captureHandledError(new Error(event.message), { scope: "camera.mount" });
               setMountError(event.message);
@@ -305,6 +409,9 @@ export default function CameraScreen() {
             filename or a long refusal cannot push the shutter off screen. */}
         <View style={styles.overlay}>
           <View style={styles.topRow}>
+            {recording ? (
+              <RecordingIndicator seconds={shutter.seconds} remaining={shutter.remaining} />
+            ) : null}
             <PendingBadge count={pending} />
           </View>
 
@@ -339,27 +446,57 @@ export default function CameraScreen() {
             ) : null}
 
             <View style={[styles.controls, landscape && styles.controlsLandscape]}>
-              <FlashButton
-                mode={flash}
-                onChange={setFlash}
-                disabled={!hasCamera || mountError !== null}
-              />
+              {/* The flash fires for a still and does nothing during a recording,
+                  so the two controls swap rather than sitting side by side —
+                  whichever one is on screen is the one that will do something. */}
+              {recording ? (
+                <TorchButton on={torch} onToggle={setTorch} />
+              ) : (
+                <FlashButton
+                  mode={flash}
+                  onChange={setFlash}
+                  disabled={!hasCamera || mountError !== null}
+                />
+              )}
               <ShutterButton
-                onPress={onShutter}
-                onHold={onHold}
+                onPressIn={shutter.onPressIn}
+                onPressOut={shutter.onPressOut}
+                recording={recording}
+                progress={shutter.progress}
                 disabled={shutterDisabled}
                 busy={busy}
+                videoEnabled={videoEnabled}
               />
-              <FlipButton onPress={onFlip} disabled={!hasCamera || mountError !== null} />
+              <FlipButton
+                onPress={onFlip}
+                disabled={!hasCamera || mountError !== null || recording}
+              />
               {/* Gated on the *event's* flag, which is a live field on the
                   `events.myEvents` subscription — a host turning library
                   imports off mid-party removes this button without a restart.
                   `checkGrantEligibility` refuses the same import server-side,
                   so this is the affordance, not the enforcement. */}
-              {allowLibrary ? <LibraryButton onPress={onLibrary} disabled={busy} /> : null}
+              {allowLibrary && !recording ? (
+                <LibraryButton onPress={onLibrary} disabled={busy} />
+              ) : null}
             </View>
 
-            <Text style={styles.hint}>{SHUTTER_HINT}</Text>
+            {videoEnabled || !hasCamera ? (
+              <Text style={styles.hint}>{videoEnabled ? SHUTTER_HINT : SHUTTER_HINT_NO_VIDEO}</Text>
+            ) : (
+              // Not a blocking gate: photographs work perfectly well without the
+              // microphone, so this is an offer rather than a wall.
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Allow the microphone to record video"
+                onPress={onRequestMicrophone}
+                hitSlop={8}
+              >
+                <Text style={[styles.hint, styles.hintAction]}>
+                  Tap for a photo. To record video, allow the microphone.
+                </Text>
+              </Pressable>
+            )}
           </View>
         </View>
       </View>
@@ -425,4 +562,5 @@ const styles = StyleSheet.create({
   // held sideways — both thumbs are near the centre.
   controlsLandscape: { alignSelf: "center", justifyContent: "center", gap: spacing.xl },
   hint: { ...typography.caption, color: colors.textMuted, textAlign: "center" },
+  hintAction: { color: colors.accentSoft, textDecorationLine: "underline" },
 });

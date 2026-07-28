@@ -49,7 +49,12 @@ import {
 import { AppState } from "react-native";
 
 import { derivativeFileName } from "@partybooth/contracts/capture";
-import { buildUploadTicket, grantHasExpired, parseGrantResult } from "@partybooth/contracts/upload";
+import {
+  buildUploadTicket,
+  grantHasExpired,
+  isPermanentRejection,
+  parseGrantResult,
+} from "@partybooth/contracts/upload";
 
 import { api } from "../lib/api";
 import { describeError } from "../lib/errors";
@@ -62,10 +67,11 @@ import {
   readStoreFile,
   writeStoreFile,
 } from "./device-store";
-import { nextRunnable, nextWakeUpAt, readGrantResult } from "./queue-engine";
+import { nextTask, nextWakeUpAt, readGrantResult } from "./queue-engine";
 import {
   forgettableItems,
   itemsForEvent,
+  localFilesOf,
   pendingCountForEvent,
   queueItemFromDraft,
   queueReducer,
@@ -83,9 +89,9 @@ import {
 } from "./settings";
 import { createUploadThingTransport } from "./transport-uploadthing";
 import { isUploadCancelled, type UploadTransport } from "./transport";
-import { EMPTY_QUEUE, type CaptureDraft, type QueueItem } from "./types";
+import { EMPTY_QUEUE, type CaptureDraft, type QueueDerivative, type QueueItem } from "./types";
 
-import type { MediaSource, MediaType } from "@partybooth/contracts/media";
+import type { MediaFileRole, MediaSource, MediaType } from "@partybooth/contracts/media";
 import type { ReactNode } from "react";
 
 /* -------------------------------------------------------------------------- */
@@ -163,6 +169,16 @@ export interface GrantArgs {
   readonly eventId: string;
   readonly captureId: string;
   readonly mediaType: MediaType;
+  /**
+   * Which artefact of the capture this grant is for.
+   *
+   * Omitted means `original`, which is what every Sprint-3 call meant. A
+   * derivative is a **separate grant under the same `captureId`**, held to its
+   * own much tighter cap and refused outright unless `sourceMetadataStripped` is
+   * `true` — on a derivative the claim is a precondition rather than a record,
+   * because a derivative is what third parties are served (ADR 0008).
+   */
+  readonly fileRole?: MediaFileRole | undefined;
   readonly byteSize: number;
   readonly mimeType: string;
   readonly checksum: string;
@@ -301,6 +317,121 @@ export function UploadQueueProvider({
   /* One attempt                                                      */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Send one derivative of a capture that has already landed.
+   *
+   * Structurally the same three steps as {@link attempt} — grant, transport,
+   * nothing — and deliberately *not* folded into it, because the differences are
+   * the whole point:
+   *
+   * - It does **not** call `confirmUpload`. A derivative attaches a key and
+   *   stops: no state change, no counter, no completion row, so one capture
+   *   stays one submission whatever number of objects it arrives as. The
+   *   provider callback is what registers it.
+   * - It does **not** move the capture's state. The photograph is already in the
+   *   party; whether its thumbnail made it is not something the guest is shown
+   *   or asked about.
+   * - It has no cancel. There is no affordance for one, so there is no
+   *   `AbortController` to register.
+   */
+  const attemptDerivative = useCallback(
+    async (item: QueueItem, derivative: QueueDerivative): Promise<void> => {
+      if (backend === null || transport === null) return;
+
+      dispatch({
+        type: "derivativeStarted",
+        captureId: item.captureId,
+        role: derivative.role,
+        now: Date.now(),
+      });
+
+      try {
+        const answer = await backend.requestGrant({
+          eventId: item.eventId,
+          captureId: item.captureId,
+          mediaType: item.mediaType,
+          fileRole: derivative.role,
+          byteSize: derivative.byteSize,
+          mimeType: derivative.mimeType,
+          checksum: derivative.checksum,
+          capturedAt: item.capturedAt,
+          mediaSource: item.mediaSource,
+          // A precondition rather than a record here: the grant is refused
+          // without it. Every derivative this app produces is a JPEG written
+          // from decoded pixels, so it is earned in the strongest sense.
+          sourceMetadataStripped: true,
+          ...(derivative.durationSeconds === undefined
+            ? {}
+            : { durationSeconds: derivative.durationSeconds }),
+        });
+
+        const parsed = parseGrantResult(answer);
+        if (parsed.outcome !== "granted") {
+          const permanent =
+            parsed.outcome === "rejected" ? isPermanentRejection(parsed.reason) : false;
+          dispatch({
+            type: "derivativeFailed",
+            captureId: item.captureId,
+            role: derivative.role,
+            permanent,
+            ...(parsed.outcome === "throttled" ? { retryAfterMs: parsed.retryAfterMs } : {}),
+            now: Date.now(),
+          });
+          return;
+        }
+
+        if (grantHasExpired(parsed, Date.now())) {
+          dispatch({
+            type: "derivativeFailed",
+            captureId: item.captureId,
+            role: derivative.role,
+            permanent: false,
+            now: Date.now(),
+          });
+          return;
+        }
+
+        await transport.upload({
+          file: {
+            uri: derivative.uri,
+            name: `${item.captureId}-${derivative.role}.jpg`,
+            mimeType: derivative.mimeType,
+            byteSize: derivative.byteSize,
+          },
+          ticket: buildUploadTicket(parsed, {
+            mimeType: derivative.mimeType,
+            checksum: derivative.checksum,
+            width: derivative.width,
+            height: derivative.height,
+            durationSeconds: derivative.durationSeconds,
+          }),
+        });
+
+        dispatch({
+          type: "derivativeSucceeded",
+          captureId: item.captureId,
+          role: derivative.role,
+          now: Date.now(),
+        });
+      } catch (error) {
+        // Not reported to Sentry at `error` level and not shown to the guest: a
+        // thumbnail that did not upload is not an incident, and there is nothing
+        // for them to do about it. The breadcrumb is enough to notice a pattern.
+        captureHandledError(error, { scope: "upload.derivative", role: derivative.role });
+        const copy = describeError(error);
+        dispatch({
+          type: "derivativeFailed",
+          captureId: item.captureId,
+          role: derivative.role,
+          permanent: copy.recovery === "none" || copy.recovery === "signIn",
+          ...(copy.retryAfterMs === undefined ? {} : { retryAfterMs: copy.retryAfterMs }),
+          now: Date.now(),
+        });
+      }
+    },
+    [backend, transport],
+  );
+
   const attempt = useCallback(
     async (item: QueueItem): Promise<void> => {
       if (backend === null || transport === null) return;
@@ -321,6 +452,12 @@ export function UploadQueueProvider({
           capturedAt: item.capturedAt,
           mediaSource: item.mediaSource,
           sourceMetadataStripped: item.sourceMetadataStripped,
+          // Only sent when the client means something different by it than by
+          // the re-encode claim — i.e. the video path. Omitted, the server reads
+          // it as "same as the re-encode claim".
+          ...(item.sourceCarriesNoLocation === undefined
+            ? {}
+            : { sourceCarriesNoLocation: item.sourceCarriesNoLocation }),
           ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds }),
         });
 
@@ -430,12 +567,15 @@ export function UploadQueueProvider({
     if (backend === null || transport === null) return;
     if (!stateRef.current.hydrated) return;
 
-    const item = nextRunnable(stateRef.current.items, Date.now());
-    if (item === undefined) return;
+    const task = nextTask(stateRef.current.items, Date.now());
+    if (task === undefined) return;
 
-    runningRef.current = item.captureId;
+    // Concurrency stays 1 across *both* kinds of work, so a derivative can never
+    // be sent at the same time as a photograph and steal its bandwidth.
+    runningRef.current = task.item.captureId;
     try {
-      await attempt(item);
+      if (task.kind === "original") await attempt(task.item);
+      else await attemptDerivative(task.item, task.derivative);
     } finally {
       runningRef.current = null;
       // Dispatches inside `attempt` re-run the scheduling effect, which calls
@@ -443,7 +583,7 @@ export function UploadQueueProvider({
       // change (a no-op transition) but the queue still has work.
       setClock((value) => value + 1);
     }
-  }, [attempt, backend, transport]);
+  }, [attempt, attemptDerivative, backend, transport]);
 
   /* ---------------------------------------------------------------- */
   /* Scheduling                                                       */
@@ -497,11 +637,13 @@ export function UploadQueueProvider({
     if (stale.length === 0) return;
 
     // Files first, row second. The other order would leave a file with nothing
-    // naming it — an orphan no later sweep could recognise.
+    // naming it — an orphan no later sweep could recognise. `localFilesOf`
+    // deduplicates, which matters for a video whose poster is also its local
+    // thumbnail and for a capture whose poster could not be made at all (there
+    // `previewUri === uri`).
     void (async () => {
       for (const item of stale) {
-        await deleteLocalFile(item.uri);
-        if (item.previewUri !== item.uri) await deleteLocalFile(item.previewUri);
+        for (const uri of localFilesOf(item)) await deleteLocalFile(uri);
       }
       dispatch({ type: "forget", captureIds: stale.map((item) => item.captureId) });
     })();
