@@ -13,6 +13,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
 import { getActiveMembership, type ReadCtx } from "./guards";
+import { expireGrantsForUser } from "./upload-grants";
 
 /**
  * Invite-version mechanics: allocating a six-digit code, minting a token, and
@@ -269,7 +270,24 @@ export async function mintInviteVersion(
         revokedAt: now,
         revokedByUserId: params.createdByUserId,
         revokeReason,
+        // Marks this as a *sweep*, not a removal — see the column's note in
+        // `schema.ts`. It is what lets these guests walk back in on the new code
+        // while somebody a host actually threw out stays out.
+        revokedByRotation: true,
       });
+
+      /*
+       * Revoking the membership is not, on its own, revoking access.
+       *
+       * A guest holding an unspent upload grant can still complete it: the
+       * completion path validates the **grant**, which was permission-checked
+       * when it was issued, and never re-asks whether the person is still in the
+       * party. Without this, "rotate and revoke" left a window in which somebody
+       * who had just been removed could still put a photograph into the event
+       * they were removed from — which is precisely the situation a host
+       * rotating without keeping memberships is trying to end.
+       */
+      await expireGrantsForUser(ctx, event._id, membership.userId, now);
       // One row per person, not one aggregate count on the rotation. "Who was
       // removed from this party, and when" is the question the append-only log
       // exists to answer, and a rotation is by far the largest producer of

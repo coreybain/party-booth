@@ -12,13 +12,17 @@ import {
 } from "convex/server";
 
 import type { Doc, Id } from "./_generated/dataModel";
+import { setPushAdapterOverride } from "./lib/push";
+import { createFakePushAdapter, type FakePushAdapter, type FakePushOptions } from "./lib/push/fake";
 import { setStorageAdapterOverride } from "./lib/storage";
 import {
   createFakeStorageAdapter,
   type FakeStorageAdapter,
   type FakeStorageOptions,
 } from "./lib/storage/fake";
+import type * as admin from "./admin";
 import type * as blocks from "./blocks";
+import type * as cohosts from "./cohosts";
 import type * as deletion from "./deletion";
 import type * as demo from "./demo";
 import type * as emails from "./emails";
@@ -28,6 +32,7 @@ import type * as join from "./join";
 import type * as media from "./media";
 import type * as moderation from "./moderation";
 import type * as otp from "./otp";
+import type * as push from "./push";
 import schema from "./schema";
 import type * as slideshow from "./slideshow";
 import type * as stats from "./stats";
@@ -78,7 +83,9 @@ export function makeTest(): T {
  * from there like production code does.
  */
 type FullApi = ApiFromModules<{
+  admin: typeof admin;
   blocks: typeof blocks;
+  cohosts: typeof cohosts;
   deletion: typeof deletion;
   demo: typeof demo;
   emails: typeof emails;
@@ -88,6 +95,7 @@ type FullApi = ApiFromModules<{
   media: typeof media;
   moderation: typeof moderation;
   otp: typeof otp;
+  push: typeof push;
   slideshow: typeof slideshow;
   stats: typeof stats;
   users: typeof users;
@@ -452,6 +460,24 @@ export function setPartialDemoLogin(half: "email" | "otp" | "expiry"): void {
   resetEnvCache(serverEnv);
 }
 
+/**
+ * Set (or clear) `SITE_URL`.
+ *
+ * Needed by any suite that exercises an email-sending action: the invitation
+ * links are absolute, and `@partybooth/env` memoises each variable the first
+ * time it is read, so the cache has to be dropped alongside the value.
+ */
+export const TEST_SITE_URL = "https://partybooth.test";
+
+export function setSiteUrl(value: string | undefined = TEST_SITE_URL): void {
+  if (value === undefined) {
+    delete process.env["SITE_URL"];
+  } else {
+    process.env["SITE_URL"] = value;
+  }
+  resetEnvCache(serverEnv);
+}
+
 /** Every audit row, newest last. */
 export async function auditRows(t: T): Promise<Doc<"auditEvents">[]> {
   return await t.run(async (ctx) => ctx.db.query("auditEvents").collect());
@@ -487,4 +513,56 @@ export function bytesFor(digits: string): RandomBytes {
     tokenSeed += 1;
     return new Uint8Array(Array.from({ length }, (_, index) => (tokenSeed * 31 + index * 7) % 256));
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Push                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Point the push seam at an in-memory Expo for the duration of a test.
+ *
+ * Same contract as `useFakeStorage`: always pair it with `clearFakePush()` — or
+ * the `afterEach` in the suite — because convex-test shares the module registry
+ * across a file, and the override lives on `globalThis` so that the **action**
+ * that dispatches sees it too.
+ */
+export function useFakePush(options: FakePushOptions = {}): FakePushAdapter {
+  const adapter = createFakePushAdapter(options);
+  setPushAdapterOverride(() => adapter);
+  return adapter;
+}
+
+export function clearFakePush(): void {
+  setPushAdapterOverride(undefined);
+}
+
+/** A valid-looking Expo push token. The shape `expoPushTokenSchema` accepts. */
+export function pushToken(suffix: string): string {
+  return `ExponentPushToken[${suffix}]`;
+}
+
+export async function seedPushDevice(
+  t: T,
+  userId: Id<"users">,
+  over: { token?: string; platform?: Doc<"pushDevices">["platform"]; disabled?: boolean } = {},
+): Promise<Id<"pushDevices">> {
+  const now = Date.now();
+  return await t.run(async (ctx) =>
+    ctx.db.insert("pushDevices", {
+      userId,
+      expoPushToken: over.token ?? pushToken(`seed-${Math.random().toString(36).slice(2, 10)}`),
+      platform: over.platform ?? "ios",
+      failureCount: 0,
+      ...(over.disabled === true ? { disabledAt: now, disabledReason: "failureLimit" } : {}),
+      lastSeenAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
+}
+
+/** Every notification row, oldest first. */
+export async function pushRows(t: T): Promise<Doc<"pushNotifications">[]> {
+  return await t.run(async (ctx) => ctx.db.query("pushNotifications").collect());
 }

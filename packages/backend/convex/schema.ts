@@ -19,6 +19,8 @@ import {
   moderationDecision,
   moderationMode,
   organiserInvitationStatus,
+  pushCategory,
+  pushDeliveryState,
   pushPlatform,
   reportReason,
   reportStatus,
@@ -103,6 +105,20 @@ export default defineSchema({
      * authoritative — this is a cache so `/admin` queries do not need it.
      */
     isGlobalAdmin: v.boolean(),
+
+    /**
+     * Which push categories this account has switched **off**, and the queue
+     * depth at which a host wants to be told.
+     *
+     * An opt-out list rather than a map of booleans: adding a category must
+     * default to *on* for every account that has never seen the toggle, and a
+     * map would need a migration to say so. Absent means "everything on, default
+     * threshold", which is what every row written before Sprint 5 means — so
+     * this is additive and nothing stored changes behaviour. The policy that
+     * reads it is pure and lives in `@partybooth/contracts/push`.
+     */
+    notificationOptOut: v.optional(v.array(pushCategory)),
+    pendingNotifyThreshold: v.optional(v.number()),
 
     lockedAt: v.optional(v.number()),
     lockedByUserId: v.optional(v.id("users")),
@@ -356,6 +372,23 @@ export default defineSchema({
     revokedAt: v.optional(v.number()),
     revokedByUserId: v.optional(v.id("users")),
     revokeReason: v.optional(v.string()),
+    /**
+     * Whether this membership was swept away by an invite **rotation** rather
+     * than removed by a host.
+     *
+     * The two look identical in the row and are not the same decision, and the
+     * join path has to tell them apart. A host removing somebody is a judgement
+     * about that person, and a fresh scan of a valid QR must not undo it. A
+     * rotation that does not keep memberships is a judgement about the
+     * *credential* — everybody goes, nobody is accused — and TODO.md is explicit
+     * that those people "can rejoin only via the new code", which is exactly
+     * what they are holding when they come back.
+     *
+     * Absent means "removed deliberately", which is what every revoked row
+     * written before Sprint 5 means, so nothing stored changes meaning. Cleared
+     * when the membership is re-activated.
+     */
+    revokedByRotation: v.optional(v.boolean()),
   })
     .index("by_event", ["eventId"])
     .index("by_user", ["userId"])
@@ -382,6 +415,25 @@ export default defineSchema({
     email: v.string(),
     status: cohostInvitationStatus,
     invitedByUserId: v.id("users"),
+
+    /**
+     * High-entropy value that addresses the invitation in the email link.
+     *
+     * It is **not** a credential and it must never become one. Acceptance binds
+     * on a *verified* address matching `email` (`lib/email-matching.ts`), which
+     * is the whole reason this table can exist at all for a person who has no
+     * account yet — so what the token buys is a link that lands on the right
+     * party with the right explanation, not a seat. Anyone forwarding the email
+     * hands on a URL that shows them somebody else's invitation and grants them
+     * nothing.
+     *
+     * Optional because the rows Sprint 2 wrote have no token; those are still
+     * matchable, they simply have no link to re-send.
+     */
+    token: v.optional(v.string()),
+    /** Withdrawing an invitation is an audited action and carries a reason. */
+    revokeReason: v.optional(v.string()),
+
     expiresAt: v.number(),
     acceptedAt: v.optional(v.number()),
     acceptedByUserId: v.optional(v.id("users")),
@@ -391,7 +443,9 @@ export default defineSchema({
   })
     .index("by_email", ["email"])
     .index("by_event", ["eventId"])
+    .index("by_token", ["token"])
     .index("by_event_and_email", ["eventId", "email"])
+    .index("by_event_and_status", ["eventId", "status"])
     .index("by_email_and_status", ["email", "status"]),
 
   /* ------------------------------------------------------------------ */
@@ -775,6 +829,15 @@ export default defineSchema({
   /* Notifications                                                       */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * One row per install that has agreed to be notified.
+   *
+   * Keyed on the **token**, not on the person: an Expo push token belongs to an
+   * app installation, and the same phone handed to a second guest at a party
+   * must not keep buzzing for the first one. `register` therefore reassigns a
+   * token that turns up under a new account rather than inserting a second row —
+   * see `push.registerDevice`.
+   */
   pushDevices: defineTable({
     userId: v.id("users"),
     /** `ExponentPushToken[…]`. Unique per install. */
@@ -784,12 +847,105 @@ export default defineSchema({
     /** Consecutive Expo delivery failures; a token is disabled after enough. */
     failureCount: v.number(),
     disabledAt: v.optional(v.number()),
+    /**
+     * Why the token stopped being used: `signedOut`, `deviceNotRegistered`,
+     * `failureLimit`, `accountDeleted`. Kept because "my phone stopped buzzing"
+     * has four very different answers and only one of them is a bug.
+     */
+    disabledReason: v.optional(v.string()),
     lastSeenAt: v.number(),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_token", ["expoPushToken"])
     .index("by_user_and_token", ["userId", "expoPushToken"]),
+
+  /**
+   * One row per notification PartyBooth decided to send.
+   *
+   * It exists because sending is **not** a mutation. A Convex mutation has no
+   * `fetch`, so the decision ("this host should be told") and the delivery ("ask
+   * exp.host") are necessarily two transactions with a scheduler between them,
+   * and something has to survive the gap. This is that something: the mutation
+   * writes `queued` rows, an action drains them, and the receipt check fifteen
+   * minutes later finds the ticket it needs to ask about.
+   *
+   * It is also the only place a delivery failure is legible. A push that Expo
+   * accepted and then silently dropped is invisible from every other angle.
+   *
+   * The **token is not stored here** — `deviceId` is. A table of notifications
+   * is read far more often, and by more code, than a table of devices, and
+   * duplicating the capability into it would mean every future query that
+   * touched a notification touched a push token too.
+   */
+  pushNotifications: defineTable({
+    userId: v.id("users"),
+    deviceId: v.id("pushDevices"),
+    category: pushCategory,
+    /** The event this is about, when there is one. Drives the deep link. */
+    eventId: v.optional(v.id("events")),
+
+    title: v.string(),
+    body: v.string(),
+    /** Small routing payload the app reads to open the right screen. */
+    data: v.optional(v.record(v.string(), v.string())),
+
+    state: pushDeliveryState,
+    /** Expo's ticket id, once it has accepted the message. */
+    ticketId: v.optional(v.string()),
+    /** The `details.error` Expo reported, on a ticket or on a receipt. */
+    errorCode: v.optional(v.string()),
+    error: v.optional(v.string()),
+    attempts: v.number(),
+
+    createdAt: v.number(),
+    sentAt: v.optional(v.number()),
+    /** When the receipt was read. Absent means the check has not run yet. */
+    receiptCheckedAt: v.optional(v.number()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_state", ["state"])
+    .index("by_state_and_createdAt", ["state", "createdAt"])
+    .index("by_ticket", ["ticketId"])
+    .index("by_device", ["deviceId"]),
+
+  /**
+   * The debounce memory for notifications — the same pattern as
+   * `otpChallenges`, `joinAttempts` and `uploadAttempts`, and for the same
+   * reason: Convex parallelises and recycles isolates, so a counter in memory is
+   * not a counter.
+   *
+   * `key` is namespaced by category and subject (`pending:<eventId>:<userId>`,
+   * `upload:<userId>:<captureId>`, `lifecycle:<eventId>:<userId>`) so one table
+   * serves every category without them colliding. `lastValue` is
+   * category-specific memory: the pending ping stores the queue depth it fired
+   * at, the upload ping stores whether a failure was already announced.
+   */
+  notificationThrottles: defineTable({
+    key: v.string(),
+    lastSentAt: v.number(),
+    lastValue: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  /**
+   * Invite-rotation budget, per event.
+   *
+   * Rotation is cheap to ask for and expensive to absorb: every rotation kills a
+   * printed sign, and the revoke path also writes one audit row per guest it
+   * removes. A host holding the button — or a script holding it — should not be
+   * able to turn one party into ten thousand membership revocations, so the
+   * ceiling lives here rather than in the UI. Same shape as `uploadAttempts`: it
+   * counts **successes**, because the rotation itself is the scarce thing.
+   */
+  rotationAttempts: defineTable({
+    key: v.string(),
+    count: v.number(),
+    windowStartedAt: v.number(),
+    lastRotatedAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   /* ------------------------------------------------------------------ */
   /* Lifecycle and audit                                                 */

@@ -26,6 +26,7 @@ import { demoConfinementAllows, requireActiveUser, type ReadCtx } from "./lib/gu
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
 import { checkJoinThrottle, recordJoinFailure } from "./lib/join-throttle";
+import { eventIsUsable } from "./lib/lock";
 import { eventState } from "./lib/validators";
 
 /**
@@ -167,6 +168,20 @@ async function evaluateCredential(
     return { ok: false, reason: verdict.reason, eventId: invite.event._id };
   }
 
+  /*
+   * The account-lock sweep reaches joining here.
+   *
+   * `requireEventActor` covers every other event-scoped path in the product, and
+   * joining is the one that deliberately does not go through it — you cannot be
+   * an actor for an event you have not joined yet. So a locked host's party is
+   * refused here, with `eventNotJoinable`: the same reason a paused party gets,
+   * which is right, because the guest is told the same single sentence either
+   * way and only the audit log learns which.
+   */
+  if (!(await eventIsUsable(ctx, invite.event))) {
+    return { ok: false, reason: "eventNotJoinable", eventId: invite.event._id };
+  }
+
   if (userId === null) return { ok: true, invite, membership: null };
 
   const membership = await ctx.db
@@ -174,11 +189,21 @@ async function evaluateCredential(
     .withIndex("by_event_and_user", (q) => q.eq("eventId", invite.event._id).eq("userId", userId))
     .unique();
 
-  // A host removed this person. A fresh scan of the same QR must not undo
-  // that — only a co-host invite or a rotation that keeps memberships does.
-  // The preview answers the same way, so "can I see it" and "can I join it"
-  // never disagree.
-  if (membership?.status === "revoked") {
+  /*
+   * A host removed this person. A fresh scan of the same QR must not undo that —
+   * only a co-host invite, or a rotation that keeps memberships, does. The
+   * preview answers the same way, so "can I see it" and "can I join it" never
+   * disagree.
+   *
+   * The exception is a rotation **sweep**. `keepExistingMemberships: false`
+   * revokes everybody, and TODO.md says those guests "can rejoin only via the
+   * new code" — so refusing them here would make the revoke path a permanent ban
+   * on the entire guest list, which is not what a host reprinting a sign means.
+   * They can only reach this line with an *active* invite version, which after a
+   * rotation is by definition the new one, so "holding the new code" is already
+   * proven by getting this far.
+   */
+  if (membership?.status === "revoked" && membership.revokedByRotation !== true) {
     return { ok: false, reason: "membershipRevoked", eventId: invite.event._id };
   }
 
@@ -354,11 +379,17 @@ async function admit(
   if (existing) {
     membershipId = existing._id;
     if (!alreadyMember) {
-      // "left" — they walked out and came back. Same row, fresh version.
+      // "left" — they walked out and came back — or swept away by a rotation and
+      // back with the new code. Same row, fresh version, and the sweep marker is
+      // cleared so a later *deliberate* removal is not mistaken for one.
       await ctx.db.patch(existing._id, {
         status: "active",
         inviteVersionId: invite.version._id,
         joinedAt: now,
+        revokedAt: undefined,
+        revokedByUserId: undefined,
+        revokeReason: undefined,
+        revokedByRotation: undefined,
       });
     } else if (existing.inviteVersionId !== invite.version._id) {
       // Re-scanning after a rotation that kept memberships: move them onto the

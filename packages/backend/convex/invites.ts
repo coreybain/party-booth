@@ -1,6 +1,7 @@
 import {
   AUDIT_ACTIONS,
   normalizeEventCode,
+  ROTATION_THROTTLED_MESSAGE,
   rotateInviteInputSchema,
   validateSpecificEventCode,
 } from "@partybooth/contracts";
@@ -8,10 +9,11 @@ import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
 import { writeEventAudit } from "./lib/audit";
-import { forbidden, invalidInput } from "./lib/errors";
+import { forbidden, invalidInput, rateLimited } from "./lib/errors";
 import { getActiveInviteVersion, isCodeTaken, mintInviteVersion } from "./lib/events";
 import { requireEventActor, requirePermission, toPermissionActor } from "./lib/guards";
 import { parseInput } from "./lib/input";
+import { checkRotationThrottle, recordRotation } from "./lib/rotation-throttle";
 
 /**
  * Invite versions: the six-digit code and the QR token, and rotating them.
@@ -48,10 +50,35 @@ export const rotate = mutation({
     const actor = await requireEventActor(ctx, args.eventId);
     const input = parseInput(rotateInviteInputSchema, args);
 
+    // A host whose own account is `locked` or `deletionScheduled` must not keep
+    // rotating. `requireEventActor` resolves through `requireUser`, deliberately
+    // — so this has to be checked here or not at all, exactly as `moderate` and
+    // `requestUploadGrant` do it.
+    if (actor.user.accountState !== "active") {
+      throw forbidden("This account cannot rotate the invite right now.");
+    }
+
     requirePermission(toPermissionActor(actor.user, actor.role), "event.rotateInvite", {
       kind: "event",
       state: actor.event.state,
     });
+
+    /*
+     * The rotation budget: five an hour, per event.
+     *
+     * Checked **after** the permission so that a stranger learns nothing from
+     * the timing, and before anything is written so a refused rotation costs
+     * nothing. It exists because the revoke path below writes one audit row per
+     * guest it removes: without a ceiling, a held-down button turns a fifty-guest
+     * party into an unbounded pile of writes during the evening the rotation is
+     * supposed to be protecting. See `ROTATION_POLICY` in
+     * `@partybooth/contracts/codes` for the arithmetic.
+     */
+    const now = Date.now();
+    const budget = await checkRotationThrottle(ctx, actor.event._id, now);
+    if (!budget.allowed) {
+      throw rateLimited(ROTATION_THROTTLED_MESSAGE, budget.retryAfterMs);
+    }
 
     let specificCode: string | undefined;
     if (input.specificCode !== undefined) {
@@ -88,7 +115,6 @@ export const rotate = mutation({
       specificCode = validated.code;
     }
 
-    const now = Date.now();
     const result = await mintInviteVersion(ctx, {
       event: actor.event,
       createdByUserId: actor.user._id,
@@ -114,9 +140,17 @@ export const rotate = mutation({
         // Never the code itself: audit rows are read in bulk and by more people
         // than the host list.
         specific: specificCode !== undefined,
+        // Which axis the rotation came from. A host rotating because the sign
+        // walked off and an admin rotating because of a complaint are the same
+        // write and very different incidents.
+        via: actor.role === "globalAdmin" ? "adminConsole" : "hostConsole",
       },
       now,
     });
+
+    // Charged only once the rotation has actually happened — the budget counts
+    // successes, so a refusal above costs the host nothing.
+    await recordRotation(ctx, actor.event._id, now);
 
     return {
       inviteVersionId: result.inviteVersionId,

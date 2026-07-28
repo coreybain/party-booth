@@ -13,6 +13,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAdminEmail, isDemoAddress } from "./config";
 import { forbidden, isAppError, notFound, unauthenticated } from "./errors";
+import { assertEventNotFrozen } from "./lock";
 
 export type ReadCtx = QueryCtx | MutationCtx;
 
@@ -156,6 +157,21 @@ export async function requireEventActor(ctx: ReadCtx, eventId: Id<"events">): Pr
 
   const resolved = await resolveEventRole(ctx, event, user);
   if (!resolved) throw notFound("That event");
+
+  /*
+   * The account-lock sweep, in the one place every event-scoped read and write
+   * passes through.
+   *
+   * A lock has to freeze the **party**, not merely the person who was locked:
+   * PLAN.md says it "suspends owner/co-host access, joins, uploads and
+   * slideshows across owned events", and until this line existed a locked host's
+   * co-host kept moderating and their guests kept uploading, because every check
+   * in the product asks about the caller. See `lib/lock.ts` for why this is here
+   * rather than spread across the fifteen handlers that would each have to
+   * remember. It runs **after** the role check, so a stranger still gets
+   * `notFound` and cannot use a freeze to confirm an event id exists.
+   */
+  await assertEventNotFrozen(ctx, event, { role: resolved.role, knownOwner: user });
 
   return { user, event, role: resolved.role, membership: resolved.membership };
 }

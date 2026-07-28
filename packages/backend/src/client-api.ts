@@ -54,11 +54,14 @@ import type {
   ReportReason,
   ReportStatus,
 } from "@partybooth/contracts/media";
+import type { PushCategory, UploadQueueEvent } from "@partybooth/contracts/push";
 import type { EventRole } from "@partybooth/contracts/roles";
+import type { AdminRotationMode, PushPlatform } from "@partybooth/contracts/schemas";
 import type { StorageRegion } from "@partybooth/contracts/storage";
 import type { GrantResult, UploadCompletionOutcome } from "@partybooth/contracts/upload";
 import type { DefaultFunctionArgs, FunctionReference } from "convex/server";
 
+import type { CohostInvitationStatus, MembershipStatus } from "../convex/lib/validators";
 import { api as generatedApi } from "../convex/_generated/api";
 
 /* -------------------------------------------------------------------------- */
@@ -89,6 +92,17 @@ type Query<Args extends DefaultFunctionArgs, Result> = FunctionReference<
 
 type Mutation<Args extends DefaultFunctionArgs, Result> = FunctionReference<
   "mutation",
+  "public",
+  Args,
+  Result
+>;
+
+/**
+ * Anything that sends email needs `fetch`, which a Convex mutation does not
+ * have — so the two invite entry points are actions rather than mutations.
+ */
+type ConvexAction<Args extends DefaultFunctionArgs, Result> = FunctionReference<
+  "action",
   "public",
   Args,
   Result
@@ -518,6 +532,202 @@ export interface SlideshowPage {
   readonly approvedIdsComplete: boolean;
 }
 
+/* ---- Invite versions ------------------------------------------------------ */
+
+/** `invites.current` — the live six-digit code and QR token. Hosts only. */
+export interface CurrentInvite {
+  readonly inviteVersionId: InviteVersionId;
+  readonly version: number;
+  readonly code: string;
+  readonly token: string;
+  readonly createdAt: number;
+}
+
+/**
+ * `invites.rotate` — the new credential, and how many people it cost.
+ *
+ * `revokedMemberships` is `0` for the keep path and the guest count for the
+ * revoke path, which is the number the confirmation dialog has to show *before*
+ * the button is pressed and the number the result confirms afterwards.
+ */
+export interface RotateInviteResult {
+  readonly inviteVersionId: InviteVersionId;
+  readonly version: number;
+  readonly code: string;
+  readonly token: string;
+  readonly revokedMemberships: number;
+}
+
+/* ---- Push ----------------------------------------------------------------- */
+
+export type PushDeviceId = string;
+
+/** `push.myDevices`. Deliberately carries **no token** — see `MediaItem`. */
+export interface PushDeviceView {
+  readonly id: PushDeviceId;
+  readonly platform: PushPlatform;
+  readonly deviceName?: string;
+  readonly enabled: boolean;
+  readonly disabledReason?: string;
+  readonly lastSeenAt: number;
+  readonly createdAt: number;
+}
+
+/** `push.preferences` — what this account has switched off, and its threshold. */
+export interface PushPreferences {
+  /** Every category that exists, so a client can render toggles it predates. */
+  readonly categories: readonly PushCategory[];
+  readonly optOut: readonly PushCategory[];
+  readonly pendingThreshold: number;
+  readonly defaultPendingThreshold: number;
+}
+
+/** `push.status` — host-only, and the only way to tell "quiet" from "unwired". */
+export interface PushStatus {
+  readonly provider: string;
+  readonly configured: boolean;
+  readonly authenticated: boolean;
+  readonly queued: number;
+}
+
+/* ---- Co-hosts ------------------------------------------------------------- */
+
+export type CohostInvitationId = string;
+export type OrganiserInvitationId = string;
+export type AuditEventId = string;
+
+/**
+ * The co-host invitation lifecycle. It lives in the backend's schema validators
+ * rather than in `@partybooth/contracts` (unlike `MembershipStatus`), so it is
+ * re-exported here for the clients that render it.
+ */
+export type { CohostInvitationStatus, MembershipStatus };
+
+/** One row of `cohosts.list().members`. */
+export interface CohostMember {
+  readonly membershipId: MembershipId;
+  readonly userId: UserId;
+  /** `"Former guest"` once an account is on its way out — the backend anonymises. */
+  readonly displayName: string;
+  readonly role: EventRole;
+  readonly status: MembershipStatus;
+  readonly joinedAt: number;
+}
+
+/**
+ * One pending co-host invitation.
+ *
+ * The **owner** sees these and nobody else does: `cohosts.list` returns an empty
+ * array to a co-host, because the address list is the owner's. There is
+ * deliberately no token here — it lives in the email and nowhere else.
+ */
+export interface CohostInvitation {
+  readonly id: CohostInvitationId;
+  readonly email: string;
+  readonly status: CohostInvitationStatus;
+  readonly expiresAt: number;
+  readonly createdAt: number;
+}
+
+export interface CohostList {
+  readonly members: readonly CohostMember[];
+  readonly invitations: readonly CohostInvitation[];
+  /**
+   * Whether *this* caller may invite. Computed server-side from the same
+   * predicate the mutation enforces, so a panel never offers a control Convex
+   * would refuse — and it is what makes a co-host's view read-only.
+   */
+  readonly canInvite: boolean;
+}
+
+/* ---- The admin console ---------------------------------------------------- */
+
+/** `admin.accounts → accountRowValidator`. */
+export interface AdminAccount {
+  readonly id: UserId;
+  readonly email: string;
+  readonly displayName: string;
+  readonly accountState: AccountState;
+  readonly isOrganiser: boolean;
+  readonly isGlobalAdmin: boolean;
+  readonly emailVerified: boolean;
+  /** Events this account owns, excluding ones already queued for deletion. */
+  readonly ownedEvents: number;
+  /** Parties they are in as a guest or co-host. */
+  readonly memberships: number;
+  readonly storageBytes: number;
+  readonly mediaCount: number;
+  readonly pushDevices: number;
+  readonly lockedAt?: number;
+  readonly lockReason?: string;
+  readonly deletionScheduledAt?: number;
+  readonly createdAt: number;
+}
+
+/**
+ * `admin.events → eventRowValidator`.
+ *
+ * There is deliberately **no join code** on this row: a list carrying every live
+ * code would turn one console session into every party in the product. The
+ * rotation form reads the number it is replacing from `invites.current`, one
+ * event at a time, deliberately asked for.
+ */
+export interface AdminEvent {
+  readonly id: EventId;
+  readonly name: string;
+  readonly state: EventState;
+  readonly ownerUserId: UserId;
+  readonly ownerDisplayName: string;
+  /** `true` when the owner's account state has frozen the whole party. */
+  readonly frozen: boolean;
+  readonly counts: {
+    readonly pending: number;
+    readonly approved: number;
+    readonly declined: number;
+    readonly total: number;
+  };
+  readonly processing: number;
+  readonly assetCount: number;
+  readonly storageBytes: number;
+  readonly memberCount: number;
+  /** Withdrawn rows whose objects are still in storage. */
+  readonly stuckPurges: number;
+  readonly inviteVersion?: number;
+  readonly startsAt: number;
+  readonly deletionScheduledAt?: number;
+  readonly createdAt: number;
+}
+
+/** `admin.jobHealth` — counts only, so it costs one scan and leaks nothing. */
+export interface AdminJobHealth {
+  readonly stuckPurges: number;
+  readonly deletionJobs: {
+    readonly scheduled: number;
+    /** Scheduled and already past due — the number that means something is stuck. */
+    readonly due: number;
+    readonly running: number;
+    readonly failed: number;
+  };
+  /** Always 0 at launch — ZIP exports are P2 and there is no job table to count. */
+  readonly pendingExports: number;
+  readonly pushQueue: { readonly queued: number; readonly failed: number };
+  readonly disabledPushDevices: number;
+}
+
+/** One immutable row of `admin.auditLog`. Read-only, here and everywhere. */
+export interface AuditRow {
+  readonly id: AuditEventId;
+  readonly action: string;
+  readonly subjectType: string;
+  readonly subjectId?: string;
+  readonly actorUserId?: UserId;
+  readonly actorDisplayName?: string;
+  readonly actorRole?: string;
+  readonly eventId?: EventId;
+  readonly reason?: string;
+  readonly createdAt: number;
+}
+
 /** `users.requestAccountDeletion` — Apple's in-app deletion requirement. */
 export interface AccountDeletionResult {
   readonly accountState: string;
@@ -717,6 +927,88 @@ export interface BackendApi {
       RecentSubmission[]
     >;
   };
+  /**
+   * The six-digit code and the QR token, and replacing them.
+   *
+   * Both are host-only (`event.viewInviteCode`): a guest holding the code can
+   * re-share the party to anyone, which is the thing rotation exists to undo.
+   */
+  readonly invites: {
+    readonly current: Query<{ eventId: EventId }, CurrentInvite | null>;
+    /**
+     * Mint a new code + token and revoke the old one.
+     *
+     * `keepExistingMemberships` is the keep-or-revoke choice: `true` (the
+     * default) leaves everybody in and only kills the old poster; `false`
+     * additionally revokes every **guest** admitted under the previous version —
+     * hosts are kept — and expires their outstanding upload grants. A sweep is
+     * recorded as a sweep rather than as a removal, so a guest it caught can
+     * re-join on the new code.
+     *
+     * `specificCode` is admin-console only; the mutation refuses it from a host.
+     * Five rotations per hour per event.
+     */
+    readonly rotate: Mutation<
+      {
+        eventId: EventId;
+        keepExistingMemberships?: boolean;
+        specificCode?: string;
+        reason?: string;
+      },
+      RotateInviteResult
+    >;
+  };
+  /**
+   * Push notifications: which phones hear from us, and about what.
+   *
+   * Everything here is safe to call on a deployment with no Expo project — the
+   * registration succeeds, the notifications queue, and the dispatcher marks
+   * them `dropped` rather than throwing onto anybody's path.
+   */
+  readonly push: {
+    /**
+     * Claim an Expo push token for this account, or refresh it.
+     *
+     * Called on every launch: a token can rotate under the app. The same token
+     * arriving under a different account **reassigns** it, because a token
+     * belongs to an installation rather than to a person, and a phone handed to
+     * a friend must stop buzzing for its previous owner.
+     */
+    readonly registerDevice: Mutation<
+      { expoPushToken: string; platform: PushPlatform; deviceName?: string },
+      { deviceId: PushDeviceId; created: boolean }
+    >;
+    /** The sign-out path. Deletes the row rather than disabling it. */
+    readonly unregisterDevice: Mutation<{ expoPushToken: string }, { removed: number }>;
+    readonly unregisterAllDevices: Mutation<NoArgs, { removed: number }>;
+    readonly myDevices: Query<NoArgs, PushDeviceView[]>;
+    readonly preferences: Query<NoArgs, PushPreferences>;
+    /** Only the fields sent are written, so a screen may post one toggle. */
+    readonly updatePreferences: Mutation<
+      { optOut?: readonly PushCategory[]; pendingThreshold?: number },
+      { optOut: readonly PushCategory[]; pendingThreshold: number }
+    >;
+    /**
+     * The client's durable queue reporting on itself.
+     *
+     * The server cannot witness an upload that never reached storage — there is
+     * no callback, no media row and no consumed grant — so the client that gave
+     * up is the only source. It can only ever notify **its own sender** about
+     * **its own capture**, so a client lying about it is a client buzzing its
+     * own phone.
+     */
+    readonly reportUploadQueue: Mutation<
+      {
+        eventId: EventId;
+        captureId: string;
+        event: UploadQueueEvent;
+        attempts?: number;
+      },
+      { notified: number }
+    >;
+    /** Host-only: "is nothing buzzing because nothing happened, or because…". */
+    readonly status: Query<{ eventId: EventId }, PushStatus>;
+  };
   readonly join: {
     readonly join: Mutation<
       { invite: JoinInvite; networkKey?: string },
@@ -724,6 +1016,119 @@ export interface BackendApi {
     >;
     readonly previewByToken: Query<{ token: string }, JoinPreview | null>;
     readonly previewByCode: Mutation<{ code: string; networkKey?: string }, JoinPreview | null>;
+  };
+  /**
+   * Co-hosting: who else may run this party.
+   *
+   * Inviting and removing are **owner-only** — a co-host who could recruit
+   * another co-host, or drop the one beside them, is an owner by another name.
+   * Everything a co-host *may* do lives in the permission matrix in
+   * `@partybooth/contracts/permissions`, not here.
+   */
+  readonly cohosts: {
+    /**
+     * Invite somebody to co-host, by address. **Owner only.**
+     *
+     * An action, because it sends mail. The invitation row is committed first
+     * and the email is best-effort after it, so a Resend outage never loses the
+     * seat — but it still reports `emailed: false` when the message did not go,
+     * because a host who is not told will stand there waiting for somebody
+     * nobody told.
+     */
+    readonly invite: ConvexAction<
+      { eventId: EventId; email: string },
+      { invitationId: CohostInvitationId; emailed: boolean }
+    >;
+    /** Withdraw an invitation nobody has accepted. Burns the token with it. */
+    readonly revokeInvitation: Mutation<
+      { invitationId: CohostInvitationId; reason?: string },
+      { status: CohostInvitationStatus }
+    >;
+    /** Demote a co-host. Also revokes any pending invite to the same address. */
+    readonly remove: Mutation<
+      { eventId: EventId; userId: UserId; reason?: string },
+      { revokedMembership: boolean; revokedInvitations: number }
+    >;
+    /**
+     * The host list. Host-only via `membership.list` — which `globalAdmin` also
+     * holds, so this is the admin console's per-event membership list too. See
+     * the note on `admin` below.
+     */
+    readonly list: Query<{ eventId: EventId }, CohostList>;
+  };
+  /**
+   * The `/admin` console.
+   *
+   * Every function here calls `requireGlobalAdmin` server-side; the layout gate
+   * in `apps/web`'s `app/admin/(console)/layout.tsx` is defence in depth and not
+   * the boundary. Every mutation takes a **non-empty reason** and writes an
+   * immutable audit row — `writeAuditEvent` throws rather than writing a blank
+   * one, which is what makes PLAN.md's rule enforceable somewhere other than a
+   * form.
+   *
+   * There is deliberately no per-event membership query here. `cohosts.list` is
+   * already gated on `membership.list`, which `globalAdmin` holds, and
+   * `assertEventNotFrozen` lets an admin through a frozen party on purpose — so
+   * the console reads the same list the host does rather than growing a second
+   * one that can disagree with it.
+   */
+  readonly admin: {
+    readonly accounts: Query<
+      { search?: string; limit?: number },
+      { total: number; items: readonly AdminAccount[] }
+    >;
+    readonly events: Query<
+      { search?: string; limit?: number },
+      { total: number; items: readonly AdminEvent[] }
+    >;
+    readonly jobHealth: Query<NoArgs, AdminJobHealth>;
+    readonly auditLog: Query<
+      { limit?: number; eventId?: EventId; actorUserId?: UserId },
+      readonly AuditRow[]
+    >;
+    readonly inviteOrganiser: ConvexAction<
+      { email: string; note?: string; reason: string },
+      { invitationId: OrganiserInvitationId; emailed: boolean }
+    >;
+    readonly lockAccount: Mutation<
+      { userId: UserId; reason: string },
+      { accountState: AccountState; ownedEventsFrozen: number }
+    >;
+    readonly unlockAccount: Mutation<
+      { userId: UserId; reason: string },
+      { accountState: AccountState }
+    >;
+    readonly scheduleAccountDeletionFor: Mutation<
+      { userId: UserId; reason: string },
+      { accountState: AccountState; scheduledAt: number | null }
+    >;
+    readonly restoreAccount: Mutation<
+      { userId: UserId; reason: string },
+      { accountState: AccountState; cancelledJobs: number }
+    >;
+    readonly scheduleEventDeletion: Mutation<
+      { eventId: EventId; reason: string },
+      { state: EventState; scheduledAt: number }
+    >;
+    readonly restoreEvent: Mutation<
+      { eventId: EventId; reason: string },
+      { state: EventState; cancelledJobs: number }
+    >;
+    /** Random, or a specific six digits the backend collision-checks. */
+    readonly rotateEventCode: Mutation<
+      {
+        eventId: EventId;
+        mode?: AdminRotationMode;
+        specificCode?: string;
+        keepExistingMemberships?: boolean;
+        reason: string;
+      },
+      RotateInviteResult
+    >;
+    readonly revokeMembership: Mutation<
+      { membershipId: MembershipId; reason: string },
+      { revoked: boolean; expiredGrants: number }
+    >;
   };
 }
 

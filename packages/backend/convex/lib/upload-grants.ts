@@ -213,3 +213,35 @@ export async function expireGrantsForCapture(
   }
   return expired;
 }
+
+/**
+ * Retire every unspent grant one account holds for one event.
+ *
+ * Called when a membership goes away — an invite rotation that does not keep
+ * memberships, an admin revoking a seat, a host removing a co-host. Same
+ * argument as {@link expireGrantsForCapture}, one level up: the completion path
+ * validates the grant rather than the membership, so a removal that leaves live
+ * grants behind is a removal somebody can upload through.
+ *
+ * Scoped to the event on purpose. Being thrown out of one party says nothing
+ * about the photograph you are halfway through sending to another.
+ */
+export async function expireGrantsForUser(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  userId: Id<"users">,
+  now: number,
+): Promise<number> {
+  const grants = await ctx.db
+    .query("uploadGrants")
+    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+    .collect();
+
+  let expired = 0;
+  for (const grant of grants) {
+    if (grant.eventId !== eventId) continue;
+    await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+    expired += 1;
+  }
+  return expired;
+}
