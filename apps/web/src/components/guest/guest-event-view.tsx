@@ -4,14 +4,17 @@ import { useConvexAuth, useQuery } from "convex/react";
 import Link from "next/link";
 
 import { BackendGate } from "@/components/backend-gate";
+import { CapturePanel } from "@/components/guest/capture-panel";
+import { MyMedia } from "@/components/guest/my-media";
 import { CheckIcon } from "@/components/icons";
-import { Placeholder } from "@/components/layout/card";
 import { JoinLoading } from "@/components/join/join-states";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import type { EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import { EVENT_STATE_COPY, guestsCanUpload } from "@/lib/event-view";
+import { useCaptureUpload } from "@/lib/use-capture-upload";
 
 /**
  * Where a guest lands the moment they are in.
@@ -92,10 +95,9 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
           : EVENT_STATE_COPY[event.state].description}
       </Callout>
 
-      <Placeholder title="Camera and gallery" sprint="Sprint 3–4">
-        Taking a photo or video, seeing what you have submitted and browsing the approved gallery
-        all land here. Nothing you add is public — only people at this event can see it.
-      </Placeholder>
+      <hr className="border-line" />
+
+      <GuestCapture event={event} uploadsOpen={uploadsOpen} />
 
       {home.isHost ? (
         <Link href={`/events/${event.id}`} className="block">
@@ -104,6 +106,50 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
           </Button>
         </Link>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Capture and "My media", which share one controller.
+ *
+ * Split into its own component because `useCaptureUpload` is a hook and the
+ * screen above it renders three different things before `events.home` resolves.
+ * It is also the seam that keeps the two panels honest about each other: the
+ * queue lives here, the capture card writes to it, and "My media" reads it —
+ * so a retry offered in either place is the same retry, re-sending the same
+ * bytes under the same `captureId`.
+ */
+function GuestCapture({
+  event,
+  uploadsOpen,
+}: {
+  readonly event: EventSummary;
+  readonly uploadsOpen: boolean;
+}) {
+  const controller = useCaptureUpload({
+    eventId: event.id,
+    state: event.state,
+    allowLibraryImport: event.allowLibraryImport,
+  });
+
+  return (
+    <div className="space-y-8">
+      <CapturePanel
+        controller={controller}
+        uploadsOpen={uploadsOpen}
+        allowLibraryImport={event.allowLibraryImport}
+        closedReason={EVENT_STATE_COPY[event.state].description}
+      />
+
+      <MyMedia
+        eventId={event.id}
+        queue={controller.queue}
+        onRetry={(captureId) => {
+          void controller.send(captureId);
+        }}
+        onCancel={controller.cancel}
+      />
     </div>
   );
 }
