@@ -39,24 +39,28 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 
 ## Sprint 3 — Thu 31 Jul: the upload spine (highest-risk sprint)
 
-- [ ] Upload grants: Convex mutation issues short-lived one-time grant (`eventId`, `captureId`, `mediaType`, `byteSize`, checksum, `storageRegion`)
-- [ ] UploadThing route handlers in `apps/web`; middleware validates grant; private ACL enforced
-- [ ] Idempotent completion callback → media record (`processing → pending/approved` per mode), reconciles out-of-order callbacks
-- [ ] Preview/poster derivatives; strip location metadata from served derivatives
-- [ ] Permission-checked short-lived URL issuance for every read path
-- [ ] Mobile camera: photo capture (tap), auto-send with 15-s undo, durable local queue with foreground resume
-- [ ] Library import (photo) with per-event permission flag
-- [ ] Guest web capture page: `input capture` photo → grant → upload with progress
-- [ ] "My media" list (app + web): status, retry, cancel, withdraw
-- [ ] Unit tests: grant expiry/single-use, callback idempotency, media state machine
+- [x] Upload grants: Convex mutation issues short-lived one-time grant (`eventId`, `captureId`, `mediaType`, `byteSize`, checksum, `storageRegion`)
+- [x] UploadThing route handlers in `apps/web`; middleware validates grant; private ACL enforced
+- [x] Idempotent completion callback → media record (`processing → pending/approved` per mode), reconciles out-of-order callbacks
+- [ ] Preview/poster derivatives; strip location metadata from served derivatives *(**open — moved to Sprint 4.** The client half is done and is the one that matters for privacy: every capture on both clients is re-encoded to a fresh JPEG before it is sent, so no EXIF/GPS block ever reaches storage, and `sourceMetadataStripped` records the claim. What does **not** exist is the **server-side** derivative step — nothing writes `previewKey`/`posterKey`, so `projectMedia` serves the original to its submitter and to hosts and serves nothing to a fellow guest when a row did not claim a strip. `mayServeOriginal` in `packages/backend/convex/lib/media.ts` is the seam it lands behind; when it does, that branch becomes "serve the derivative" rather than "serve nothing". Video posters are the same step and are Sprint 4 anyway.)*
+- [x] Permission-checked short-lived URL issuance for every read path
+- [x] Mobile camera: photo capture (tap), auto-send with 15-s undo, durable local queue with foreground resume
+- [x] Library import (photo) with per-event permission flag
+- [x] Guest web capture page: `input capture` photo → grant → upload with progress
+- [x] "My media" list (app + web): status, retry, cancel, withdraw
+- [x] Unit tests: grant expiry/single-use, callback idempotency, media state machine
 
 **RC3:** photo taken on your phone (app AND web path) lands as `pending` in the organiser's media list within seconds; withdrawn media disappears; a second signed-in guest cannot fetch it by URL.
+> ⏳ **RC3 not yet verified.** The previous note here said "blocked on owner setup only", and that was wrong: the app path was also blocked on code. The capture machinery (`use-capture`, `camera-controls`, `undo-pill`) was built and unit-tested but **imported by nothing** — `(tabs)/camera.tsx` still rendered the Sprint 2 placeholder and no `CameraView` existed anywhere in the app, and `(tabs)/photos.tsx` still rendered two empty states while `media.myMedia` and `media.withdraw` were live and already wired on web. Every test in the repo was green throughout, because nothing in `apps/mobile` rendered a screen. Both surfaces are now mounted, and the package has a second Vitest project (`mobile-screens`, jsdom with `react-native` aliased to `react-native-web`) whose whole job is to fail when a screen stops mounting what it claims to.
+>
+> What remains is genuinely owner setup: `UPLOADTHING_TOKEN` (Vercel *and* Convex), `UPLOAD_CALLBACK_SECRET` (same value in both), `SITE_URL`, and three UploadThing dashboard settings — paid plan, region `pdx1` + default ACL **Private**, and **per-request ACL override enabled** (the route handler declares `acl: "private"` in code). Code side verified: **1319 tests**, offline typecheck/lint/format green, `next build` and `expo export --platform all` both pass with an **empty** environment. An earlier integration pass also found and fixed one RC3-blocking defect: `apps/mobile` was sending only the grant secret where the route handler parses the full upload ticket, so every app-path upload would have been refused before a byte moved — the ticket now has one definition, in `@partybooth/contracts/upload`, that both sides parse. The checkpoint itself stays unticked until it is *verified on a phone*, per CONTRIBUTING ("a sprint is done when its RC is verified, not when the code is written").
 
 ---
 
 ## Sprint 4 — Fri 1 Aug: moderate, watch, submit ⚠️ iOS submission deadline
 
-- [ ] Video: hold-to-record (≤60 s), upload, poster generation, muted autoplay playback
+- [ ] **Carried from Sprint 3:** server-side preview/poster derivative step — writes `previewKey`/`posterKey`, which turns `mayServeOriginal`'s "serve nothing" branch into "serve the derivative"
+- [ ] Video: hold-to-record (≤60 s), upload, poster generation, muted autoplay playback *(the app's shutter already answers the hold gesture with "coming in the next update" rather than doing nothing)*
 - [ ] Moderation UI: masonry grid, approve/decline, status/type/submitter filters, bulk select
 - [ ] Approved event gallery (app + web), live via Convex subscriptions
 - [ ] Slideshow: fullscreen, live-updating, photos + muted video, pause/skip, shuffle/chronological, configurable photo timing

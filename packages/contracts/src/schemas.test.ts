@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   adminAccountActionInputSchema,
+  completeUploadInputSchema,
   createEventInputSchema,
   emailSchema,
   eventScheduleSchema,
@@ -148,6 +149,64 @@ describe("uploadGrantRequestSchema", () => {
 
   it("requires a non-trivial captureId so retries stay idempotent", () => {
     expect(uploadGrantRequestSchema.safeParse({ ...base, captureId: "1" }).success).toBe(false);
+  });
+
+  it("refuses a captureId with characters that would need escaping", () => {
+    expect(
+      uploadGrantRequestSchema.safeParse({ ...base, captureId: "capture/../0001" }).success,
+    ).toBe(false);
+  });
+
+  it("derives mediaSource from fromLibrary and vice versa", () => {
+    expect(uploadGrantRequestSchema.parse(base).mediaSource).toBe("capture");
+
+    const fromFlag = uploadGrantRequestSchema.parse({ ...base, fromLibrary: true });
+    expect(fromFlag.mediaSource).toBe("library");
+
+    const fromSource = uploadGrantRequestSchema.parse({ ...base, mediaSource: "library" });
+    expect(fromSource.fromLibrary).toBe(true);
+  });
+
+  it("refuses a request whose two spellings of the source disagree", () => {
+    expect(
+      uploadGrantRequestSchema.safeParse({ ...base, mediaSource: "library", fromLibrary: false })
+        .success,
+    ).toBe(false);
+    expect(
+      uploadGrantRequestSchema.safeParse({ ...base, mediaSource: "library", fromLibrary: true })
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe("completeUploadInputSchema", () => {
+  it("wants a grant secret and a file key", () => {
+    expect(
+      completeUploadInputSchema.safeParse({
+        secret: "s".repeat(32),
+        fileKey: "abc123",
+        byteSize: 10,
+      }).success,
+    ).toBe(true);
+    expect(
+      completeUploadInputSchema.safeParse({ secret: "short", fileKey: "abc123", byteSize: 10 })
+        .success,
+    ).toBe(false);
+    expect(
+      completeUploadInputSchema.safeParse({ secret: "s".repeat(32), fileKey: "", byteSize: 10 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("insists a supplied checksum is the one shape a checksum has", () => {
+    expect(
+      completeUploadInputSchema.safeParse({
+        secret: "s".repeat(32),
+        fileKey: "abc123",
+        byteSize: 10,
+        checksum: "NOTHEX",
+      }).success,
+    ).toBe(false);
   });
 });
 

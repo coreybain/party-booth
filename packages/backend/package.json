@@ -34,6 +34,7 @@
     "@partybooth/env": "workspace:*",
     "better-auth": "^1.6.25",
     "convex": "catalog:",
+    "uploadthing": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

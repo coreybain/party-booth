@@ -20,6 +20,7 @@ import {
   organiserInvitationStatus,
   pushPlatform,
   storageRegion,
+  uploadGrantStatus,
   userEmailStatus,
 } from "./lib/validators";
 
@@ -349,6 +350,88 @@ export default defineSchema({
   /* Media                                                               */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * Short-lived, single-use permission to put one exact file into storage.
+   *
+   * A guest never holds an UploadThing credential. They ask for one of these,
+   * bound to `{eventId, captureId, mediaType, byteSize, checksum,
+   * storageRegion}`, and the route handler in `apps/web` refuses to store
+   * anything that does not present one. The policy — two-minute TTL, per-account
+   * ceiling, what counts as a match — lives in `@partybooth/contracts/upload`
+   * and is pure; this table is only where it is written down.
+   *
+   * **The secret is stored hashed**, exactly like the OTP codes in `userEmails`:
+   * a leak of this table must not be a leak of a usable capability. The
+   * plaintext is returned once, to the client that asked, and never logged or
+   * audited.
+   *
+   * Consumption is a read-decide-write inside one Convex mutation, which is a
+   * serialisable transaction — so two racing uploads cannot both spend the same
+   * grant, and the "single use" in single-use is enforced by the database rather
+   * than by hoping.
+   */
+  uploadGrants: defineTable({
+    eventId: v.id("events"),
+    userId: v.id("users"),
+    /** Client-generated and stable across retries. Ties the grant to a capture. */
+    captureId: v.string(),
+
+    /** Lower-case hex SHA-256 of the secret handed to the client. */
+    secretHash: v.string(),
+    status: uploadGrantStatus,
+
+    mediaType,
+    /** `true` when the file came from the photo roll — gated per event. */
+    fromLibrary: v.boolean(),
+    /** Copied from the event at issue time; the media row records it too. */
+    storageRegion,
+
+    byteSize: v.number(),
+    mimeType: v.string(),
+    /** Lower-case hex SHA-256 the completion is checked against. */
+    checksum: v.string(),
+    durationSeconds: v.optional(v.number()),
+    capturedAt: v.optional(v.number()),
+    /** The client's claim that it re-encoded away EXIF/GPS before uploading. */
+    sourceMetadataStripped: v.optional(v.boolean()),
+
+    issuedAt: v.number(),
+    expiresAt: v.number(),
+    consumedAt: v.optional(v.number()),
+    /** Set on consumption, so a duplicate callback can recognise its own file. */
+    consumedFileKey: v.optional(v.string()),
+    /** The row this grant produced. Absent until something completes. */
+    mediaId: v.optional(v.id("media")),
+
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_secretHash", ["secretHash"])
+    .index("by_event_and_capture", ["eventId", "captureId"])
+    .index("by_user_and_status", ["userId", "status"])
+    .index("by_status_and_expiresAt", ["status", "expiresAt"]),
+
+  /**
+   * Per-account upload-grant counter — the same pattern as `otpChallenges` and
+   * `joinAttempts`, and for the same reason: Convex parallelises and recycles
+   * isolates, so a counter in memory is not a limit.
+   *
+   * It differs from `joinAttempts` in what it counts. Joining throttles
+   * *failures*; issuing a grant throttles *successes*, because the grant itself
+   * is the scarce thing. Separate table rather than a namespaced key in the join
+   * one, so that a guest fumbling a six-digit code can never eat into the budget
+   * they need to send the photo they came here to send.
+   */
+  uploadAttempts: defineTable({
+    key: v.string(),
+    issuedCount: v.number(),
+    windowStartedAt: v.number(),
+    lastIssuedAt: v.number(),
+    /** Set when the ceiling is hit; cleared only by the window rolling over. */
+    cooldownUntil: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
   media: defineTable({
     eventId: v.id("events"),
     uploaderUserId: v.id("users"),
@@ -361,6 +444,15 @@ export default defineSchema({
 
     state: mediaState,
     mediaType,
+
+    /**
+     * The grant this row was created from.
+     *
+     * Kept so a duplicate or out-of-order completion callback can be recognised
+     * as belonging to a row that already exists, and so an incident can be
+     * walked backwards from a file to the account that was allowed to send it.
+     */
+    grantId: v.optional(v.id("uploadGrants")),
 
     /** UploadThing file key. Absent until the upload completes. */
     storageKey: v.optional(v.string()),
@@ -378,6 +470,19 @@ export default defineSchema({
     posterKey: v.optional(v.string()),
 
     fromLibrary: v.boolean(),
+    /**
+     * Whether the client re-encoded the frame — dropping the EXIF/GPS block —
+     * before it left the device. See ADR 0004: client-side stripping is the
+     * chosen strategy, and this records whether it actually happened for this
+     * item rather than assuming it did.
+     *
+     * **Read on the read path**, not merely recorded: `projectMedia` omits the
+     * URL entirely for an item whose flag is not `true` unless the viewer is the
+     * submitter or a host. Sprint 3 writes no derivative, so the URL a read
+     * mints *is* the uploaded original — without that check a `false` here cost
+     * a bypassing client nothing.
+     */
+    sourceMetadataStripped: v.optional(v.boolean()),
     capturedAt: v.optional(v.number()),
     uploadedAt: v.optional(v.number()),
 
@@ -385,6 +490,19 @@ export default defineSchema({
     moderatedByUserId: v.optional(v.id("users")),
     withdrawnAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
+    /**
+     * When the bytes actually left storage, which is a later and less certain
+     * event than the record being tombstoned. The mutation cannot call the
+     * provider — a Convex mutation has no network — so withdrawal schedules the
+     * delete and this is stamped when it lands — **only on a full delete**, so
+     * a provider that removed fewer objects than it was handed leaves the keys
+     * on the row rather than orphaning the bytes they name.
+     *
+     * A row with `deletedAt` and no `storageDeletedAt` is one the purge worker
+     * still owes work on, and `media.stuckPurges` is what lists them until that
+     * worker (P1) ships.
+     */
+    storageDeletedAt: v.optional(v.number()),
 
     createdAt: v.number(),
     updatedAt: v.number(),

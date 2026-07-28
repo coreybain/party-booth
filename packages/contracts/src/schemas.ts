@@ -4,6 +4,10 @@ import { eventCodeSchema } from "./codes";
 import { hostSettableEventStateSchema, launchModerationModeSchema } from "./events";
 import { joinInputSchema } from "./join";
 import {
+  fromLibraryOf,
+  mediaSourceOf,
+  mediaSourceSchema,
+  mediaStateSchema,
   mediaTypeSchema,
   moderationDecisionSchema,
   reportReasonSchema,
@@ -263,22 +267,70 @@ export type ConfirmEmailVerificationInput = z.infer<typeof confirmEmailVerificat
  * the middleware needs to validate the upload is in here, and the grant that
  * comes back is short-lived and single-use (Sprint 3).
  */
+export const captureIdSchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, {
+    error: "captureId may only contain letters, numbers, hyphens and underscores.",
+  });
+
+/** Lower-case hex SHA-256. The one shape a checksum is allowed to have. */
+export const checksumSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/, { error: "checksum must be lower-case hex SHA-256" });
+
 export const uploadGrantRequestSchema = z
   .object({
     eventId: idSchema,
     /** Client-generated, stable across retries — this is what makes uploads idempotent. */
-    captureId: z.string().min(8).max(64),
+    captureId: captureIdSchema,
     mediaType: mediaTypeSchema,
     byteSize: z.number().int().positive(),
     mimeType: z.string().min(1).max(128),
-    /** SHA-256 of the file, lower-case hex. Lets the callback reject a swapped body. */
-    checksum: z
-      .string()
-      .regex(/^[0-9a-f]{64}$/, { error: "checksum must be lower-case hex SHA-256" }),
+    /**
+     * SHA-256 of the file, lower-case hex.
+     *
+     * Carried back through the upload ticket and compared in `matchesGrant`, so
+     * a completion whose body is not the one the grant was minted against is
+     * refused and the object deleted. Both sides of that comparison originate on
+     * the client, so it catches an *inconsistent* client rather than a
+     * determined one — the cap that a determined client cannot walk around is
+     * `byteSize`, which the middleware now checks against the grant before any
+     * bytes move.
+     */
+    checksum: checksumSchema,
     durationSeconds: z.number().positive().max(VIDEO_MAX_DURATION_SECONDS).optional(),
     capturedAt: timestampSchema.optional(),
-    /** `true` when the file came from the library rather than the camera. */
-    fromLibrary: z.boolean().default(false),
+    /**
+     * Where the file came from. `fromLibrary` is the older spelling and is what
+     * the `media` table stores; both are accepted on the wire and reconciled
+     * below so they can never disagree — see `mediaSourceOf` in `media.ts`.
+     */
+    mediaSource: mediaSourceSchema.optional(),
+    fromLibrary: z.boolean().optional(),
+    /**
+     * The client's claim that it re-encoded the frame and dropped the EXIF/GPS
+     * block before uploading — the chosen metadata-stripping strategy (ADR
+     * 0004). Recorded rather than trusted: a `false` here means the original is
+     * never served as a derivative.
+     */
+    sourceMetadataStripped: z.boolean().optional(),
+  })
+  .refine(
+    (value) =>
+      value.mediaSource === undefined ||
+      value.fromLibrary === undefined ||
+      fromLibraryOf(value.mediaSource) === value.fromLibrary,
+    { error: "mediaSource and fromLibrary disagree.", path: ["mediaSource"] },
+  )
+  .transform((value) => {
+    const fromLibrary =
+      value.mediaSource === undefined
+        ? (value.fromLibrary ?? false)
+        : fromLibraryOf(value.mediaSource);
+    return { ...value, fromLibrary, mediaSource: mediaSourceOf(fromLibrary) };
   })
   .refine((value) => value.mediaType !== "video" || value.durationSeconds !== undefined, {
     error: "durationSeconds is required for videos.",
@@ -286,16 +338,59 @@ export const uploadGrantRequestSchema = z
   });
 export type UploadGrantRequest = z.infer<typeof uploadGrantRequestSchema>;
 
-export const uploadGrantSchema = z.object({
-  grantId: idSchema,
-  /** Opaque secret the upload route exchanges for permission to store the file. */
-  token: z.string().min(16),
-  eventId: idSchema,
-  captureId: z.string(),
-  storageRegion: storageRegionSchema,
-  expiresAt: timestampSchema,
+/*
+ * There is no `uploadGrantSchema` here. A Sprint-1 placeholder of that name
+ * described a grant with a `token` field; the grant Sprint 3 actually issues is
+ * `IssuedGrant` in `./upload`, its capability is called `secret`, and it is
+ * re-parsed by `parseGrantResult`. Two shapes for one concept is how a client
+ * ends up reading a field the server never sends, so the placeholder is gone
+ * rather than kept in step.
+ */
+
+/**
+ * What the client sends once its own upload finished, which is **not** the same
+ * event as the provider's completion callback and may arrive either side of it.
+ * It carries no file facts at all: the client is not a source of truth about
+ * what landed in storage, only about the fact that it stopped waiting.
+ */
+export const confirmUploadInputSchema = z.object({
+  secret: z.string().min(16),
 });
-export type UploadGrant = z.infer<typeof uploadGrantSchema>;
+export type ConfirmUploadInput = z.infer<typeof confirmUploadInputSchema>;
+
+/**
+ * What the UploadThing route handler in `apps/web` sends when a file is stored.
+ *
+ * `secret` is the grant; `callbackSecret` is the shared secret that proves the
+ * call came from our own route handler rather than from a guest replaying the
+ * grant they were legitimately given. Both are required: the grant says *which*
+ * upload, the callback secret says *who is allowed to say so*.
+ */
+export const completeUploadInputSchema = z.object({
+  secret: z.string().min(16),
+  fileKey: z.string().min(1).max(256),
+  byteSize: z.number().int().positive(),
+  mimeType: z.string().min(1).max(128).optional(),
+  checksum: checksumSchema.optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  durationSeconds: z.number().positive().optional(),
+});
+export type CompleteUploadInput = z.infer<typeof completeUploadInputSchema>;
+
+export const withdrawMediaInputSchema = z.object({
+  mediaId: idSchema,
+  reason: z.string().trim().max(280).optional(),
+});
+export type WithdrawMediaInput = z.infer<typeof withdrawMediaInputSchema>;
+
+export const listEventMediaInputSchema = z.object({
+  eventId: idSchema,
+  /** Absent means "everything this role may see". */
+  states: z.array(mediaStateSchema).min(1).max(5).optional(),
+  limit: z.number().int().positive().max(200).optional(),
+});
+export type ListEventMediaInput = z.infer<typeof listEventMediaInputSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* Moderation                                                                 */

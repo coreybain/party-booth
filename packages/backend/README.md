@@ -58,6 +58,7 @@ convex/
   events.ts            event CRUD, the state machine, myEvents / activeEvent / home
   invites.ts           rotate, and the current code + QR token (host-only)
   join.ts              the join mutation and the two previews
+  media.ts             the upload spine: grants, completion, withdrawal, reads
   emails.ts            proving a second address by OTP (Apple private relay)
   testing.helpers.ts   convex-test fixtures and a locally-typed `api`
   lib/
@@ -66,6 +67,10 @@ convex/
     audit.ts           the append-only audit writer
     account-deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
     events.ts          code allocation, invite versions, joinability
+    media.ts           media rows: create, reconcile, count, project for a client
+    upload-grants.ts   minting, finding and atomically spending a grant
+    upload-throttle.ts the uploadAttempts rows behind the grant ceiling
+    storage/           the provider seam — adapter, fake, UploadThing, resolver
     join-throttle.ts   the joinAttempts rows behind the contract's join policy
     email-matching.ts  verified addresses → organiser / co-host roles
     otp-throttle.ts    the shared per-address OTP send counter
@@ -119,12 +124,95 @@ why `join.join` answers with `{ outcome: "rejected" }` and
 the second reason the join failure path is a value: one code path, one shape,
 one timing, nothing for an attacker to distinguish.
 
-### Deployment cost of the Sprint 2 tables
+### Deployment cost of the Sprint 2 and 3 tables
 
-`joinAttempts` and `userEmails` accumulate rows that nothing prunes yet. Both are
-small and bounded in practice (one row per throttle key, one per claimed
-address), but the P1 purge worker should sweep expired `userEmails` challenges
-and idle `joinAttempts` rows alongside its other work.
+`joinAttempts`, `userEmails`, `uploadAttempts` and `uploadGrants` accumulate rows
+that nothing prunes yet. The first three are small and bounded in practice (one
+row per throttle key, one per claimed address). `uploadGrants` is not: it grows
+with every capture, and `by_status_and_expiresAt` exists so the P1 purge worker
+can sweep the ones nothing ever came back for. It should also collect media rows
+with `deletedAt` set but no `storageDeletedAt` — a withdrawal whose file delete
+did not land.
+
+## The upload spine
+
+`media.ts` is the whole of it. Four entry points, in the order a photo travels:
+
+| Function                   | Who calls it                 | What it does                                                           |
+| -------------------------- | ---------------------------- | ---------------------------------------------------------------------- |
+| `media.requestUploadGrant` | guest (app / web)            | permission + size cap + library flag + throttle → a two-minute secret  |
+| `media.confirmUpload`      | guest, when its upload ends  | creates the row if the callback has not; asserts nothing about storage |
+| `media.completeUpload`     | **`apps/web` route handler** | spends the grant, attaches the file, settles `pending` / `approved`    |
+| `media.withdraw`           | the submitter                | tombstone + expire grants + schedule the delete. Permanent.            |
+
+Read paths are `media.myMedia` and `media.eventMedia`; both return short-lived
+signed URLs and **never** a file key, and both are permission-checked —
+`media.viewOwn` and `media.viewApproved` respectively, which is also what makes a
+`locked` or `deletionScheduled` account lose access rather than keep minting
+fresh URLs. `media.stuckPurges` is host-only and lists withdrawn rows whose bytes
+a purge never removed.
+
+An item whose `sourceMetadataStripped` is not `true` is served to its submitter
+and the hosts and to nobody else. Sprint 3 writes no derivative, so the URL a
+read mints _is_ the uploaded original; without that check a client that skipped
+the re-encode could put a GPS-bearing JPEG in front of the whole gallery.
+
+Three rules hold across the file, each because breaking it is expensive:
+
+1. **Refusals on the counting paths are values.** A mutation that throws rolls
+   its own writes back, so charging a throttle and then raising charges nothing.
+   Same reason `join.join` returns `{ outcome: "rejected" }`.
+2. **Idempotency is on `(eventId, captureId)`.** The client's confirmation and
+   the provider's callback arrive in either order and more than once. Every
+   repeat is a no-op that reports success — a callback that returns an error is
+   one the provider retries forever.
+3. **Single use is the transaction.** `consumeGrant` reads, decides and writes
+   inside one mutation. Splitting that, or moving it into an action, silently
+   removes the guarantee without changing any policy.
+
+`media.completeUpload` needs **two** credentials: the grant secret says which
+upload, `UPLOAD_CALLBACK_SECRET` says the caller is our own route handler.
+Without the second, a guest holding their own legitimate grant could name any
+file key in the app. An unset secret and a wrong one produce the same refusal.
+
+Full argument, including why metadata stripping happens client-side:
+[ADR 0004](../../docs/adr/0004-private-upload-pipeline.md).
+
+### The storage seam
+
+`lib/storage/` is the only code that knows a region is real (ADR 0002). Two
+provider operations, because two are all the request path needs — mint a signed
+read URL, and delete objects. Grant handling and media records are Convex's
+business and deliberately stay outside the interface, so a fake provider cannot
+change what a grant means.
+
+| Implementation        | When                                     |
+| --------------------- | ---------------------------------------- |
+| `uploadthing.ts`      | `UPLOADTHING_TOKEN` is set               |
+| `unconfiguredAdapter` | it is not — reads degrade, deletes throw |
+| `fake.ts`             | tests, via `useFakeStorage()`            |
+
+The UploadThing SDK is **imported lazily**, from inside the two methods that need
+it. That keeps it out of every offline test run and out of any deployment without
+a token, and it confines the one thing this repo cannot verify offline — whether
+`uploadthing@7` (and its `effect` dependency) evaluates cleanly in a Convex
+isolate — to a single file. **The first successful `convex dev` is that
+verification.** If it fails, move URL signing to an endpoint in `apps/web` behind
+the same `StorageAdapter` interface; no call site changes.
+
+Deletes are scheduled as an **action** because a Convex mutation has no network.
+A withdrawal whose bytes are still in storage is the worst outcome the product
+has, and **Convex does not retry a failed scheduled action** — only mutations get
+that. So `purgeStoredFile` carries its own retry: it reports through
+`reportError`, re-schedules with a bounded backoff (four attempts over about six
+minutes), and then gives up with an audit row rather than in silence. The record
+keeps its keys and its missing `storageDeletedAt` throughout, so
+`media.stuckPurges` can list it and a retry has something to name.
+
+A delete that _succeeds_ but removes fewer objects than it was handed is treated
+the same way. `storageDeletedAt` is stamped and the keys cleared **only on a full
+delete**: clearing them on a short count destroys the only pointer to bytes that
+are still there.
 
 ## Auth
 
@@ -154,6 +242,8 @@ Guards go through our table, not the component, so they can see `accountState`.
 | `ADMIN_EMAIL_ALLOWLIST`                | Nobody is an admin. A _malformed_ value is ignored with a loud log rather than throwing — a typo must not take down sign-in on party night.                                                                                          |
 | `DEMO_LOGIN_*`                         | No reviewer bypass exists.                                                                                                                                                                                                           |
 | `SENTRY_DSN`                           | Error reporting is a no-op; errors fall back to a **scrubbed** `console.error`.                                                                                                                                                      |
+| `UPLOADTHING_TOKEN`                    | Grants are still issued and media rows still created; read paths return items with **no URL** rather than failing, and a withdrawal's file delete throws (loudly, and retried) instead of silently doing nothing.                    |
+| `UPLOAD_CALLBACK_SECRET`               | `media.completeUpload` refuses **every** call, so uploads reach storage and never leave `processing`. Visible and diagnosable — `media.storageStatus` reports it — rather than an open door.                                         |
 
 ### `BETTER_AUTH_SECRET` is the one variable that must not degrade
 

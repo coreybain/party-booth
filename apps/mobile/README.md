@@ -40,8 +40,8 @@ app/                      Expo Router routes (file-based)
   (auth)/sign-in.tsx      Apple + Google buttons
   (auth)/onboarding.tsx   name + photo confirmation — saves the name for real
   (tabs)/_layout.tsx      tab shell; renders the event header; Host tab is conditional
-  (tabs)/camera.tsx       placeholder + live permission status + "can this party accept it"
-  (tabs)/photos.tsx       My media / Event gallery empty states
+  (tabs)/camera.tsx       the viewfinder: CameraView, shutter, flip/flash, undo pill, library
+  (tabs)/photos.tsx       My media (queue + media.myMedia, merged) and the approved gallery
   (tabs)/host.tsx         host scaffold, re-checks the role itself
   (tabs)/settings.tsx     profile, active party, sign-out, diagnostics
   events.tsx              event switcher (modal): list, select, join another
@@ -51,9 +51,11 @@ src/
   env.ts                  the only place process.env is read
   lib/api.ts              typed seam over the Convex API — the one cast
   lib/                    pure, unit-tested logic + client singletons
-  hooks/                  useJoinEvent, useNow
+  hooks/                  useJoinEvent, useNow, useCapture
   providers/              Convex + Better Auth + session/membership context
+  upload/                 the durable queue: reducer, engine, persistence, transport
   components/, theme/     presentational primitives and tokens
+  test/                   jsdom screen tests (react-native → react-native-web)
 ```
 
 ## Decisions

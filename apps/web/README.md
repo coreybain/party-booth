@@ -2,11 +2,12 @@
 
 The Next.js 16 (App Router) site. It hosts three audiences from one codebase:
 
-| Audience           | Routes                                                                                                               | Status                                        |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 2: events, code + QR. Media Sprint 3–4 |
-| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                          |
-| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 2: join works. Capture Sprint 3        |
+| Audience           | Routes                                                                                                               | Status                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 3: `/media` reads live. Moderation Sprint 4 |
+| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                               |
+| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 3: join, capture, upload, my media          |
+| Storage            | `/api/uploadthing` (presign + provider callback)                                                                     | Sprint 3                                           |
 
 ### The join path
 
@@ -22,6 +23,56 @@ Every refusal renders the same sentence, from `JOIN_REJECTED_MESSAGE` in
 `@partybooth/contracts` — unknown code, superseded QR, event not open and
 revoked membership must stay indistinguishable. Nothing in `src/components/join/`
 may branch on that string.
+
+### The upload path
+
+Sprint 3, and the half of the guest journey that PLAN.md calls _guaranteed_.
+Five hops, and the interesting thing about each one is which side is trusted:
+
+| #   | Where                                | What happens                                                                                    |
+| --- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 1   | browser · `lib/upload/derivative.ts` | the chosen photo is **decoded and re-encoded** to JPEG ≤ 2560 px, plus a local 480 px thumbnail |
+| 2   | browser · `lib/upload/checksum.ts`   | SHA-256 of the **re-encoded** bytes — the value the grant is bound to                           |
+| 3   | Convex · `media.requestUploadGrant`  | permission, event state, library flag, size caps, throttle → a two-minute single-use secret     |
+| 4   | `POST /api/uploadthing` · `core.ts`  | middleware re-checks the file against the ticket and the grant against Convex, then presigns    |
+| 5   | UploadThing → `onUploadComplete`     | `media.completeUpload`, server-to-server, authenticated by `UPLOAD_CALLBACK_SECRET`             |
+
+Four things in there are load-bearing and easy to undo by accident.
+
+**The re-encode is the privacy control, not a size optimisation.** A camera JPEG
+carries GPS to five decimal places, the device serial and the capture time in its
+EXIF block. Decoding to a bitmap keeps only pixels, so the JPEG written back out
+has no metadata to strip — there was never any written. ADR 0004 §7 chooses this
+over server-side stripping precisely because the untouched original then never
+exists anywhere but the guest's own phone. `buildPhotoDerivatives` **throws**
+rather than falling back to the original bytes, and the grant carries
+`sourceMetadataStripped` from the value the pipeline actually produced, never a
+literal `true`.
+
+**The middleware is a gate; Convex is the authority.** `.middleware()` calls
+`media.confirmUpload` with the guest's own session, which proves the grant is
+live, unexpired and theirs, and creates the `processing` media row so "My media"
+has something to show immediately. It deliberately does **not** spend the grant:
+single use is a serialisable read-decide-write inside `media.completeUpload`, and
+a check in a route handler that a second request can race is not a check
+(ADR 0004 §1). What the middleware adds is a refusal _before_ bytes cross a
+party's wifi — a capture whose row is already settled comes back in a state other
+than `processing`, and a replay is turned away with nothing stored.
+
+**`acl: "private"` is declared in the route config**, not inherited from the
+UploadThing dashboard default. An invariant that lives only in a dashboard
+checkbox is one a mis-click silently revokes for every photo taken afterwards.
+
+**Signed URLs are rendered with a plain `<img>`, never `next/image`.** Routing a
+short-lived signed URL through `/_next/image` caches a decoded copy of a guest's
+photograph on a shared CDN, keyed on the source URL and outliving the signature —
+which recreates exactly the durable public URL the private ACL exists to prevent.
+See `src/components/media/media-thumbnail.tsx`.
+
+Two variables have to be set, in two different dashboards, and either being wrong
+produces the same visible symptom — photos that reach storage and sit in
+`processing` for ever. `/media` says so, in those words, from
+`media.storageStatus`.
 
 ## Run it
 
@@ -58,6 +109,7 @@ src/app/
   join/, join/[token]/        code entry + universal-link target
   event/[eventId]/            where a guest lands after joining
   api/auth/[...all]/          Better Auth ↔ Convex proxy
+  api/uploadthing/            core.ts = FileRouter · route.ts = handler (503 with no creds)
   error.tsx, global-error.tsx, not-found.tsx
 
 src/components/
@@ -69,6 +121,9 @@ src/components/
   events/                     create/edit form, event home, invite panel, list
   guest/                      Google + OTP sign-in, name confirm, event view
   join/                       token flow, code flow, preview card, refusals
+  guest/capture-panel.tsx     input[capture] → derivative → grant → upload
+  guest/my-media.tsx          own submissions, status chips, retry/cancel/withdraw
+  media/                      thumbnail (plain <img>, see above), organiser list
   layout/                     AppShell, CentredPane, Card, nav, event switcher
   ui/                         Button, TextField, CodeField, Select, Choice, …
 
@@ -90,6 +145,18 @@ src/lib/
   sentry-scrub.ts             PII + secret scrubbing            (tested)
   sentry-options.ts           shared Sentry.init options
   cn.ts                       class-name joiner                 (tested)
+  media-view.ts               status copy, server+local merge    (tested)
+  use-capture-upload.ts       the one capture controller
+  use-now.ts                  render-safe wall clock (useSyncExternalStore)
+  upload/
+    ticket.ts                 the .input() payload + file cross-check  (tested)
+    grant.ts                  re-parse GrantResult, fail closed        (tested)
+    derivative.ts             canvas re-encode, EXIF/GPS stripping     (tested)
+    checksum.ts               SHA-256 over the re-encoded bytes
+    capture-id.ts             unguessable idempotency key              (tested)
+    machine.ts                the upload queue reducer                 (tested)
+    uploader.ts               genUploader bound to our FileRouter
+    server.ts                 server-only: config + completeUpload
 ```
 
 ### Two seams and one gate
@@ -147,6 +214,12 @@ Vercel project settings:
 - Framework preset **Next.js**; leave build and install commands on the
   defaults so Vercel's own Turborepo support applies.
 - Environment variables: every `NEXT_PUBLIC_*` from `.env.example`, plus
-  `CONVEX_URL`, `CONVEX_SITE_URL`, `BETTER_AUTH_*`, `RESEND_*`, `SENTRY_*`.
+  `CONVEX_URL`, `CONVEX_SITE_URL`, `BETTER_AUTH_*`, `RESEND_*`, `SENTRY_*`,
+  `UPLOADTHING_TOKEN`, and `UPLOAD_CALLBACK_SECRET` — the last one set to the
+  **same value** here and in the Convex dashboard, or completion callbacks are
+  refused and nothing ever leaves `processing`.
+- The UploadThing app needs a paid plan, region `pdx1`, default ACL **Private**
+  and **per-request ACL override enabled**, because the route config declares
+  `acl: "private"` explicitly rather than trusting the dashboard default.
 - `vercel.json` pins functions to `iad1` to sit next to the Convex US East
   deployment.

@@ -20,6 +20,7 @@ import type { AuthClient as ConvexCompatibleAuthClient } from "@convex-dev/bette
 import { appConfig } from "../env";
 import { getAuthClient, type AuthClient } from "../lib/auth-client";
 import { getConvexClient } from "../lib/convex";
+import { ConnectedUploadQueue, OfflineUploadQueue } from "../upload/queue-provider";
 
 import { LiveSessionProvider, OfflineSessionProvider } from "./session";
 
@@ -68,7 +69,13 @@ function ConfiguredProviders({
         authClient={authClient as unknown as ConvexCompatibleAuthClient}
       >
         <AuthClientContext.Provider value={authClient}>
-          <LiveSessionProvider authClient={authClient}>{children}</LiveSessionProvider>
+          <LiveSessionProvider authClient={authClient}>
+            {/* Inside Convex (it needs `useMutation`) and inside the session
+                (a grant is only issued to an authenticated member), but above
+                the router, because the queue outlives any screen — a capture
+                keeps uploading while the guest is on the Photos tab. */}
+            <ConnectedUploadQueue siteUrl={config.siteUrl}>{children}</ConnectedUploadQueue>
+          </LiveSessionProvider>
         </AuthClientContext.Provider>
       </ConvexBetterAuthProvider>
     </ConvexProvider>
@@ -79,7 +86,13 @@ export function AppProviders({ children }: { children: ReactNode }) {
   if (appConfig.status === "unconfigured") {
     return (
       <AuthClientContext.Provider value={null}>
-        <OfflineSessionProvider>{children}</OfflineSessionProvider>
+        <OfflineSessionProvider>
+          {/* Still mounted with no backend: the camera works, captures persist,
+              and the Photos tab explains why nothing is being sent. A missing
+              provider would instead throw from `useUploadQueue` on the first
+              screen of a fresh checkout. */}
+          <OfflineUploadQueue>{children}</OfflineUploadQueue>
+        </OfflineSessionProvider>
       </AuthClientContext.Provider>
     );
   }

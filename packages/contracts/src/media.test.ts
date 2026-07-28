@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   allowedMimeTypes,
+  CAPTURE_STATES,
+  captureStateMachine,
   CAPTURE_UNDO_WINDOW_MS,
+  isCaptureInFlight,
+  isTerminalCapture,
   maxBytesFor,
   MEDIA_LIMITS,
   PHOTO_MAX_BYTES,
+  TERMINAL_CAPTURE_STATES,
   validateMediaFile,
   VIDEO_MAX_BYTES,
   VIDEO_MAX_DURATION_SECONDS,
@@ -123,5 +128,46 @@ describe("validateMediaFile — videos", () => {
       ok: false,
       reason: "tooLarge",
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Capture-state predicates, shared by both clients                           */
+/* -------------------------------------------------------------------------- */
+
+describe("isTerminalCapture", () => {
+  it("agrees with the state machine on every state", () => {
+    for (const state of CAPTURE_STATES) {
+      expect(isTerminalCapture(state)).toBe(captureStateMachine.isTerminal(state));
+    }
+  });
+
+  it("is the two a queue may stop watching", () => {
+    expect([...TERMINAL_CAPTURE_STATES].sort()).toEqual(["cancelled", "uploaded"]);
+  });
+
+  it("does not treat a retryable failure as finished", () => {
+    expect(isTerminalCapture("failed")).toBe(false);
+  });
+});
+
+describe("isCaptureInFlight", () => {
+  it("is true only while something is happening without the guest", () => {
+    expect(isCaptureInFlight("queued")).toBe(true);
+    expect(isCaptureInFlight("uploading")).toBe(true);
+  });
+
+  it("excludes captured, which is waiting on a countdown or a human", () => {
+    expect(isCaptureInFlight("captured")).toBe(false);
+  });
+
+  it("excludes failed, which has something to say to the guest", () => {
+    expect(isCaptureInFlight("failed")).toBe(false);
+  });
+
+  it("never overlaps with a terminal state", () => {
+    for (const state of CAPTURE_STATES) {
+      expect(isCaptureInFlight(state) && isTerminalCapture(state)).toBe(false);
+    }
   });
 });
