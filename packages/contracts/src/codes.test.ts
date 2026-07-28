@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canRotateInvite,
   CodeGenerationError,
   constantTimeEqual,
   CryptoUnavailableError,
@@ -20,6 +21,11 @@ import {
   isValidInviteToken,
   normalizeEventCode,
   normalizeInviteToken,
+  keepExistingMemberships,
+  registerRotation,
+  ROTATION_CONSEQUENCES,
+  ROTATION_POLICY,
+  type RotationAttemptState,
   validateSpecificEventCode,
   type RandomBytes,
 } from "./codes";
@@ -260,5 +266,93 @@ describe("constantTimeEqual", () => {
   it("rejects different lengths", () => {
     expect(constantTimeEqual("482913", "48291")).toBe(false);
     expect(constantTimeEqual("", "0")).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Rotation budget                                                            */
+/* -------------------------------------------------------------------------- */
+
+describe("the invite-rotation budget", () => {
+  it("allows the first rotation with no history", () => {
+    expect(canRotateInvite(undefined, 1_000)).toEqual({ allowed: true });
+  });
+
+  it(`allows ${ROTATION_POLICY.maxPerWindow} inside the window and refuses the next`, () => {
+    let state: RotationAttemptState | undefined;
+    for (let index = 0; index < ROTATION_POLICY.maxPerWindow; index += 1) {
+      expect(canRotateInvite(state, 1_000).allowed, `rotation ${index + 1}`).toBe(true);
+      state = registerRotation(state, 1_000);
+    }
+    const refused = canRotateInvite(state, 1_000);
+    expect(refused.allowed).toBe(false);
+    if (!refused.allowed) expect(refused.retryAfterMs).toBe(ROTATION_POLICY.windowMs);
+  });
+
+  it("reports how long is left, not a fixed number", () => {
+    let state: RotationAttemptState | undefined;
+    for (let index = 0; index < ROTATION_POLICY.maxPerWindow; index += 1) {
+      state = registerRotation(state, 1_000);
+    }
+    const refused = canRotateInvite(state, 1_000 + 60_000);
+    expect(refused.allowed).toBe(false);
+    if (!refused.allowed) expect(refused.retryAfterMs).toBe(ROTATION_POLICY.windowMs - 60_000);
+  });
+
+  it("starts a fresh window rather than sliding", () => {
+    let state: RotationAttemptState | undefined;
+    for (let index = 0; index < ROTATION_POLICY.maxPerWindow; index += 1) {
+      state = registerRotation(state, 1_000);
+    }
+    const later = 1_000 + ROTATION_POLICY.windowMs;
+    expect(canRotateInvite(state, later).allowed).toBe(true);
+
+    const rolled = registerRotation(state, later);
+    // The count restarts and the window is anchored at `now`, which is what
+    // keeps the arithmetic legible in an incident.
+    expect(rolled).toEqual({ count: 1, windowStartedAt: later, lastRotatedAt: later });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What rotation does, in words                                               */
+/* -------------------------------------------------------------------------- */
+
+describe("rotation consequences", () => {
+  /**
+   * The console's modal and the app's Host tab both render these. The point of
+   * hoisting them was that the two surfaces had drifted into describing the same
+   * irreversible action differently, so what is pinned here is the meaning a
+   * host relies on, not the prose.
+   */
+  it("maps each choice to the argument it means", () => {
+    expect(keepExistingMemberships("keep")).toBe(true);
+    expect(keepExistingMemberships("revoke")).toBe(false);
+  });
+
+  it("describes both choices, and says the old code dies in both", () => {
+    for (const choice of ["keep", "revoke"] as const) {
+      const consequence = ROTATION_CONSEQUENCES[choice];
+      expect(consequence.label.length).toBeGreaterThan(0);
+      expect(consequence.summary.length).toBeGreaterThan(0);
+      expect(consequence.effects.length).toBeGreaterThan(0);
+      // Rotation always kills the printed sign. A host who is not told that has
+      // not been told the one thing rotation is for.
+      expect(consequence.effects.some((effect) => /stop working/i.test(effect))).toBe(true);
+    }
+  });
+
+  it("promises the revoke path keeps co-hosts and deletes no photos", () => {
+    const effects = ROTATION_CONSEQUENCES.revoke.effects.join(" ");
+    expect(effects).toMatch(/co-hosts are kept/i);
+    expect(effects).toMatch(/nothing is deleted/i);
+    // The sweep is not a ban — the backend records it as a sweep so a caught
+    // guest can re-join, and the copy has to say so or a host will not dare.
+    expect(effects).toMatch(/come back/i);
+  });
+
+  it("does not promise the keep path removes anybody", () => {
+    const effects = ROTATION_CONSEQUENCES.keep.effects.join(" ");
+    expect(effects).not.toMatch(/removed/i);
   });
 });

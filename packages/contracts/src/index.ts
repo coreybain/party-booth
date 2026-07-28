@@ -20,6 +20,7 @@ export * from "./join";
 export * from "./media";
 export * from "./otp";
 export * from "./permissions";
+export * from "./push";
 export * from "./qr";
 export * from "./roles";
 export * from "./schemas";

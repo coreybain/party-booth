@@ -40,6 +40,8 @@ export const ACTIONS = [
   "event.changeState",
   "event.archive",
   "event.delete",
+  "event.scheduleDeletion",
+  "event.restoreDeletion",
   "event.transferOwnership",
   "event.viewInviteCode",
   "event.rotateInvite",
@@ -50,6 +52,7 @@ export const ACTIONS = [
   // Memberships.
   "membership.list",
   "membership.inviteCohost",
+  "membership.revokeCohostInvite",
   "membership.revoke",
   "membership.leave",
 
@@ -142,6 +145,8 @@ export const ACTION_RESOURCE_KIND = {
   "event.changeState": "event",
   "event.archive": "event",
   "event.delete": "event",
+  "event.scheduleDeletion": "event",
+  "event.restoreDeletion": "event",
   "event.transferOwnership": "event",
   "event.viewInviteCode": "event",
   "event.rotateInvite": "event",
@@ -151,6 +156,7 @@ export const ACTION_RESOURCE_KIND = {
 
   "membership.list": "membership",
   "membership.inviteCohost": "membership",
+  "membership.revokeCohostInvite": "membership",
   "membership.revoke": "membership",
   "membership.leave": "membership",
 
@@ -191,15 +197,22 @@ export type ResourceFor<TAction extends Action> = Extract<
  *
  * - `globalAdmin` has **no** `media.*` capability at all and cannot impersonate.
  *   Admins manage accounts, events and audit; they never look at guests' photos.
- * - `cohost` gets every host power except the ones that change who owns the
- *   party: `event.delete`, `event.transferOwnership`, and event settings
- *   (`event.update` / `changeModerationMode` / `changeState`). It also cannot
- *   invite *further* co-hosts — only the owner grows the host list — and it
- *   cannot hard-delete another guest's media, only decline it. It **can**
- *   revoke a guest membership: PLAN.md risk #4 is solo moderation, and a
- *   co-host who can decline a guest's photos but not remove them is not much
- *   help at 1am. `membershipGate` still blocks revoking yourself and revoking
- *   an owner, so this cannot be turned on the host.
+ * - `cohost` **operates** the party and does not **own** it. That is the line
+ *   PLAN.md draws ("co-hosts; invite rotation" under launch keeps, "no
+ *   delete/transfer/ownership" in TODO.md) and it is the line this table draws:
+ *   a co-host moderates, edits settings, moves the event between `live` and
+ *   `paused`, presents the slideshow and rotates the invite; a co-host may not
+ *   `event.delete`, `event.transferOwnership`, `event.archive` (ending the party
+ *   is the owner's call), `event.scheduleDeletion`, `membership.inviteCohost` or
+ *   `membership.revokeCohostInvite` — only the owner grows and shrinks the host
+ *   list — and may not hard-delete another guest's media, only decline it.
+ *
+ *   Settings editing moved into the co-host set in Sprint 5, deliberately.
+ *   PLAN.md's mitigation for risk #4 (solo moderation) is "co-hosts and
+ *   `automatic` mode as a pressure valve", and a co-host who cannot reach the
+ *   moderation-mode switch when the owner is on the dance floor is not a
+ *   pressure valve. `membershipGate` still stops a co-host revoking themselves,
+ *   the owner, or **another co-host**, so nothing here can be turned on the host.
  * - Nobody, ever, gets `platform.viewMedia` or `platform.impersonateUser`. They
  *   exist purely so the rule is written down and tested rather than implied.
  */
@@ -212,6 +225,8 @@ const CAPABILITIES = {
     "event.view",
     "event.changeState",
     "event.archive",
+    "event.scheduleDeletion",
+    "event.restoreDeletion",
     "event.viewInviteCode",
     "event.rotateInvite",
     "event.viewStats",
@@ -232,6 +247,7 @@ const CAPABILITIES = {
     "event.changeState",
     "event.archive",
     "event.delete",
+    "event.scheduleDeletion",
     "event.transferOwnership",
     "event.viewInviteCode",
     "event.rotateInvite",
@@ -239,6 +255,7 @@ const CAPABILITIES = {
     "event.viewStats",
     "membership.list",
     "membership.inviteCohost",
+    "membership.revokeCohostInvite",
     "membership.revoke",
     "media.upload",
     "media.viewOwn",
@@ -256,7 +273,10 @@ const CAPABILITIES = {
   cohost: [
     "platform.createEvent",
     "event.view",
+    "event.update",
     "event.updateSchedule",
+    "event.changeModerationMode",
+    "event.changeState",
     "event.viewInviteCode",
     "event.rotateInvite",
     "event.presentSlideshow",
@@ -329,7 +349,7 @@ function gate(role: Role, action: Action, resource: Resource): boolean {
       return eventGate(action, resource.state);
 
     case "membership":
-      return membershipGate(action, resource);
+      return membershipGate(role, action, resource);
 
     case "media":
       return mediaGate(action, resource);
@@ -364,7 +384,12 @@ function eventGate(action: Action, state: EventState): boolean {
 
     case "event.delete":
     case "event.transferOwnership":
+    case "event.scheduleDeletion":
       return state !== "deletionScheduled";
+
+    case "event.restoreDeletion":
+      // The only action that *requires* the state it is undoing.
+      return state === "deletionScheduled";
 
     default:
       // event.view, event.viewStats — readable in any state.
@@ -372,18 +397,26 @@ function eventGate(action: Action, state: EventState): boolean {
   }
 }
 
-function membershipGate(action: Action, resource: MembershipResource): boolean {
+function membershipGate(role: Role, action: Action, resource: MembershipResource): boolean {
   switch (action) {
     case "membership.revoke":
       // You cannot revoke yourself (use leave), and an owner's membership can
       // only go away by transferring ownership or deleting the event.
-      return !resource.isSelf && resource.targetRole !== "owner";
+      if (resource.isSelf || resource.targetRole === "owner") return false;
+      // A co-host may remove a **guest** and nothing else. Removing another
+      // co-host is managing the host list, which PLAN.md keeps with the owner
+      // (and the admin console); without this line the two co-hosts of a party
+      // could each remove the other, and the last one standing would be
+      // whoever's phone had signal.
+      if (role === "cohost" && resource.targetRole !== "guest") return false;
+      return true;
 
     case "membership.leave":
       // Owners must hand the party over before walking out of it.
       return resource.isSelf && resource.targetRole !== "owner";
 
     case "membership.inviteCohost":
+    case "membership.revokeCohostInvite":
       return isEditableEventState(resource.event.state);
 
     default:
