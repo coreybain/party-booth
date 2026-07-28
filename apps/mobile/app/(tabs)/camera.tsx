@@ -1,4 +1,5 @@
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
+import { useRouter } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 
 import {
@@ -12,6 +13,8 @@ import {
   Screen,
   ScreenHeader,
 } from "@/components/ui";
+import { describeEventState } from "@/lib/events";
+import { useSession } from "@/providers/session";
 import { colors, spacing } from "@/theme";
 
 /**
@@ -31,17 +34,47 @@ import { colors, spacing } from "@/theme";
  * native surface — behind the `CameraEffectsAdapter` seam the plan already calls for.
  */
 export default function CameraScreen() {
+  const router = useRouter();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
+  const { activeEvent, eventsLoading } = useSession();
 
   const cameraGranted = cameraPermission?.granted === true;
   const micGranted = micPermission?.granted === true;
   const ready = cameraGranted && micGranted;
 
+  // The camera has to have somewhere to send to. Which is a state question, not a
+  // permission one, and `@partybooth/contracts/events` owns the answer: `live` is the
+  // only state that accepts uploads.
+  const description = activeEvent ? describeEventState(activeEvent.state) : null;
+
   return (
-    <Screen>
+    // The tab shell renders the header (and owns the notch), so this screen keeps
+    // only the horizontal safe-area edges.
+    <Screen edges={["left", "right"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader title="Camera" subtitle="Tap for a photo, hold for video — from Sprint 3." />
+
+        {!activeEvent && !eventsLoading ? (
+          <EmptyState
+            icon="qr-code-outline"
+            title="Join a party first"
+            body="Scan the QR code on the host's sign, or type the six-digit code printed under it. Everything you capture goes to the party you're in."
+            action={
+              <Button
+                label="Enter a join code"
+                icon="keypad-outline"
+                onPress={() => router.push("/join")}
+              />
+            }
+          />
+        ) : null}
+
+        {activeEvent && description && !description.acceptsUploads ? (
+          <Notice tone="warning" title={description.label}>
+            <MutedText>{description.detail}</MutedText>
+          </Notice>
+        ) : null}
 
         <View style={styles.viewfinder}>
           <EmptyState

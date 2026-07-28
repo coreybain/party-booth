@@ -22,7 +22,8 @@ import { colors, radius, spacing, typography } from "@/theme";
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { state, configured, signOut, previewEventRole, setPreviewEventRole } = useSession();
+  const { state, configured, signOut, previewEventRole, setPreviewEventRole, activeEvent, events } =
+    useSession();
   const [signingOut, setSigningOut] = useState(false);
 
   const handleSignOut = useCallback(async () => {
@@ -40,7 +41,8 @@ export default function SettingsScreen() {
   const initial = (user?.name?.[0] ?? "?").toUpperCase();
 
   return (
-    <Screen>
+    // The tab shell renders the header and owns the notch; see `(tabs)/_layout.tsx`.
+    <Screen edges={["left", "right"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader title="Settings" />
 
@@ -77,6 +79,23 @@ export default function SettingsScreen() {
           )}
         </Card>
 
+        {/* The header switcher is the primary route to this; Settings is where people
+            look when the header is not where they expect it. */}
+        {user ? (
+          <Card>
+            <Text style={styles.sectionLabel}>Parties</Text>
+            <Row label="Active" value={activeEvent?.name ?? "None yet"} />
+            <Row label="Joined" value={`${events.length}`} />
+            <Button
+              label={events.length === 0 ? "Join a party" : "Switch party"}
+              variant="secondary"
+              icon="swap-horizontal-outline"
+              onPress={() => router.push("/events")}
+              disabled={!configured}
+            />
+          </Card>
+        ) : null}
+
         {!configured ? (
           <Notice tone="warning" title="Running without a backend">
             <MutedText>
@@ -86,17 +105,19 @@ export default function SettingsScreen() {
           </Notice>
         ) : null}
 
-        {/* Dev-only: lets the conditional Host tab be exercised before memberships
-            exist (Sprint 2). Stripped from release builds by the `__DEV__` guard. */}
-        {__DEV__ ? (
+        {/* Dev-only, and now only useful when there is *no* membership to read a role
+            from: the switch is ignored the moment a real active event exists, so it
+            can never show a developer affordances the same build denies a guest.
+            Stripped from release builds by the `__DEV__` guard. */}
+        {__DEV__ && activeEvent === null ? (
           <Card>
             <Badge label="dev only" tone={colors.accentSoft} />
             <View style={styles.switchRow}>
               <View style={styles.switchCopy}>
                 <BodyText>Preview host tools</BodyText>
                 <MutedText>
-                  Fakes an <MonoText>owner</MonoText> membership so the Host tab appears. Real roles
-                  arrive with memberships in Sprint 2.
+                  Fakes an <MonoText>owner</MonoText> membership so the Host tab appears while you
+                  have not joined a party. A real membership always wins over this.
                 </MutedText>
               </View>
               <Switch

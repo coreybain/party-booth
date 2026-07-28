@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyState, Screen, ScreenHeader } from "@/components/ui";
+import { useActiveEvent } from "@/providers/session";
 import { colors, radius, spacing, typography } from "@/theme";
 
 /**
@@ -20,10 +21,14 @@ type SegmentKey = (typeof SEGMENTS)[number]["key"];
 
 export default function PhotosScreen() {
   const [segment, setSegment] = useState<SegmentKey>("mine");
+  const activeEvent = useActiveEvent();
 
   return (
-    <Screen>
-      <ScreenHeader title="Photos" />
+    // The tab shell renders the header and owns the notch; see `(tabs)/_layout.tsx`.
+    <Screen edges={["left", "right"]}>
+      {/* Both lists are per-event, so the subtitle names the one they belong to —
+          otherwise switching parties silently changes what "my media" means. */}
+      <ScreenHeader title="Photos" subtitle={activeEvent?.name} />
 
       <View style={styles.segmented} accessibilityRole="tablist">
         {SEGMENTS.map((item) => {

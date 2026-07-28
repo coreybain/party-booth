@@ -3,7 +3,9 @@ import { Redirect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { Badge, Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
+import { Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
+import { captureHandledError } from "@/lib/sentry";
+import { DISPLAY_NAME_MAX_LENGTH, initialFor, readDisplayName } from "@/lib/profile";
 import { useSession } from "@/providers/session";
 import { colors, radius, spacing, typography } from "@/theme";
 
@@ -11,53 +13,77 @@ import { colors, radius, spacing, typography } from "@/theme";
  * Name + photo confirmation (PLAN.md → "Guests in app: Apple or Google sign-in, then
  * name + photo confirmation").
  *
- * Sprint 1 is the shell: the form works locally, but there is no Convex mutation to
- * persist to yet and no UploadThing grant to send an avatar through. Both land in
- * Sprint 2/3 — see the TODOs on `submit` and `pickPhoto`.
+ * The name is saved for real: `confirmProfile` calls Better Auth's `updateUser`, whose
+ * `user.onUpdate` trigger in `packages/backend/convex/auth.ts` mirrors it into
+ * `users.displayName` — the column the host's moderation queue, every membership list
+ * and every audit row read. A guest who confirms "Sam" here is "Sam" to the host.
+ *
+ * The **photo** is remembered on the device only. Avatars ride the same short-lived
+ * upload-grant pipeline as party media, which Sprint 3 builds; a `file://` path stored
+ * on the server is a string no other device can resolve, and a second ad-hoc upload
+ * path built now is one that has to be deleted again next sprint. So the choice is
+ * kept (`src/lib/local-profile.ts`) and uploaded when there is somewhere to put it.
  */
-
-const NAME_MAX_LENGTH = 40;
-
 export default function OnboardingScreen() {
   const router = useRouter();
-  const { state } = useSession();
+  const { state, localProfile, confirmProfile } = useSession();
 
-  const initialName = state.status === "signed-in" ? (state.user.name ?? "") : "";
-  const initialImage = state.status === "signed-in" ? state.user.image : null;
+  const providerName = state.status === "signed-in" ? (state.user.name ?? "") : "";
+  const providerImage = state.status === "signed-in" ? state.user.image : null;
 
-  const [name, setName] = useState(initialName);
-  const [photoUri, setPhotoUri] = useState<string | null>(initialImage);
+  const [name, setName] = useState(providerName);
+  const [touched, setTouched] = useState(false);
+  const [photoUri, setPhotoUri] = useState<string | null>(localProfile.photoUri ?? providerImage);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const trimmed = name.trim();
-  const canSubmit = trimmed.length >= 2 && !saving;
+  const field = readDisplayName(name, touched);
 
   const pickPhoto = useCallback(async () => {
-    // TODO(Sprint 3): expo-image-picker → UploadThing grant → Convex user.image.
-    // Deliberately not wired here: avatars share the upload-grant pipeline that Sprint 3
-    // builds, and a second ad-hoc upload path would have to be deleted again.
-    const ImagePicker = await import("expo-image-picker");
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) setPhotoUri(result.assets[0].uri);
+    try {
+      // Imported lazily: the picker pulls a native module, and this screen renders on
+      // every first sign-in whether or not anybody taps the avatar.
+      const ImagePicker = await import("expo-image-picker");
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) setPhotoUri(result.assets[0].uri);
+    } catch (cause) {
+      // A denied library permission or a missing native module must not strand
+      // somebody on the one screen standing between them and the party.
+      captureHandledError(cause, { scope: "onboarding.pickPhoto" });
+      setError("We couldn't open your photo library. You can add a photo later from Settings.");
+    }
   }, []);
 
-  const submit = useCallback(() => {
-    // TODO(Sprint 2): call the Convex `users.completeOnboarding` mutation with
-    // { displayName, imageStorageId } and let the session's `needsOnboarding` flip from
-    // the server. Until then this only advances the local shell.
+  const submit = useCallback(async () => {
+    setTouched(true);
+    const validated = readDisplayName(name, true);
+    if (!validated.valid) {
+      setError(validated.error);
+      return;
+    }
+
     setSaving(true);
-    router.replace("/camera");
-  }, [router]);
+    setError(null);
+    const outcome = await confirmProfile({ displayName: validated.value, photoUri });
+    setSaving(false);
+
+    if (outcome.status === "error") {
+      setError(outcome.message);
+      return;
+    }
+    // Back through the entry gate rather than straight to a tab: `needsOnboarding`
+    // has just flipped, so `/` falls through — and it is the only place that knows
+    // whether an invite was parked while this guest signed in.
+    router.replace("/");
+  }, [confirmProfile, name, photoUri, router]);
 
   if (state.status === "signed-out") return <Redirect href="/sign-in" />;
   if (state.status === "loading") return <Redirect href="/" />;
-
-  const initial = (trimmed[0] ?? "?").toUpperCase();
 
   return (
     <Screen>
@@ -82,7 +108,7 @@ export default function OnboardingScreen() {
               {photoUri ? (
                 <Image source={{ uri: photoUri }} style={styles.avatarImage} contentFit="cover" />
               ) : (
-                <Text style={styles.avatarInitial}>{initial}</Text>
+                <Text style={styles.avatarInitial}>{initialFor(field.value)}</Text>
               )}
             </Pressable>
             <View style={styles.avatarCopy}>
@@ -91,8 +117,9 @@ export default function OnboardingScreen() {
                 variant="secondary"
                 icon="image-outline"
                 onPress={() => void pickPhoto()}
+                disabled={saving}
               />
-              <MutedText>Optional. You can add one later from Settings.</MutedText>
+              <MutedText>Optional. You can change it later from Settings.</MutedText>
             </View>
           </View>
         </Card>
@@ -102,32 +129,47 @@ export default function OnboardingScreen() {
           <TextInput
             value={name}
             onChangeText={setName}
+            onBlur={() => setTouched(true)}
             placeholder="Your name"
             placeholderTextColor={colors.textFaint}
-            style={styles.input}
-            maxLength={NAME_MAX_LENGTH}
+            style={[styles.input, field.error ? styles.inputInvalid : null]}
+            // Same ceiling the contract enforces, so the keyboard stops rather than
+            // the form rejecting a name after it has been typed.
+            maxLength={DISPLAY_NAME_MAX_LENGTH}
             autoCapitalize="words"
             autoComplete="name"
             textContentType="name"
             returnKeyType="done"
+            onSubmitEditing={() => void submit()}
+            editable={!saving}
             accessibilityLabel="Display name"
           />
-          <MutedText>{`${trimmed.length}/${NAME_MAX_LENGTH}`}</MutedText>
+          {field.error ? (
+            <Text style={styles.fieldError}>{field.error}</Text>
+          ) : (
+            <MutedText>{`${field.value.length}/${DISPLAY_NAME_MAX_LENGTH}`}</MutedText>
+          )}
         </Card>
 
-        <Notice tone="info" title="Shell only">
-          <Badge label="sprint 2" />
+        {error ? (
+          <Notice tone="danger" title="Couldn't save that">
+            <MutedText>{error}</MutedText>
+          </Notice>
+        ) : null}
+
+        <Notice tone="info" title="Your photo stays on this phone for now">
           <MutedText>
-            Saving is not wired to Convex yet, so this only advances the local shell. Photo upload
-            follows the same short-lived grant pipeline as party media (Sprint 3).
+            Profile photos upload through the same private, permission-checked pipeline as party
+            media, which lands in Sprint 3. Until then your choice is remembered here and nothing
+            leaves the device.
           </MutedText>
         </Notice>
 
         <Button
           label="Continue"
           icon="arrow-forward"
-          onPress={submit}
-          disabled={!canSubmit}
+          onPress={() => void submit()}
+          disabled={!field.valid || saving}
           busy={saving}
         />
       </ScrollView>
@@ -163,4 +205,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
   },
+  inputInvalid: { borderColor: colors.danger },
+  fieldError: { ...typography.caption, color: colors.danger },
 });

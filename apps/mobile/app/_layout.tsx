@@ -33,6 +33,16 @@ function RootLayout() {
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          {/* The event switcher. A modal rather than a tab: it is a decision you make
+              and dismiss, not a place you spend time, and a fifth tab would push the
+              Host tab off the comfortable reach of a thumb. */}
+          <Stack.Screen name="events" options={{ title: "Your parties", presentation: "modal" }} />
+          {/* Both join doors are modals over whatever the guest was doing, because a
+              universal link can land on any screen and must not destroy its state. */}
+          <Stack.Screen
+            name="join/index"
+            options={{ title: "Join a party", presentation: "modal" }}
+          />
           <Stack.Screen
             name="join/[token]"
             options={{ title: "Join event", presentation: "modal" }}

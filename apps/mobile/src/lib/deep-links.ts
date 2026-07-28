@@ -20,14 +20,20 @@ import {
   inviteUrl,
   isValidEventCode,
   isValidInviteToken,
+  JOIN_PATH_SEGMENT,
   normalizeInviteToken,
 } from "@partybooth/contracts/codes";
 
 /** URL scheme registered in app.config.ts. */
 export const APP_SCHEME = "partybooth";
 
-/** Path segment that carries an invite, on both the website and the custom scheme. */
-export const JOIN_PATH_SEGMENT = "join";
+/**
+ * Path segment that carries an invite, on both the website and the custom
+ * scheme. Re-exported from contracts rather than restated: the same segment is
+ * what `apps/web` routes and what the printed QR encodes, so a change there has
+ * to break the parser here rather than quietly stop matching it.
+ */
+export { JOIN_PATH_SEGMENT };
 
 export type JoinTarget =
   | { readonly kind: "token"; readonly token: string }

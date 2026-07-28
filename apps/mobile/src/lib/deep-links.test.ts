@@ -130,6 +130,38 @@ describe("parseJoinLink", () => {
   });
 });
 
+/**
+ * `app/join/[token].tsx` does not get a URL — Expo Router has already taken the link
+ * apart and handed it one path segment. It puts that segment back into a synthetic
+ * URL so there is exactly one classifier in the app. These pin that wrapping, because
+ * a route parameter is the one input that never goes through `parseJoinLink` naturally.
+ */
+function parseRouteParam(segment: string) {
+  return parseJoinLink(`https://join.invalid/join/${encodeURIComponent(segment)}`);
+}
+
+describe("join route parameter", () => {
+  it("classifies a token handed over by the router", () => {
+    expect(parseRouteParam(TOKEN)).toEqual({ kind: "token", token: TOKEN });
+  });
+
+  it("classifies a six-digit code, so a parked code can reuse the same route", () => {
+    expect(parseRouteParam("428913")).toEqual({ kind: "code", code: "428913" });
+  });
+
+  it("normalises a token transcribed off signage in lower case", () => {
+    expect(parseRouteParam(TOKEN.toLowerCase())).toEqual({ kind: "token", token: TOKEN });
+  });
+
+  it("survives a segment that would break URL parsing if it were not encoded", () => {
+    // A malformed invite must produce "that didn't work", never a thrown TypeError on
+    // the first screen a scanned QR opens.
+    expect(parseRouteParam("../../etc/passwd")).toBeNull();
+    expect(parseRouteParam("a b?c#d")).toBeNull();
+    expect(parseRouteParam("")).toBeNull();
+  });
+});
+
 describe("buildJoinUrl", () => {
   it("builds the canonical link that goes on the QR", () => {
     expect(buildJoinUrl("https://partybooth.app", TOKEN)).toBe(

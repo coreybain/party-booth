@@ -2,8 +2,11 @@
 
 Expo app for PartyBooth — iOS 17+ / Android 10+, **dev-client only** (never Expo Go).
 
-Sprint 1 scope is the skeleton: navigation shell, auth wiring, providers, and config.
-Camera, uploads, moderation and push land in Sprints 3–5.
+Sprint 1 built the skeleton: navigation shell, auth wiring, providers, config.
+**Sprint 2 makes it a real client** — onboarding that saves, joining by QR or code,
+multiple memberships with a server-backed active event, and the Host tab appearing for
+whoever the backend says is a host. Camera, uploads, moderation and push land in
+Sprints 3–5.
 
 ## Quick start
 
@@ -33,19 +36,23 @@ pnpm --filter @partybooth/mobile prebuild           # or build locally
 ```
 app/                      Expo Router routes (file-based)
   _layout.tsx             Sentry init, providers, root Stack
-  index.tsx               entry gate: config → session → onboarding → tabs
+  index.tsx               entry gate: config → session → onboarding → parked invite → tabs
   (auth)/sign-in.tsx      Apple + Google buttons
-  (auth)/onboarding.tsx   name + photo confirmation shell
-  (tabs)/_layout.tsx      tab shell; Host tab is conditional
-  (tabs)/camera.tsx       placeholder + live permission status
+  (auth)/onboarding.tsx   name + photo confirmation — saves the name for real
+  (tabs)/_layout.tsx      tab shell; renders the event header; Host tab is conditional
+  (tabs)/camera.tsx       placeholder + live permission status + "can this party accept it"
   (tabs)/photos.tsx       My media / Event gallery empty states
   (tabs)/host.tsx         host scaffold, re-checks the role itself
-  (tabs)/settings.tsx     profile stub, sign-out, diagnostics
-  join/[token].tsx        deep-link target for QR / partybooth:// / code
+  (tabs)/settings.tsx     profile, active party, sign-out, diagnostics
+  events.tsx              event switcher (modal): list, select, join another
+  join/index.tsx          six-digit code entry (modal)
+  join/[token].tsx        deep-link target for QR / partybooth:// / parked invite
 src/
   env.ts                  the only place process.env is read
+  lib/api.ts              typed seam over the Convex API — the one cast
   lib/                    pure, unit-tested logic + client singletons
-  providers/              Convex + Better Auth + session context
+  hooks/                  useJoinEvent, useNow
+  providers/              Convex + Better Auth + session/membership context
   components/, theme/     presentational primitives and tokens
 ```
 
@@ -107,13 +114,74 @@ Both are narrow, commented in place, and worth re-testing on every dependency bu
 
 Neither is a wiring error — the runtime objects are exactly what the libraries expect.
 
+### The Convex API is typed by hand, in the backend
+
+`convex codegen` can only emit the **generic** `AnyApi` until a real deployment exists to
+introspect, and under `AnyApi` every function reference has `any` arguments and an `any`
+result. That would put a typo'd function name, a renamed field or a newly-required
+argument on a phone before the compiler ever saw it.
+
+So `@partybooth/backend/client-api` declares the shape of the calls the clients make and
+casts the generated object to it **once**. It lives in the backend rather than here
+because `apps/web` needs the same description, and two hand-written copies of one wire
+contract is a drift bug that fails silently — they had already disagreed about whether
+`storageRegion` was a `string`. `src/lib/api.ts` is this app's one-line view onto it, so
+no screen imports the backend directly. Payload types are assembled from
+`@partybooth/contracts` wherever a definition already exists there (`EventState`,
+`EventRole`, `JoinResult`, `StorageRegion`); only the field lists, which the backend's
+`v.object(...)` validators own, are restated.
+
+The residual risk is a backend `returns` validator changing without that file following.
+Two things contain it: `join.join`'s result is re-parsed at the call site with the
+contract's own `parseJoinResult` (a cast asserts a shape, parsing proves it), and
+`client-api.ts` collapses to a re-export of `_generated/api` the moment `convex dev` has
+run against a deployment — no screen changes when it does.
+
+### `expectAuth` is off, and Sprint 1 had it on
+
+`ConvexReactClient`'s `expectAuth` pauses the socket until the first auth token arrives.
+`ConvexProviderWithAuth` only calls `setAuth` when the provider reports _authenticated_,
+so for a signed-out user the socket never resumes and **no query runs at all**.
+
+That was invisible in Sprint 1, where every query was authenticated. Sprint 2 has one
+that must not be: `join.previewByToken` is unauthenticated on purpose, so a guest who
+scans the QR sees whose party it is before deciding to sign in. With `expectAuth: true`
+that screen hangs on a spinner, on the most important path in the product.
+
+The flash it was avoiding is prevented properly instead — `LiveSessionProvider` gates
+every authenticated query on `useConvexAuth().isAuthenticated`, which is _stricter_: it
+also closes the window where Better Auth has a session but Convex has not been told yet,
+in which `events.myEvents` would have thrown `unauthenticated` during render.
+
+### The photo is remembered locally; the name is not
+
+Onboarding's name goes to Convex through `users.updateProfile`, which is the **one** writer
+of `users.displayName` — the column the host's queue and every audit row read, and the same
+mutation `apps/web`'s name-confirm form calls. It also stamps `users.onboardedAt`, which is
+what `needsOnboarding` reads: a reinstall no longer re-prompts, and a guest who confirmed
+their name on the web is not asked again here.
+
+The **photo** stays on the device (`src/lib/local-profile.ts`, via `expo-secure-store`,
+which is already linked for the session cookie). A `file://` path stored on the server is
+a string no other device can resolve, and avatars ride the same short-lived upload-grant
+pipeline as party media, which Sprint 3 builds. A second ad-hoc upload path now is one to
+delete next week. `updateProfile` already takes `avatarKey`, so when the pipeline exists
+the only change here is passing it.
+
 ### Testing
 
 `pnpm --filter @partybooth/mobile test` runs Vitest over `src/lib/**/*.test.ts` only —
-the pure modules with no React Native imports (deep links, roles, config, Sentry
-scrubbing). Rendering RN components under Vitest needs a Metro-equivalent transform and
-native mocks, which is a poor trade this week; component behaviour is covered by the
-two-physical-phone pass in Sprint 6.
+the pure modules with no React Native imports (deep links, join-result handling and code
+input, event state/schedule copy, profile validation, error mapping, roles, config,
+Sentry scrubbing). Rendering RN components under Vitest needs a Metro-equivalent
+transform and native mocks, which is a poor trade this week; component behaviour is
+covered by the two-physical-phone pass in Sprint 6.
+
+Screen logic is kept testable by being pushed _out_ of the screens: a screen should read
+as a list of states, with every decision behind a named function in `src/lib`. The join
+copy is the sharpest case — `describeJoinFailure` has a test asserting it shows the
+contract's single rejection sentence, so a well-meaning "be more helpful here" change
+fails a test instead of quietly becoming an enumeration oracle.
 
 The strongest offline check that the app actually works is `pnpm --filter
 @partybooth/mobile build` (`expo export`) — it runs the real Metro graph and fails on any
