@@ -119,16 +119,19 @@ An App Review reviewer cannot receive a six-digit OTP email. Without a working s
 app is rejected under **Guideline 2.1** with "we were unable to sign in", and that costs a
 full review cycle.
 
-### 4.1 Set the two variables on the deployment the reviewer will hit
+### 4.1 Set the three variables on the deployment the reviewer will hit
 
 ```bash
-npx convex env set DEMO_LOGIN_EMAIL   "reviewer@partybooth.app"   # any address you control
-npx convex env set DEMO_LOGIN_OTP     "314159"                    # six digits
+npx convex env set DEMO_LOGIN_EMAIL      "reviewer@partybooth.app"    # any address you control
+npx convex env set DEMO_LOGIN_OTP        "314159"                     # six digits
+npx convex env set DEMO_LOGIN_EXPIRES_AT "2026-08-20T00:00:00Z"       # ISO date; login fails closed after this
 ```
 
-Both must be set or the demo login does not exist at all (the backend returns `undefined`
-and nothing changes). This is the **production** deployment: Apple reviews the production
-build against production Convex.
+All three must be set or the demo login does not exist at all (the backend returns `undefined`
+and nothing changes). `DEMO_LOGIN_EXPIRES_AT` is a fail-closed kill switch: pick a date
+comfortably past the expected review window — once it passes, the reviewer login stops
+working even if you forget to unset the variables. This is the **production** deployment:
+Apple reviews the production build against production Convex.
 
 ### 4.2 Seed the demo party
 
@@ -213,6 +216,7 @@ CONTACT
 ```bash
 npx convex env remove DEMO_LOGIN_EMAIL
 npx convex env remove DEMO_LOGIN_OTP
+npx convex env remove DEMO_LOGIN_EXPIRES_AT
 ```
 
 **Do not skip this.** A fixed-code login left on a production deployment is a permanent
@@ -442,6 +446,6 @@ Fix, reply, and resubmit the same day (Sprint 6 reserves time for exactly this).
 - [ ] TestFlight: add yourself and 2–3 rehearsal guests as internal testers. Internal
       TestFlight needs **no** beta review and installs in minutes — this is the real
       fallback if App Review misses the 5th.
-- [ ] **Unset `DEMO_LOGIN_EMAIL` and `DEMO_LOGIN_OTP` once the build is approved** (§4.5).
+- [ ] **Unset `DEMO_LOGIN_EMAIL`, `DEMO_LOGIN_OTP` and `DEMO_LOGIN_EXPIRES_AT` once the build is approved** (§4.5) — expiry fails closed either way.
 - [ ] Do not print App Store links on the party signage until the app is actually
       approved. The web URL is primary (PLAN.md → Sprint 7).

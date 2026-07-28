@@ -32,7 +32,8 @@ import { mintInviteVersion } from "./lib/events";
  * are driven by the owner, never by an agent or CI (CONTRIBUTING).
  *
  * **It refuses to run unless the demo login is configured.** `demoLogin()`
- * returns a value only when both `DEMO_LOGIN_EMAIL` and `DEMO_LOGIN_OTP` are
+ * returns a value only when `DEMO_LOGIN_EMAIL`, `DEMO_LOGIN_OTP` and an unexpired
+ * `DEMO_LOGIN_EXPIRES_AT` are
  * set, which makes "is the demo account switched on?" and "does the demo party
  * exist?" the same question. A deployment that never opted in cannot end up with
  * a stray fake party in it.
@@ -101,7 +102,7 @@ export const seedDemoEvent = internalMutation({
     const demo = demoLogin();
     if (demo === undefined) {
       throw invalidState(
-        "Set DEMO_LOGIN_EMAIL and DEMO_LOGIN_OTP before seeding the App Review demo party.",
+        "Set DEMO_LOGIN_EMAIL, DEMO_LOGIN_OTP and DEMO_LOGIN_EXPIRES_AT (a future ISO date) before seeding the App Review demo party.",
       );
     }
 
