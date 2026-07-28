@@ -38,6 +38,33 @@ shape and the same argument as the storage adapter in [ADR 0002](0002-storage-re
 The decision to notify is a database write (`pushNotifications`, `notificationThrottles`), because a
 Convex mutation has no `fetch`; the send is an action that drains the queue.
 
+**A capability already issued is swept as well as refused** (added after the Sprint 5 audit). The
+freeze above governs every _decision_; an upload grant is a decision already taken and handed out,
+and `media.completeUpload` validates the grant rather than the membership or the account. So locking
+an account expires every grant it holds anywhere **and** every grant anybody holds for a party it
+owns, scheduling a deletion expires the account's grants through the same helper (both entry points,
+console and self-service), and `completeUpload` re-asks `eventFreeze` at the one place bytes are
+accepted. The last of those is what makes the guarantee independent of the enumeration being
+exhaustive.
+
+**A credential is not a view.** A `globalAdmin` may read an event's _code_ — the rotation dialog has
+to say which one it is replacing — but never its **QR token**, and may not `join` an event they do
+not own. The token is a bearer credential; a membership obtained with it outranks the admin role in
+`resolveEventRole`, which would convert "the console has no media access" from an invariant into an
+accident. This is the same confinement shape as the App Review demo identity.
+
+**Retries are the transport's, not the queue's.** Expo's docs ask for exponential backoff on network
+errors, 429s, 5xx responses and `MessageRateExceeded`; the queue carries `attempts` and
+`nextAttemptAt` and books its own retry, bounded. Receipts are re-asked until Expo answers or its
+24-hour retention elapses, at which point the row is retired — an unresolvable row left in `sent`
+for ever is what starves later receipts out of the sweep's window.
+
+**Device health is evidence about a device.** Only `DeviceNotRegistered` and per-message failures
+Expo gave no code for count; rate limits, project-credential errors and payload errors (`MessageTooBig`)
+do not, because each fails for every device at once and says nothing about any of them. And a
+delivery success does not re-enable a disabled token: Expo says stop "until it re-registers with your
+server", so `registerDevice` is the only path that clears `disabledAt`.
+
 ## Consequences
 
 - **The sweep is total by construction.** There is no event — existing, or created a second before
@@ -67,15 +94,18 @@ Convex mutation has no `fetch`; the send is an action that drains the queue.
 
 ## Alternatives considered
 
-| Option                                                 | Why not                                                                                                                                                               |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sweep owned events at lock time (write a flag on each) | Misses anything created afterwards, needs an unbounded write inside the lock mutation, and leaves two sources of truth that can disagree after a restore.             |
-| Cascade the lock into `events.state`                   | Destroys the state the host was in. Unlocking would have to guess whether the party was `live` or `paused`, and an event's own state machine is the host's, not ours. |
-| Check the freeze in each handler                       | Fifteen checks, fifteen chances to miss one, and the sixteenth surface has none. This is the failure the sprint started from.                                         |
-| `expo-server-sdk` instead of an adapter over `fetch`   | The Convex runtime is a V8 isolate, not Node; the SDK's value is chunking and retries, which are twelve lines we own and can test offline. Same trade as Resend.      |
-| Send inline from the mutation                          | Impossible — a Convex mutation has no `fetch`. This is not a preference.                                                                                              |
-| Fire the action directly with the message, no queue    | A crash, a redeploy or a transport failure between the decision and the send loses the notification with no record that it was ever owed.                             |
-| Prune tokens on any Expo error                         | `InvalidCredentials` is the _project's_ APNs key. Pruning on it empties the device table the day somebody rotates a certificate.                                      |
+| Option                                                 | Why not                                                                                                                                                                                                                            |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sweep owned events at lock time (write a flag on each) | Misses anything created afterwards, needs an unbounded write inside the lock mutation, and leaves two sources of truth that can disagree after a restore.                                                                          |
+| Cascade the lock into `events.state`                   | Destroys the state the host was in. Unlocking would have to guess whether the party was `live` or `paused`, and an event's own state machine is the host's, not ours.                                                              |
+| Check the freeze in each handler                       | Fifteen checks, fifteen chances to miss one, and the sixteenth surface has none. This is the failure the sprint started from.                                                                                                      |
+| `expo-server-sdk` instead of an adapter over `fetch`   | The Convex runtime is a V8 isolate, not Node; the SDK's value is chunking and retries, which are twelve lines we own and can test offline. Same trade as Resend.                                                                   |
+| Send inline from the mutation                          | Impossible — a Convex mutation has no `fetch`. This is not a preference.                                                                                                                                                           |
+| Fire the action directly with the message, no queue    | A crash, a redeploy or a transport failure between the decision and the send loses the notification with no record that it was ever owed.                                                                                          |
+| Prune tokens on any Expo error                         | `InvalidCredentials` is the _project's_ APNs key. Pruning on it empties the device table the day somebody rotates a certificate.                                                                                                   |
+| Give the admin console the QR token, "for support"     | It is a bearer credential. Holding it _is_ being able to join, and a membership outranks the admin role — so the console's "no media access" would be one call away from false. The code is enough to tell a host what to reprint. |
+| Retry a failed send for ever                           | A queue that never gives up never says it is broken. Bounded at five attempts, then `failed` with the transport's own reason, so `push.status` and `admin.jobHealth` can show it.                                                  |
+| Leave an unanswered receipt outstanding indefinitely   | Expo discards receipts after 24 hours, so the row can never resolve — and enough of them fill the sweep's window and starve newer `DeviceNotRegistered` receipts, which is the one verdict the sweep exists to act on.             |
 
 ## Revisit when
 

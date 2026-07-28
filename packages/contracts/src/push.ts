@@ -267,27 +267,59 @@ export interface PushMessageBody {
   body: string;
 }
 
+/** How much of an event name a notification will quote. */
+export const PUSH_EVENT_NAME_MAX_LENGTH = 60;
+
+/**
+ * Make a host-chosen party name safe to interpolate into a lock screen.
+ *
+ * An event name is free text written by whoever created the party, and it is the
+ * only attacker-influenced string in the whole notification. Two things follow.
+ *
+ * **Control characters go.** Newlines and bidi overrides are the difference
+ * between quoting a name and composing arbitrary copy: a name containing a line
+ * break lets its author write what looks like a second sentence from PartyBooth
+ * underneath ours. `\p{C}` covers the C0/C1 ranges, the bidi and zero-width
+ * formatting marks, unassigned code points and surrogates in one class.
+ *
+ * **Length is capped.** Not for the payload ceiling — {@link truncateToPayload}
+ * already guarantees that, by eating the *body*, which is where the meaning is —
+ * but so that a two-thousand-character name cannot push our own sentence out of
+ * the message it is supposed to be part of.
+ */
+export function sanitisePushText(
+  value: string,
+  maxLength: number = PUSH_EVENT_NAME_MAX_LENGTH,
+): string {
+  const stripped = value.replace(/\p{C}/gu, " ").replace(/\s+/gu, " ").trim();
+  if (stripped.length === 0) return "your party";
+  return stripped.length <= maxLength ? stripped : `${stripped.slice(0, maxLength - 1).trim()}…`;
+}
+
 export function uploadFailedMessage(eventName: string): PushMessageBody {
   return {
     title: "Your upload didn't send",
-    body: `We couldn't send one of your photos to ${eventName}. Open PartyBooth to retry it.`,
+    body: `We couldn't send one of your photos to ${sanitisePushText(eventName)}. Open PartyBooth to retry it.`,
   };
 }
 
 export function uploadRecoveredMessage(eventName: string): PushMessageBody {
   return {
     title: "Sent after all",
-    body: `That photo made it through to ${eventName}.`,
+    body: `That photo made it through to ${sanitisePushText(eventName)}.`,
   };
 }
 
 export function eventOpenedMessage(eventName: string): PushMessageBody {
-  return { title: `${eventName} is live`, body: "The party is open — start taking photos." };
+  return {
+    title: `${sanitisePushText(eventName)} is live`,
+    body: "The party is open — start taking photos.",
+  };
 }
 
 export function eventClosedMessage(eventName: string): PushMessageBody {
   return {
-    title: `${eventName} has wrapped up`,
+    title: `${sanitisePushText(eventName)} has wrapped up`,
     body: "No more photos for now. The gallery stays open.",
   };
 }
@@ -295,7 +327,7 @@ export function eventClosedMessage(eventName: string): PushMessageBody {
 export function pendingThresholdMessage(eventName: string, pending: number): PushMessageBody {
   return {
     title: `${pending} photos waiting`,
-    body: `${eventName} has ${pending} submissions to review.`,
+    body: `${sanitisePushText(eventName)} has ${pending} submissions to review.`,
   };
 }
 
@@ -437,8 +469,83 @@ export const EXPO_PUSH_MAX_PAYLOAD_BYTES = 4096;
  */
 export const PUSH_RECEIPT_DELAY_MS = 15 * 60_000;
 
+/**
+ * How long Expo keeps a receipt: "push receipts are cleared after 24 hours".
+ *
+ * It is the deadline for the whole receipt conversation, not a suggestion. A
+ * ticket still unanswered after this window will *never* be answered, so the row
+ * has to be retired rather than asked about for ever — an unbounded set of
+ * permanently-`sent` rows is what starves newer `DeviceNotRegistered` receipts
+ * out of the batch the sweep can see.
+ */
+export const PUSH_RECEIPT_WINDOW_MS = 24 * 60 * 60_000;
+
+/** How long the sweep waits before asking about a ticket Expo has not decided. */
+export const PUSH_RECEIPT_RETRY_DELAY_MS = 15 * 60_000;
+
 /** Consecutive delivery failures before a token is switched off. */
 export const PUSH_FAILURE_LIMIT = 3;
+
+/* -------------------------------------------------------------------------- */
+/* Transient send failures                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Retries, as Expo's docs ask for them.
+ *
+ * > "if the Expo push notification service is down or unreachable and you get a
+ * > network error - a HTTP 429 error (Too Many Requests), or a HTTP 5xx error
+ * > (Server Errors) - use exponential backoff to wait a few seconds before
+ * > retrying […] If the first retry attempt is unsuccessful, wait for longer
+ * > (follow exponential backoff) and retry again."
+ *
+ * The same instruction is given for the `MessageRateExceeded` ticket, which is
+ * why one function serves both: they are the same fact ("we asked too fast, or
+ * Expo could not answer") arriving through two different channels.
+ *
+ * Bounded, because a queue that retries for ever is a queue that never tells
+ * anybody it is broken. Five attempts across roughly eight minutes is longer
+ * than any Expo blip this product will meet and short enough that a party-night
+ * failure is legible in `push.status` rather than pending indefinitely.
+ */
+export const PUSH_SEND_MAX_ATTEMPTS = 5;
+
+/** First backoff step. Doubles per attempt, capped by {@link PUSH_SEND_BACKOFF_CAP_MS}. */
+export const PUSH_SEND_BACKOFF_BASE_MS = 30_000;
+
+/** Ceiling for one backoff step, so attempt five is not an hour away. */
+export const PUSH_SEND_BACKOFF_CAP_MS = 8 * 60_000;
+
+/**
+ * How long to wait before retry number `attempts + 1`.
+ *
+ * `attempts` is how many have already been made, so the first retry waits
+ * {@link PUSH_SEND_BACKOFF_BASE_MS} and each subsequent one waits twice as long,
+ * up to the cap.
+ */
+export function pushRetryDelayMs(attempts: number): number {
+  const step = Math.max(0, Math.trunc(attempts));
+  const raw = PUSH_SEND_BACKOFF_BASE_MS * 2 ** step;
+  return Math.min(PUSH_SEND_BACKOFF_CAP_MS, raw);
+}
+
+/** Has this notification used up its retry budget? */
+export function pushRetriesExhausted(attempts: number): boolean {
+  return attempts >= PUSH_SEND_MAX_ATTEMPTS;
+}
+
+/**
+ * Transport-level failure classes Expo asks us to back off and retry.
+ *
+ * Deliberately structural rather than a list of messages: the adapter reports
+ * what it saw (an HTTP status, or nothing at all because the socket never
+ * opened) and this decides. A 4xx that is not 429 is *our* request being wrong,
+ * and retrying a malformed request forever is how a queue silently stops.
+ */
+export function isRetryableTransportStatus(status: number | undefined): boolean {
+  if (status === undefined) return true; // A network error: no response at all.
+  return status === 429 || status >= 500;
+}
 
 /**
  * A message as the Expo service wants it. Deliberately a subset: PartyBooth
@@ -519,6 +626,23 @@ export function isProjectCredentialError(code: string | undefined): boolean {
   return code !== undefined && (PUSH_PROJECT_CREDENTIAL_ERRORS as readonly string[]).includes(code);
 }
 
+/**
+ * Errors that are the **message's** problem rather than the phone's.
+ *
+ * `MessageTooBig` says the payload exceeded 4096 bytes. That is a defect in what
+ * we composed, and it will fail identically for every device the same copy is
+ * sent to — so charging it to a device's failure budget disables perfectly
+ * healthy tokens three notifications after somebody ships a long party name.
+ * Same argument as {@link PUSH_PROJECT_CREDENTIAL_ERRORS}, one layer up.
+ */
+export const PUSH_PAYLOAD_ERRORS = [
+  "MessageTooBig",
+] as const satisfies readonly ExpoPushErrorCode[];
+
+export function isPayloadError(code: string | undefined): boolean {
+  return code !== undefined && (PUSH_PAYLOAD_ERRORS as readonly string[]).includes(code);
+}
+
 /** Split a list into request-sized batches. */
 export function chunk<T>(items: readonly T[], size: number): T[][] {
   if (size <= 0) throw new RangeError("chunk size must be positive");
@@ -561,28 +685,48 @@ export const PUSH_PLATFORM_CHANNEL = "default";
 /**
  * Update a device's failure counter and decide whether it stays enabled.
  *
- * A pruning error kills the token outright; anything else is counted, and
- * {@link PUSH_FAILURE_LIMIT} consecutive counts do the same thing more slowly.
- * A success resets the counter, so a phone that was in a tunnel is not disabled
- * a week later by three failures spread across a month.
+ * A pruning error kills the token outright; anything else that is genuinely
+ * about *this phone* is counted, and {@link PUSH_FAILURE_LIMIT} consecutive
+ * counts do the same thing more slowly. A success resets the counter, so a phone
+ * that was in a tunnel is not disabled a week later by three failures spread
+ * across a month.
+ *
+ * Two properties are load-bearing and were both wrong once:
+ *
+ * - **A success does not re-enable a disabled token.** Expo's guidance for
+ *   `DeviceNotRegistered` is to "stop sending notifications to this device's
+ *   push token **until it re-registers with your server**" — so re-registration
+ *   is the only event that may clear `disabledAt`, and `registerDevice` is the
+ *   only place that does it. Clearing it on a later delivery success resurrected
+ *   exactly the tokens Expo told us to stop using.
+ * - **Errors that are not about the phone are not charged to the phone.** A rate
+ *   limit is the project being throttled, a credential error is the project
+ *   being misconfigured, and a `MessageTooBig` is copy we composed badly. None
+ *   of the three is evidence about any device, and each of them fails for every
+ *   device at once — which is how a whole table gets disabled in three sends.
  */
 export function nextDeviceHealth(
   current: { failureCount: number; disabledAt?: number | undefined },
   outcome: { ok: boolean; errorCode?: string | undefined; now: number },
 ): { failureCount: number; disabledAt: number | undefined } {
-  if (outcome.ok) return { failureCount: 0, disabledAt: undefined };
+  if (outcome.ok) return { failureCount: 0, disabledAt: current.disabledAt };
   if (shouldPruneToken(outcome.errorCode)) {
-    return { failureCount: current.failureCount + 1, disabledAt: outcome.now };
+    return {
+      failureCount: current.failureCount + 1,
+      disabledAt: current.disabledAt ?? outcome.now,
+    };
   }
-  // A rate limit is the project being throttled and a credential error is the
-  // project being misconfigured. Neither is evidence about this phone, so
-  // neither is charged to it.
-  if (isRetryablePushError(outcome.errorCode) || isProjectCredentialError(outcome.errorCode)) {
+  if (
+    isRetryablePushError(outcome.errorCode) ||
+    isProjectCredentialError(outcome.errorCode) ||
+    isPayloadError(outcome.errorCode)
+  ) {
     return { failureCount: current.failureCount, disabledAt: current.disabledAt };
   }
   const failureCount = current.failureCount + 1;
   return {
     failureCount,
-    disabledAt: failureCount >= PUSH_FAILURE_LIMIT ? outcome.now : current.disabledAt,
+    disabledAt:
+      current.disabledAt ?? (failureCount >= PUSH_FAILURE_LIMIT ? outcome.now : undefined),
   };
 }

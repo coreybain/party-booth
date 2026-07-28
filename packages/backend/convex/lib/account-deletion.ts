@@ -3,6 +3,7 @@ import { AUDIT_ACTIONS } from "@partybooth/contracts";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
+import { expireGrantsForAccount } from "./upload-grants";
 
 /**
  * The account-deletion lifecycle — the **scheduling** half.
@@ -82,6 +83,22 @@ export async function scheduleAccountDeletion(
     updatedAt: now,
   });
 
+  /*
+   * …with one exception, which is why this line exists.
+   *
+   * An **upload grant** outlives the state change, because `completeUpload`
+   * validates the grant rather than the account: it is a capability that was
+   * handed out while the answer was still yes. Scheduling deletion is the
+   * harsher of the two admin actions — `accountStateAllows` reduces the account
+   * to `account.view` — and `admin.lockAccount` already swept grants while this
+   * path did not, so the console's own copy ("access is revoked immediately,
+   * exactly as a lock does") was true of one route and not the other.
+   *
+   * It lives here rather than in the admin mutation so that **both** entry
+   * points get it: the console and `users.requestAccountDeletion`.
+   */
+  const expiredGrants = await expireGrantsForAccount(ctx, user._id, now);
+
   const jobId =
     existingJob?._id ??
     (await ctx.db.insert("deletionJobs", {
@@ -106,7 +123,7 @@ export async function scheduleAccountDeletion(
     // `account.deletion_scheduled` is on AUDIT_ACTIONS_REQUIRING_REASON, so a
     // blank reason would throw. Self-service deletion has an implicit one.
     reason: options.reason ?? "Requested by the account holder.",
-    metadata: { scheduledAt, previousState: user.accountState },
+    metadata: { scheduledAt, previousState: user.accountState, expiredGrants },
     now,
   });
 

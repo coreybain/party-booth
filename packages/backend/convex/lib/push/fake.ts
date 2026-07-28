@@ -20,6 +20,15 @@ import type { PushAdapter } from "./adapter";
 export interface FakePushOptions {
   /** Token → error code returned on the **ticket** (send-time refusal). */
   ticketErrors?: Record<string, ExpoPushErrorCode>;
+  /**
+   * Tokens refused on the ticket with **no** `details.error`.
+   *
+   * The only failure class that still counts against a device's health, now that
+   * rate limits, credential errors and payload errors are all exempted — so it
+   * is the only way to reach `PUSH_FAILURE_LIMIT` in a test, and it is a shape
+   * Expo really produces (a per-message error with a message and no code).
+   */
+  ticketRefusals?: readonly string[];
   /** Token → error code returned on the **receipt** (delivery-time failure). */
   receiptErrors?: Record<string, ExpoPushErrorCode>;
   /** Ticket ids to withhold a receipt for, i.e. "Expo has not decided yet". */
@@ -63,8 +72,13 @@ export function createFakePushAdapter(options: FakePushOptions = {}): FakePushAd
       chunkSizes.push(messages.length);
 
       const tickets: ExpoPushTicket[] = [];
+      const refused = new Set(options.ticketRefusals ?? []);
       for (const message of messages) {
         sent.push(message);
+        if (refused.has(message.to)) {
+          tickets.push({ status: "error", message: "fake ticket refusal, no code" });
+          continue;
+        }
         const ticketError = options.ticketErrors?.[message.to];
         if (ticketError !== undefined) {
           tickets.push({

@@ -898,6 +898,16 @@ export default defineSchema({
     errorCode: v.optional(v.string()),
     error: v.optional(v.string()),
     attempts: v.number(),
+    /**
+     * The earliest a `queued` row may be sent again.
+     *
+     * Set while a row is backing off after a transport failure or a
+     * `MessageRateExceeded` ticket — Expo's docs ask for exponential backoff on
+     * network errors, 429s, 5xx responses and that ticket alike, and a retry
+     * needs somewhere to remember how long to wait. Absent means "send it now",
+     * which is what every row written before this existed means.
+     */
+    nextAttemptAt: v.optional(v.number()),
 
     createdAt: v.number(),
     sentAt: v.optional(v.number()),
@@ -907,6 +917,9 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_state", ["state"])
     .index("by_state_and_createdAt", ["state", "createdAt"])
+    // Receipt sweeps walk `sent` rows oldest-first *by send time*, because the
+    // 24-hour receipt window is measured from the send and not from the queue.
+    .index("by_state_and_sentAt", ["state", "sentAt"])
     .index("by_ticket", ["ticketId"])
     .index("by_device", ["deviceId"]),
 

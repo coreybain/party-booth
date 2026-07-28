@@ -8,6 +8,7 @@ import {
   EVENT_ACTION_COPY,
   eventActionsFor,
   eventStateNote,
+  ORGANISER_INVITE_COPY,
 } from "@/lib/admin/actions";
 import {
   auditActionGroup,
@@ -135,6 +136,22 @@ describe("which actions an accounts row is offered", () => {
     expect(ACCOUNT_ACTION_COPY.lock.consequences.join(" ")).toMatch(/party they own freezes/i);
   });
 
+  /**
+   * The lock sweep now reaches every guest's outstanding permission for a frozen
+   * party, not just the locked person's, and the sentence an admin reads has to
+   * say so — "guests stop uploading" was promised before it was true.
+   */
+  it("says outstanding upload permissions go, and is honest about the residual window", () => {
+    const lock = ACCOUNT_ACTION_COPY.lock.consequences.join(" ");
+    expect(lock).toMatch(/outstanding upload permission/i);
+    // Signed URLs cannot be revoked, so the copy states the window rather than
+    // implying access stops instantly.
+    expect(lock).toMatch(/already handed out keep working/i);
+    expect(ACCOUNT_ACTION_COPY.scheduleDeletion.consequences.join(" ")).toMatch(
+      /outstanding upload permission/i,
+    );
+  });
+
   it("surfaces the lock reason, and never invents one", () => {
     expect(accountStateNote(account({ accountState: "locked", lockReason: "Abuse." }))).toBe(
       "Abuse.",
@@ -190,6 +207,31 @@ function row(overrides: Partial<AuditRow> = {}): AuditRow {
     ...overrides,
   };
 }
+
+/**
+ * TODO.md: "confirmation + reason + immutable audit on **every** action", and
+ * TODO.md's own Sprint 5 note claims all privileged admin actions go through
+ * `ConfirmAction`. Inviting an organiser was the exception — a reason and an
+ * audit row, but no confirmation step — so it now carries its own copy and the
+ * form hands off to the same dialog.
+ */
+describe("inviting an organiser is a confirmed action like the rest", () => {
+  it("has the same shape as every other action's copy", () => {
+    expect(ORGANISER_INVITE_COPY.consequences.length).toBeGreaterThan(0);
+    expect(ORGANISER_INVITE_COPY.confirmLabel.length).toBeGreaterThan(0);
+    expect(ORGANISER_INVITE_COPY.title.length).toBeGreaterThan(0);
+  });
+
+  it("says the invitation binds to the address, which is what makes a typo matter", () => {
+    const text = ORGANISER_INVITE_COPY.consequences.join(" ");
+    expect(text).toMatch(/binds to the address/i);
+    expect(text).toMatch(/cannot be un-sent/i);
+  });
+
+  it("is not dressed as destructive — nothing is taken from anybody", () => {
+    expect(ORGANISER_INVITE_COPY.tone).toBe("primary");
+  });
+});
 
 describe("the audit log viewer", () => {
   it("turns an action name into a sentence without a lookup table to maintain", () => {

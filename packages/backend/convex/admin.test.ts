@@ -550,6 +550,81 @@ describe("admins cannot see media", () => {
     setAllowlist(undefined);
   });
 
+  /**
+   * The pivot that made "the admin console has no media access" a statement
+   * about *capabilities* rather than about outcomes.
+   *
+   * `event.viewInviteCode` is in the `globalAdmin` set so the rotation dialog
+   * can say which code it is replacing. It also served the **QR token**, which
+   * is a 160-bit bearer credential — enough on its own to call `join.join` and
+   * be admitted as a `guest`. A guest membership then outranks the admin role in
+   * `resolveEventRole`, so `media.viewApproved` succeeds and the console
+   * receives signed read URLs for a stranger's whole gallery. Two independent
+   * barriers, because either alone is one edit from being removed.
+   */
+  it("serves the admin the join code but never the QR token", async () => {
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+
+    const current = await t
+      .withIdentity({ subject: "admin" })
+      .query(api.invites.current, { eventId });
+    expect(current?.code).toBe("482913");
+    expect(current?.token).toBeUndefined();
+
+    const home = await t.withIdentity({ subject: "admin" }).query(api.events.home, { eventId });
+    expect(home.invite?.code).toBe("482913");
+    expect(home.invite?.token).toBeUndefined();
+
+    // The host still gets both — this is a rule about who is asking, not about
+    // the field going away.
+    const asOwner = await t.withIdentity({ subject: "owner" }).query(api.invites.current, {
+      eventId,
+    });
+    expect(asOwner?.token).toBeTypeOf("string");
+  });
+
+  it("refuses to let an admin join a party they do not own", async () => {
+    const { code, token } = await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    const as = t.withIdentity({ subject: "admin" });
+
+    expect((await as.mutation(api.join.join, { invite: { via: "code", code } })).outcome).toBe(
+      "rejected",
+    );
+    expect((await as.mutation(api.join.join, { invite: { via: "token", token } })).outcome).toBe(
+      "rejected",
+    );
+    expect(await as.mutation(api.join.previewByCode, { code })).toBeNull();
+
+    // No membership was created, so the admin never becomes a `guest` and the
+    // media paths above keep refusing.
+    const membership = await t.run(async (ctx) =>
+      ctx.db
+        .query("memberships")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(membership.map((row) => row.userId)).not.toContain(
+      (
+        await t.run(async (ctx) =>
+          ctx.db
+            .query("users")
+            .withIndex("by_authId", (q) => q.eq("authId", "admin"))
+            .unique(),
+        )
+      )?._id,
+    );
+  });
+
+  it("does not hand the console a fresh QR token when it rotates a code", async () => {
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    const rotated = await t
+      .withIdentity({ subject: "admin" })
+      .mutation(api.admin.rotateEventCode, { eventId, reason: "Code leaked to a group chat" });
+
+    expect(rotated.code).toBeTypeOf("string");
+    expect((rotated as { token?: string }).token).toBeUndefined();
+  });
+
   it("refuses every media read path", async () => {
     const as = t.withIdentity({ subject: "admin" });
     await expect(as.query(api.media.eventMedia, { eventId })).rejects.toThrow(/permission/i);

@@ -600,7 +600,8 @@ export const home = query({
       v.object({
         version: v.number(),
         code: v.string(),
-        token: v.string(),
+        /** Absent for a global admin — see the note below and `invites.current`. */
+        token: v.optional(v.string()),
       }),
     ),
   }),
@@ -624,7 +625,11 @@ export const home = query({
 
     // Admins get the code because `event.viewInviteCode` is in their capability
     // set — rotating a code from the admin console needs to show which one it
-    // is replacing — but they are not `isHost`, so they get no host UI.
+    // is replacing — but they are not `isHost`, so they get no host UI, and
+    // they do **not** get the QR token: it is a bearer credential that admits
+    // its holder as a `guest`, and a guest membership outranks the admin role in
+    // `resolveEventRole`, which would hand the console the media access it is
+    // defined as not having. Same rule, same words, as `invites.current`.
     const maySeeCode = canSeeInviteCode(actor.role, actor.event.state, actor.user.accountState);
     const invite = maySeeCode ? await getActiveInviteVersion(ctx, actor.event) : null;
 
@@ -634,7 +639,13 @@ export const home = query({
       memberCount: members.length,
       ...(invite === null
         ? {}
-        : { invite: { version: invite.version, code: invite.code, token: invite.token } }),
+        : {
+            invite: {
+              version: invite.version,
+              code: invite.code,
+              ...(actor.role === "globalAdmin" ? {} : { token: invite.token }),
+            },
+          }),
     };
   },
 });

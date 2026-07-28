@@ -203,7 +203,13 @@ export interface EventHome {
   readonly invite?: {
     readonly version: number;
     readonly code: string;
-    readonly token: string;
+    /**
+     * The QR credential — **absent for a global admin**, who is served the code
+     * alone. See `convex/invites.ts`: the token by itself admits its holder as a
+     * `guest`, and a membership outranks the admin role, which would give the
+     * console the media access it is defined as not having.
+     */
+    readonly token?: string;
   };
 }
 
@@ -539,7 +545,8 @@ export interface CurrentInvite {
   readonly inviteVersionId: InviteVersionId;
   readonly version: number;
   readonly code: string;
-  readonly token: string;
+  /** Absent for a global admin — see {@link EventHome}'s `invite.token`. */
+  readonly token?: string;
   readonly createdAt: number;
 }
 
@@ -550,6 +557,14 @@ export interface CurrentInvite {
  * revoke path, which is the number the confirmation dialog has to show *before*
  * the button is pressed and the number the result confirms afterwards.
  */
+/** `admin.rotateEventCode` — deliberately token-free; see the field docs. */
+export interface AdminRotateCodeResult {
+  readonly inviteVersionId: InviteVersionId;
+  readonly version: number;
+  readonly code: string;
+  readonly revokedMemberships: number;
+}
+
 export interface RotateInviteResult {
   readonly inviteVersionId: InviteVersionId;
   readonly version: number;
@@ -1114,7 +1129,14 @@ export interface BackendApi {
       { eventId: EventId; reason: string },
       { state: EventState; cancelledJobs: number }
     >;
-    /** Random, or a specific six digits the backend collision-checks. */
+    /**
+     * Random, or a specific six digits the backend collision-checks.
+     *
+     * Returns the new **code** and not the QR token, unlike the host's own
+     * `invites.rotate`. An administrator has to be able to tell the host which
+     * six digits to reprint; handing the console a bearer credential for a party
+     * it does not own is the pivot `convex/invites.ts` describes.
+     */
     readonly rotateEventCode: Mutation<
       {
         eventId: EventId;
@@ -1123,7 +1145,7 @@ export interface BackendApi {
         keepExistingMemberships?: boolean;
         reason: string;
       },
-      RotateInviteResult
+      AdminRotateCodeResult
     >;
     readonly revokeMembership: Mutation<
       { membershipId: MembershipId; reason: string },

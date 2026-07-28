@@ -44,6 +44,8 @@ export const ACCOUNT_ACTION_COPY: Record<AdminAccountAction, AdminActionCopy> = 
     consequences: [
       "They lose access immediately — console, uploads and slideshow.",
       "Every party they own freezes: co-hosts stop moderating, guests stop uploading, and nobody new can join off a printed QR.",
+      "Every outstanding upload permission is cancelled — the account's own, and every guest's for the parties it owns.",
+      "Image links already handed out keep working for up to ten minutes; nothing new is issued.",
       "Guests are told the party is unavailable. They are never told whose account it is.",
       "Nothing is deleted, and unlocking puts it all back.",
     ],
@@ -55,7 +57,7 @@ export const ACCOUNT_ACTION_COPY: Record<AdminAccountAction, AdminActionCopy> = 
     title: "Unlock this account?",
     consequences: [
       "They get their console back, and every party they own starts working again.",
-      "Guests who were mid-upload have to send again — grants issued before the lock have expired.",
+      "Guests who were mid-upload have to send again — every permission issued before the lock was cancelled.",
     ],
     confirmLabel: "Unlock the account",
     tone: "primary",
@@ -64,7 +66,7 @@ export const ACCOUNT_ACTION_COPY: Record<AdminAccountAction, AdminActionCopy> = 
     label: "Schedule deletion",
     title: "Schedule this account for deletion?",
     consequences: [
-      "Access is revoked immediately, exactly as a lock does.",
+      "Access is revoked immediately, exactly as a lock does — including every outstanding upload permission.",
       "Thirty days from now the account, its media and its stored files are erased for good.",
       "Their submissions stay in other people's parties until then, with the name removed.",
       "It is reversible until the purge runs — 'Restore' brings the account back.",
@@ -82,6 +84,32 @@ export const ACCOUNT_ACTION_COPY: Record<AdminAccountAction, AdminActionCopy> = 
     confirmLabel: "Restore the account",
     tone: "primary",
   },
+};
+
+/**
+ * Inviting an organiser is a privileged action, so it gets the dialog too.
+ *
+ * PLAN.md lists it as one of the console's three non-negotiable core actions and
+ * TODO.md requires "confirmation + reason + immutable audit on **every** action".
+ * It was the one that had a reason and an audit row but no confirmation step —
+ * a single button that grew the private beta on the first click, with the
+ * address only ever checked by the person who typed it.
+ *
+ * `tone: "primary"` rather than `danger`: nothing is taken away from anybody.
+ * The consequence worth reading is that the invitation binds to the **address**,
+ * which is what makes a typo a real mistake rather than a retry.
+ */
+export const ORGANISER_INVITE_COPY: AdminActionCopy = {
+  label: "Review invitation",
+  title: "Send this organiser invitation?",
+  consequences: [
+    "They become an organiser the first time they sign in with this exact address, verified.",
+    "Forwarding the email gets somebody else nothing — the invitation binds to the address, not to the link.",
+    "It stays open for fourteen days, and can be re-sent.",
+    "Check the address below: an invitation sent to the wrong one cannot be un-sent.",
+  ],
+  confirmLabel: "Send invitation",
+  tone: "primary",
 };
 
 export const EVENT_ACTION_COPY: Record<AdminEventAction, AdminActionCopy> = {

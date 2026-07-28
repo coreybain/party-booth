@@ -397,12 +397,25 @@ export const remove = mutation({
     const reason = input.reason ?? "Removed by the host.";
     let revokedMembership = false;
 
-    if (membership.status === "active") {
+    /*
+     * Acted on unless it is *already* a deliberate removal.
+     *
+     * A rotation sweep leaves `status: "revoked", revokedByRotation: true`, and
+     * the join path readmits those on a fresh scan by design — a sweep is a
+     * reprinted sign, not a ban. Refusing to touch any non-`active` row
+     * therefore meant a swept guest could not be removed at all: this returned
+     * "nothing to do" and the next scan let them straight back in. Writing
+     * `revokedByRotation: false` is what converts the sweep into a decision.
+     */
+    const alreadyRemoved = membership.status === "revoked" && membership.revokedByRotation !== true;
+
+    if (!alreadyRemoved) {
       await ctx.db.patch(membership._id, {
         status: "revoked",
         revokedAt: now,
         revokedByUserId: actor.user._id,
         revokeReason: reason,
+        revokedByRotation: false,
       });
       revokedMembership = true;
 

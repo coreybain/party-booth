@@ -4,10 +4,16 @@ import {
   DEFAULT_PENDING_THRESHOLD,
   EXPO_PUSH_RECEIPT_CHUNK_SIZE,
   EXPO_PUSH_SEND_CHUNK_SIZE,
+  isRetryablePushError,
+  isRetryableTransportStatus,
   nextDeviceHealth,
   pendingThresholdOf,
   PUSH_CATEGORIES,
   PUSH_RECEIPT_DELAY_MS,
+  PUSH_RECEIPT_RETRY_DELAY_MS,
+  PUSH_RECEIPT_WINDOW_MS,
+  pushRetriesExhausted,
+  pushRetryDelayMs,
   shouldPruneToken,
   truncateToPayload,
   type ExpoPushMessage,
@@ -62,7 +68,12 @@ import { pushCategory, pushPlatform } from "./lib/validators";
 
 /** Same cast as `deletion.ts`: the generic `AnyApi` fallback until codegen runs. */
 const pushFunctions = internal.push as unknown as {
-  queuedBatch: FunctionReference<"query", "internal", { limit?: number }, QueuedRow[]>;
+  queuedBatch: FunctionReference<
+    "query",
+    "internal",
+    { limit?: number; now?: number },
+    QueuedRow[]
+  >;
   applyTickets: FunctionReference<"mutation", "internal", { results: TicketResult[] }, null>;
   dropQueued: FunctionReference<
     "mutation",
@@ -70,13 +81,26 @@ const pushFunctions = internal.push as unknown as {
     { notificationIds: Id<"pushNotifications">[]; reason: string },
     null
   >;
+  deferQueued: FunctionReference<
+    "mutation",
+    "internal",
+    { notificationIds: Id<"pushNotifications">[]; reason: string },
+    { deferred: number; exhausted: number }
+  >;
   awaitingReceipts: FunctionReference<
     "query",
     "internal",
     { limit?: number },
-    { notificationId: Id<"pushNotifications">; ticketId: string }[]
+    OutstandingReceipt[]
   >;
   applyReceipts: FunctionReference<"mutation", "internal", { results: ReceiptResult[] }, null>;
+  retireReceipts: FunctionReference<
+    "mutation",
+    "internal",
+    { notificationIds: Id<"pushNotifications">[] },
+    null
+  >;
+  dispatchQueued: FunctionReference<"action", "internal", { limit?: number }, unknown>;
   checkReceipts: FunctionReference<"action", "internal", { limit?: number }, unknown>;
 };
 
@@ -104,6 +128,13 @@ interface ReceiptResult {
   error?: string;
 }
 
+interface OutstandingReceipt {
+  notificationId: Id<"pushNotifications">;
+  ticketId: string;
+  /** When Expo accepted the message — the clock the 24-hour window runs on. */
+  sentAt: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Registration                                                               */
 /* -------------------------------------------------------------------------- */
@@ -123,9 +154,13 @@ interface ReceiptResult {
  *   notifications would be delivered to somebody else's hands. Reassignment is
  *   the only correct answer, and it is audited on both sides.
  *
- * Registering also **re-enables** a token the delivery path had switched off. A
- * device that reappears with a working token has, by definition, contradicted
- * the `DeviceNotRegistered` that killed it.
+ * Registering also **re-enables** a token the delivery path had switched off,
+ * and it is the **only** thing that does. Expo's guidance for
+ * `DeviceNotRegistered` is to stop sending "until it re-registers with your
+ * server" — so a later delivery success must not clear `disabledAt`
+ * (`nextDeviceHealth` preserves it) and this mutation is the single place a
+ * device comes back, because a device that reappears with a working token has,
+ * by definition, contradicted the verdict that killed it.
  */
 export const registerDevice = mutation({
   args: {
@@ -444,11 +479,17 @@ const queuedRowValidator = v.object({
  * here rather than sent and failed: a phone that told us its token was dead five
  * minutes ago should not be asked again just because a mutation queued a row
  * before we knew.
+ *
+ * A row still inside its backoff window is skipped too. Expo asks for
+ * exponential backoff after a network error, a 429, a 5xx or a
+ * `MessageRateExceeded` ticket, and a backoff nobody honours is a busy loop with
+ * a delay written next to it.
  */
 export const queuedBatch = internalQuery({
-  args: { limit: v.optional(v.number()) },
+  args: { limit: v.optional(v.number()), now: v.optional(v.number()) },
   returns: v.array(queuedRowValidator),
   handler: async (ctx, args) => {
+    const now = args.now ?? Date.now();
     const rows = await ctx.db
       .query("pushNotifications")
       .withIndex("by_state_and_createdAt", (q) => q.eq("state", "queued"))
@@ -457,6 +498,7 @@ export const queuedBatch = internalQuery({
 
     const out: QueuedRow[] = [];
     for (const row of rows) {
+      if (row.nextAttemptAt !== undefined && row.nextAttemptAt > now) continue;
       const device = await ctx.db.get(row.deviceId);
       if (!device || device.disabledAt !== undefined) continue;
       out.push({
@@ -484,24 +526,55 @@ const ticketResultValidator = v.object({
  * Record what Expo said about each message, and act on it.
  *
  * The device health rule is the contract's (`nextDeviceHealth`): a
- * `DeviceNotRegistered` kills the token at once, anything else is counted and
- * three consecutive counts do the same thing more slowly, and a success resets
- * the counter so a phone that was in a tunnel is not disabled a week later by
- * three failures spread across a month.
+ * `DeviceNotRegistered` kills the token at once, anything that is genuinely
+ * about the phone is counted and three consecutive counts do the same thing more
+ * slowly, and a success resets the counter so a phone that was in a tunnel is
+ * not disabled a week later by three failures spread across a month.
+ *
+ * A `MessageRateExceeded` ticket is **not** a verdict on the message. Expo's
+ * docs say to "implement exponential backoff and slowly retry sending
+ * messages", so the row goes back to `queued` with a delay rather than to
+ * `failed` — marking it terminally failed threw away a notification the service
+ * explicitly asked us to send again.
  */
 export const applyTickets = internalMutation({
   args: { results: v.array(ticketResultValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const now = Date.now();
+    let earliestRetryAt: number | undefined;
 
     for (const result of args.results) {
       const notification = await ctx.db.get(result.notificationId);
       if (!notification) continue;
 
+      const attempts = notification.attempts + 1;
+      const retryable = !result.ok && isRetryablePushError(result.errorCode);
+
+      if (retryable && !pushRetriesExhausted(attempts)) {
+        const nextAttemptAt = now + pushRetryDelayMs(attempts);
+        earliestRetryAt = Math.min(earliestRetryAt ?? nextAttemptAt, nextAttemptAt);
+        await ctx.db.patch(notification._id, {
+          state: "queued",
+          attempts,
+          nextAttemptAt,
+          ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+        });
+        // Still asked, so the rule stays in one place — it is a no-op for a rate
+        // limit, which is the point.
+        await applyDeviceOutcome(ctx, notification.deviceId, {
+          ok: false,
+          ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+          now,
+        });
+        continue;
+      }
+
       await ctx.db.patch(notification._id, {
         state: result.ok ? "sent" : "failed",
-        attempts: notification.attempts + 1,
+        attempts,
+        nextAttemptAt: undefined,
         ...(result.ticketId === undefined ? {} : { ticketId: result.ticketId }),
         ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
         ...(result.error === undefined ? {} : { error: result.error }),
@@ -514,7 +587,74 @@ export const applyTickets = internalMutation({
         now,
       });
     }
+
+    if (earliestRetryAt !== undefined) {
+      await ctx.scheduler.runAfter(
+        Math.max(0, earliestRetryAt - now),
+        pushFunctions.dispatchQueued,
+        {},
+      );
+    }
     return null;
+  },
+});
+
+/**
+ * Back a chunk off after a transient transport failure, and book the retry.
+ *
+ * Expo's guidance for a network error, a 429 or a 5xx is exponential backoff,
+ * and before this existed those rows simply stayed `queued` with nothing
+ * scheduled — they moved again only if some *unrelated* mutation happened to
+ * notify somebody. On a quiet deployment (which is every deployment between
+ * parties) that is indistinguishable from losing the notification.
+ *
+ * No device is blamed. A socket that never opened says nothing about any phone,
+ * which is the same argument {@link dropQueued} makes for an unconfigured
+ * deployment.
+ */
+export const deferQueued = internalMutation({
+  args: { notificationIds: v.array(v.id("pushNotifications")), reason: v.string() },
+  returns: v.object({ deferred: v.number(), exhausted: v.number() }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let deferred = 0;
+    let exhausted = 0;
+    let earliestRetryAt: number | undefined;
+
+    for (const id of args.notificationIds) {
+      const row = await ctx.db.get(id);
+      if (!row || row.state !== "queued") continue;
+
+      const attempts = row.attempts + 1;
+      if (pushRetriesExhausted(attempts)) {
+        // Out of budget. `failed` rather than `dropped`: we did try, repeatedly,
+        // and `push.status` should be able to tell "never attempted" from "we
+        // could not reach Expo five times running".
+        await ctx.db.patch(id, {
+          state: "failed",
+          attempts,
+          nextAttemptAt: undefined,
+          error: args.reason,
+        });
+        exhausted += 1;
+        continue;
+      }
+
+      const nextAttemptAt = now + pushRetryDelayMs(attempts);
+      earliestRetryAt = Math.min(earliestRetryAt ?? nextAttemptAt, nextAttemptAt);
+      await ctx.db.patch(id, { attempts, nextAttemptAt, error: args.reason });
+      deferred += 1;
+    }
+
+    if (earliestRetryAt !== undefined) {
+      await ctx.scheduler.runAfter(
+        Math.max(0, earliestRetryAt - now),
+        pushFunctions.dispatchQueued,
+        {},
+      );
+    }
+
+    return { deferred, exhausted };
   },
 });
 
@@ -542,18 +682,32 @@ export const dropQueued = internalMutation({
  * Chunked at Expo's documented ceiling of 100 messages per request and sent
  * sequentially — the docs ask for at most about six concurrent connections and
  * this product's whole party fits in one or two chunks, so serial is both
- * simpler and inside the guidance. A transport failure leaves the chunk
- * `queued`: the next mutation that notifies anybody schedules another run, and
- * the receipt sweep is not blocked behind it.
+ * simpler and inside the guidance.
+ *
+ * A **transient** transport failure (no response at all, a 429, a 5xx) leaves
+ * the chunk `queued` with a backoff and a scheduled retry, exactly as Expo's
+ * docs ask. A **permanent** one (any other 4xx: we sent something the service
+ * will refuse identically for ever) drops the chunk, because retrying a
+ * malformed request is a queue that never empties and never says why. Neither
+ * blames a device, and neither blocks the receipt sweep.
  */
 export const dispatchQueued = internalAction({
   args: { limit: v.optional(v.number()) },
-  returns: v.object({ sent: v.number(), failed: v.number(), dropped: v.number() }),
-  handler: async (ctx, args): Promise<{ sent: number; failed: number; dropped: number }> => {
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    dropped: v.number(),
+    deferred: v.number(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ sent: number; failed: number; dropped: number; deferred: number }> => {
     const batch: QueuedRow[] = await ctx.runQuery(pushFunctions.queuedBatch, {
       ...(args.limit === undefined ? {} : { limit: args.limit }),
+      now: Date.now(),
     });
-    if (batch.length === 0) return { sent: 0, failed: 0, dropped: 0 };
+    if (batch.length === 0) return { sent: 0, failed: 0, dropped: 0, deferred: 0 };
 
     const adapter = resolvePushAdapter();
     if (!adapter.configured) {
@@ -561,11 +715,13 @@ export const dispatchQueued = internalAction({
         notificationIds: batch.map((row) => row.notificationId),
         reason: "Expo push is not configured on this deployment.",
       });
-      return { sent: 0, failed: 0, dropped: batch.length };
+      return { sent: 0, failed: 0, dropped: batch.length, deferred: 0 };
     }
 
     let sent = 0;
     let failed = 0;
+    let dropped = 0;
+    let deferred = 0;
     let anyAccepted = false;
 
     for (const group of chunk(batch, EXPO_PUSH_SEND_CHUNK_SIZE)) {
@@ -588,12 +744,25 @@ export const dispatchQueued = internalAction({
             notificationIds: group.map((row) => row.notificationId),
             reason: "Expo push is not configured on this deployment.",
           });
+          dropped += group.length;
           continue;
         }
-        // Transport failure: the rows stay `queued` and the next dispatch picks
-        // them up. Reported rather than logged — nobody tails Convex logs on
-        // party night.
+        // Reported rather than logged — nobody tails Convex logs on party night.
         reportError({ scope: "push.dispatch", error, extra: { chunk: group.length } });
+
+        const notificationIds = group.map((row) => row.notificationId);
+        const reason = transportReason(error);
+        if (isRetryableTransportStatus(transportStatus(error))) {
+          const outcome = await ctx.runMutation(pushFunctions.deferQueued, {
+            notificationIds,
+            reason,
+          });
+          deferred += outcome.deferred;
+          failed += outcome.exhausted;
+        } else {
+          await ctx.runMutation(pushFunctions.dropQueued, { notificationIds, reason });
+          dropped += group.length;
+        }
         continue;
       }
 
@@ -614,8 +783,12 @@ export const dispatchQueued = internalAction({
         };
       });
 
+      // A `MessageRateExceeded` ticket is counted as deferred rather than
+      // failed: `applyTickets` puts the row back on the queue with a backoff.
+      const retried = results.filter((r) => !r.ok && isRetryablePushError(r.errorCode)).length;
       sent += results.filter((r) => r.ok).length;
-      failed += results.filter((r) => !r.ok).length;
+      failed += results.filter((r) => !r.ok).length - retried;
+      deferred += retried;
       await ctx.runMutation(pushFunctions.applyTickets, { results });
     }
 
@@ -626,9 +799,32 @@ export const dispatchQueued = internalAction({
       await ctx.scheduler.runAfter(PUSH_RECEIPT_DELAY_MS, pushFunctions.checkReceipts, {});
     }
 
-    return { sent, failed, dropped: 0 };
+    return { sent, failed, dropped, deferred };
   },
 });
+
+/**
+ * What HTTP status, if any, a thrown send failure carried.
+ *
+ * Duck-typed on purpose. `ExpoPushTransportError` lives in `lib/push/expo.ts`,
+ * which the unconfigured and fake adapters never load; importing it here to run
+ * an `instanceof` would drag the real adapter's module into every deployment
+ * that has no Expo project. A thrown value with no numeric `status` is a network
+ * error — no response ever arrived — which is the first case Expo's retry
+ * guidance names.
+ */
+function transportStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function transportReason(error: unknown): string {
+  const status = transportStatus(error);
+  return status === undefined
+    ? "Could not reach the Expo push service."
+    : `The Expo push service responded ${status}.`;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Receipts                                                                   */
@@ -644,17 +840,41 @@ export const dispatchQueued = internalAction({
  */
 export const awaitingReceipts = internalQuery({
   args: { limit: v.optional(v.number()) },
-  returns: v.array(v.object({ notificationId: v.id("pushNotifications"), ticketId: v.string() })),
+  returns: v.array(
+    v.object({
+      notificationId: v.id("pushNotifications"),
+      ticketId: v.string(),
+      sentAt: v.number(),
+    }),
+  ),
   handler: async (ctx, args) => {
+    /*
+     * Walked by **send time**, and scoped to rows that can actually produce a
+     * receipt.
+     *
+     * The ordering matters more than it looks. The window this takes is finite,
+     * so a row that can never be resolved is a row that occupies a slot for
+     * ever — and `checkReceipts` retiring anything past Expo's twenty-four-hour
+     * receipt window is what keeps the `sent` set bounded to one day of traffic
+     * instead of growing without limit and starving newer
+     * `DeviceNotRegistered` receipts out of every future sweep.
+     */
     const rows = await ctx.db
       .query("pushNotifications")
-      .withIndex("by_state_and_createdAt", (q) => q.eq("state", "sent"))
+      .withIndex("by_state_and_sentAt", (q) => q.eq("state", "sent"))
       .order("asc")
       .take(args.limit ?? EXPO_PUSH_RECEIPT_CHUNK_SIZE);
 
-    return rows
-      .filter((row) => row.ticketId !== undefined && row.receiptCheckedAt === undefined)
-      .map((row) => ({ notificationId: row._id, ticketId: row.ticketId as string }));
+    const out: OutstandingReceipt[] = [];
+    for (const row of rows) {
+      if (row.ticketId === undefined || row.receiptCheckedAt !== undefined) continue;
+      out.push({
+        notificationId: row._id,
+        ticketId: row.ticketId,
+        sentAt: row.sentAt ?? row.createdAt,
+      });
+    }
+    return out;
   },
 });
 
@@ -692,37 +912,84 @@ export const applyReceipts = internalMutation({
 });
 
 /**
- * Read receipts and prune the tokens they condemn.
+ * Retire tickets Expo will never answer, without blaming a device.
  *
- * A ticket id with no receipt yet is left exactly alone — `receiptCheckedAt`
- * stays unset, so the next sweep asks about it again. Expo keeps receipts for
- * twenty-four hours; a row still unanswered after that simply stops being asked
- * about when it falls out of the batch, which is the right outcome for a
- * notification nobody can say anything more about.
+ * Separate from {@link applyReceipts} precisely because it must **not** run
+ * `applyDeviceOutcome`: "Expo stopped keeping the receipt" is a fact about a
+ * twenty-four-hour retention window, not about a phone, and charging it to a
+ * device's failure budget would disable healthy tokens on any day the sweep was
+ * down for a day.
+ */
+export const retireReceipts = internalMutation({
+  args: { notificationIds: v.array(v.id("pushNotifications")) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    for (const id of args.notificationIds) {
+      const row = await ctx.db.get(id);
+      if (!row || row.state !== "sent" || row.receiptCheckedAt !== undefined) continue;
+      await ctx.db.patch(id, {
+        // Expo accepted it and we never heard whether it landed. `failed` is the
+        // honest answer to "did this arrive?" — `delivered` would be a claim
+        // nothing supports.
+        state: "failed",
+        receiptCheckedAt: now,
+        error: "Expo's 24-hour receipt window elapsed with no receipt.",
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Read receipts, prune the tokens they condemn, and come back for the rest.
+ *
+ * Three properties, and the second and third were both missing:
+ *
+ * - A ticket with no receipt yet is left alone — `receiptCheckedAt` stays unset.
+ * - …and the sweep **books itself another run**. Expo says receipts are "often
+ *   available much sooner" than fifteen minutes but does not promise it, so a
+ *   one-shot check meant a row whose receipt was thirty seconds late stayed
+ *   `sent` for ever and its `DeviceNotRegistered` was never acted on.
+ * - A ticket older than {@link PUSH_RECEIPT_WINDOW_MS} is **retired**, because
+ *   Expo has by then discarded the receipt and no amount of asking will produce
+ *   one. That is what keeps the outstanding set bounded to a day of traffic
+ *   rather than growing until it fills the batch window.
  */
 export const checkReceipts = internalAction({
   args: { limit: v.optional(v.number()) },
-  returns: v.object({ checked: v.number(), pruned: v.number() }),
-  handler: async (ctx, args): Promise<{ checked: number; pruned: number }> => {
-    const outstanding: { notificationId: Id<"pushNotifications">; ticketId: string }[] =
-      await ctx.runQuery(pushFunctions.awaitingReceipts, {
-        ...(args.limit === undefined ? {} : { limit: args.limit }),
+  returns: v.object({ checked: v.number(), pruned: v.number(), retired: v.number() }),
+  handler: async (ctx, args): Promise<{ checked: number; pruned: number; retired: number }> => {
+    const outstanding: OutstandingReceipt[] = await ctx.runQuery(pushFunctions.awaitingReceipts, {
+      ...(args.limit === undefined ? {} : { limit: args.limit }),
+    });
+    if (outstanding.length === 0) return { checked: 0, pruned: 0, retired: 0 };
+
+    const now = Date.now();
+    const expired = outstanding.filter((row) => now - row.sentAt >= PUSH_RECEIPT_WINDOW_MS);
+    const live = outstanding.filter((row) => now - row.sentAt < PUSH_RECEIPT_WINDOW_MS);
+
+    if (expired.length > 0) {
+      await ctx.runMutation(pushFunctions.retireReceipts, {
+        notificationIds: expired.map((row) => row.notificationId),
       });
-    if (outstanding.length === 0) return { checked: 0, pruned: 0 };
+    }
 
     const adapter = resolvePushAdapter();
-    if (!adapter.configured) return { checked: 0, pruned: 0 };
+    if (!adapter.configured) return { checked: 0, pruned: 0, retired: expired.length };
 
     let checked = 0;
     let pruned = 0;
+    let unresolved = 0;
 
-    for (const group of chunk(outstanding, EXPO_PUSH_RECEIPT_CHUNK_SIZE)) {
+    for (const group of chunk(live, EXPO_PUSH_RECEIPT_CHUNK_SIZE)) {
       let receipts;
       try {
         receipts = await adapter.getReceipts(group.map((row) => row.ticketId));
       } catch (error) {
         if (!(error instanceof PushNotConfiguredError)) {
           reportError({ scope: "push.receipts", error, extra: { chunk: group.length } });
+          unresolved += group.length;
         }
         continue;
       }
@@ -731,7 +998,10 @@ export const checkReceipts = internalAction({
       for (const row of group) {
         const receipt = receipts[row.ticketId];
         // No receipt yet is not a verdict. Leave it for the next sweep.
-        if (receipt === undefined) continue;
+        if (receipt === undefined) {
+          unresolved += 1;
+          continue;
+        }
         if (receipt.status === "ok") {
           results.push({ notificationId: row.notificationId, ok: true });
           continue;
@@ -751,7 +1021,14 @@ export const checkReceipts = internalAction({
       }
     }
 
-    return { checked, pruned };
+    // Bounded by the retirement above rather than by a counter: every row this
+    // re-books is one Expo will either answer or stop keeping, and the second
+    // case retires it. So the loop always terminates, twenty-four hours out.
+    if (unresolved > 0) {
+      await ctx.scheduler.runAfter(PUSH_RECEIPT_RETRY_DELAY_MS, pushFunctions.checkReceipts, {});
+    }
+
+    return { checked, pruned, retired: expired.length };
   },
 });
 
@@ -789,13 +1066,18 @@ async function applyDeviceOutcome(
   await ctx.db.patch(deviceId, {
     failureCount: next.failureCount,
     disabledAt: next.disabledAt,
-    ...(next.disabledAt === undefined
-      ? { disabledReason: undefined }
-      : {
+    // Only the transition writes a reason. A device that is already off keeps
+    // the reason it was switched off *for* — overwriting a
+    // `deviceNotRegistered` with `failureLimit` on the next unrelated error
+    // erases the one answer to "my phone stopped buzzing" that is not a bug.
+    // Clearing it is `registerDevice`'s job and nothing else's.
+    ...(becameDisabled
+      ? {
           disabledReason: shouldPruneToken(outcome.errorCode)
             ? "deviceNotRegistered"
             : "failureLimit",
-        }),
+        }
+      : {}),
     updatedAt: outcome.now,
   });
 

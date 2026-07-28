@@ -343,7 +343,12 @@ function InviteSection({ event, abilities }: { event: EventSummary; abilities: H
 
   const joinUrl = useMemo(
     () =>
-      invite && appConfig.status === "ready" ? buildJoinUrl(appConfig.siteUrl, invite.token) : null,
+      // `token` is optional on the wire because a global admin is served the
+      // code alone; a host always has it, so this is a type-level guard rather
+      // than a case the Host tab can reach.
+      invite?.token !== undefined && appConfig.status === "ready"
+        ? buildJoinUrl(appConfig.siteUrl, invite.token)
+        : null,
     [invite],
   );
 

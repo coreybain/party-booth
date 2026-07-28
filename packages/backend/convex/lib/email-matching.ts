@@ -177,12 +177,23 @@ async function matchCohostInvitations(
       // A revoked membership is deliberately revived here: the host has just
       // asked for this person by address, which is a newer decision than the
       // removal it overrides.
+      //
+      // `revokedByRotation` is cleared **with** the rest, and leaving it behind
+      // was a live escalation. The flag means "swept by a rotation and not since
+      // re-decided", and `join.evaluateCredential` lets a sweep-revoked row back
+      // in on a fresh scan. A row that had once been swept, then re-invited as a
+      // co-host, then deliberately removed, still carried `true` — so the
+      // removed co-host could scan the QR and walk back in. Every field that
+      // records *why* a membership was revoked has to go when the membership
+      // stops being revoked, or the next decision inherits the last one's
+      // reasoning.
       await ctx.db.patch(existing._id, {
         role: "cohost",
         status: "active",
         revokedAt: undefined,
         revokedByUserId: undefined,
         revokeReason: undefined,
+        revokedByRotation: undefined,
       });
     } else {
       const membershipId = await ctx.db.insert("memberships", {

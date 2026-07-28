@@ -141,6 +141,19 @@ that a sprint is done when its RC is _verified_, not when the code is written. T
 covered by suites (`convex/lock.test.ts`, `convex/rotation.test.ts`, `src/test/host-tab.test.tsx`),
 which is not the same thing as having done it.
 
+**RC5's third scenario would have failed on the phones**, and that is now fixed rather than
+discovered on the night. "Lock the organiser and watch everything freeze" was true of every *new*
+read and write and false of the uploads already authorised: `lockAccount` expired only the locked
+person's own grants, so for the two minutes of `GRANT_POLICY.ttlMs` a guest's unspent grant still
+landed a file in the suspended party, moved its counters and pinged its hosts. The sweep now covers
+every grant the account holds anywhere **and** every grant anybody holds for a party it owns, and
+`media.completeUpload` re-asks the freeze question at the one place bytes are accepted — so the
+guarantee no longer rests on an enumeration performed once. `convex/lock.test.ts` exercises it with
+genuine guest and co-host grants; the version that shipped used a grant attributed to the owner,
+which is why the suite was green over the gap.
+
+**Still owner-action, and still not ticked:** the two-account, two-phone exercise itself. The code
+gap is closed and the demos are covered offline, but nobody has yet held two phones and watched it.
 **RC5:** second account as co-host moderates from their phone; rotate the code mid-"event" and confirm the old QR is dead; lock the organiser from `/admin` and watch everything freeze.
 > **Backend status (Sprint 5).** Everything the lines above need from Convex is in and tested
 > offline — **627 backend tests**, 495 contracts tests, `pnpm typecheck` / `pnpm lint` (0 errors) /
@@ -275,6 +288,64 @@ which is not the same thing as having done it.
 > exempt from token pruning but **not** from the failure counter — so a rotated APNs key, which fails
 > for every device at once, would have disabled the entire push table on the third send. That is the
 > outcome the pruning list is deliberately narrow to avoid, reached slowly instead of immediately.
+
+> **Audit fixes (Sprint 5).** An audit of the merged sprint found twelve issues; all of the critical
+> and major ones and most of the minor ones are fixed on `feat/sprint5`. Grouped by what they were
+> really about:
+>
+> - **The freeze did not reach authorised uploads.** See the RC5 note above. `lockAccount` now sweeps
+>   account-wide *and* per-owned-event, `scheduleAccountDeletion` sweeps too (so the console's "access
+>   is revoked immediately, exactly as a lock does" is finally true of both routes, and the
+>   self-service deletion path inherits it), and `completeUpload` discards bytes that arrive for a
+>   frozen party.
+> - **The admin console could pivot into a stranger's gallery.** `event.viewInviteCode` served global
+>   admins the **QR token**, a 160-bit bearer credential sufficient to call `join.join`; the resulting
+>   `guest` membership outranks the admin role in `resolveEventRole`, so `media.viewApproved` would
+>   have succeeded and the console's defining "no media access" would have been one join away from
+>   false. `invites.current`, `events.home` and `admin.rotateEventCode` now serve the code and never
+>   the token, and `join`/`previewByCode` refuse an allowlisted address a **new** membership in an
+>   event it does not own — the same shape as `assertDemoConfinement`. Two barriers, because either
+>   alone is one edit from being removed.
+> - **A removed co-host could restore their own seat.** `memberships.revokedByRotation` was only ever
+>   set, never cleared or overwritten, so a row that had once been swept still read as a *sweep* after
+>   a host's deliberate *removal* — and `join.admit` inherited the row's old `role`, handing back the
+>   moderation queue and `event.rotateInvite` off a QR on a wall. The flag now means "swept and not
+>   since re-decided": matching clears it, both removal mutations write `false`, `admit` re-derives
+>   the role (a scan is worth a `guest` seat and nothing more), and a guest sitting in the swept state
+>   can now be banned at all, which they could not before.
+> - **Push retries did not exist.** Re-verified against
+>   <https://docs.expo.dev/push-notifications/sending-notifications/>: network errors, 429s and 5xx
+>   responses want exponential backoff, and so does a `MessageRateExceeded` ticket. All four now bump
+>   an attempt counter, set `nextAttemptAt` and book their own retry, bounded at five attempts; a
+>   non-retryable 4xx drops the chunk instead of retrying a request the service will always refuse.
+>   Receipt checking was one-shot and now re-books itself, retires a ticket once Expo's 24-hour
+>   receipt window elapses, and walks `sent` rows by send time — without retirement, permanently-stuck
+>   rows filled the sweep's window and starved newer `DeviceNotRegistered` receipts out of it.
+> - **Device health blamed the phone for things that were not the phone.** `MessageTooBig` is a defect
+>   in the copy we composed and fails identically for every device, so it no longer counts; and a
+>   later delivery success no longer clears `disabledAt`, because Expo's instruction for
+>   `DeviceNotRegistered` is to stop sending "until it re-registers with your server".
+>   `registerDevice` is now the only path that switches a token back on. Party names are also
+>   sanitised before they reach a lock screen — an event name is free text and a newline in one let
+>   its author compose what reads as a second sentence from PartyBooth.
+> - **Inviting an organiser had no confirmation step**, which contradicted both PLAN.md and this
+>   file's own claim that every privileged admin action goes through `ConfirmAction`. It does now.
+> - **Signed read URLs cannot be revoked**, so the mitigation is the clock and the copy. The three
+>   host-only surfaces that serve `pending` originals (`moderation.pending`, `moderation.flagged`,
+>   `stats.recentSubmissions`) now mint 60-second URLs instead of ten-minute ones; the approved
+>   gallery keeps the ten minutes, because there the exposure is content the member was legitimately
+>   shown and a slideshow must not blink. The removal and lock copy state the residual window rather
+>   than implying access stops instantly.
+>
+> **One finding rejected, with reasons.** `registerDevice` still reassigns a `pushDevices` row on a
+> bare token match, so anyone who learns a victim's Expo push token can take the row over. Both
+> proposed fixes are more than a fix: (a) letting two rows hold one token breaks the `by_token`
+> `.unique()` read and delivers the same device two accounts' notifications until the prune lands,
+> which is worse than the bug; (b) binding registration to an installation id needs a new field on the
+> mutation, on `pushDevices`, and a matching change in `apps/mobile`, which is a **contract change**
+> and is recorded as one below rather than smuggled into a fix pass. The message-composition half of
+> that finding *is* fixed — see the sanitising above — so the remaining exposure is silence rather
+> than attacker-controlled text.
 
 ---
 

@@ -194,7 +194,9 @@ function RemoveCohost({
         <p className="mt-1">
           They lose the moderation queue, the join code and the slideshow immediately. Any
           invitation still sitting in their inbox is cancelled with it, so they cannot walk straight
-          back in. Nothing they approved is undone, and they stay a guest of the party.
+          back in. Photo links their screen had already loaded keep working for up to a minute —
+          nothing new is issued. Nothing they approved is undone, and they stay a guest of the
+          party.
         </p>
         <div className="mt-3 flex gap-2">
           <Button

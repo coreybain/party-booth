@@ -167,6 +167,23 @@ export const rotate = mutation({
  *
  * Host-only, via `event.viewInviteCode` — a guest with the code can re-share
  * the party to anyone, which is the thing rotation exists to undo.
+ *
+ * **A global admin gets the code and not the token**, and the asymmetry is the
+ * point. The stated justification for putting `event.viewInviteCode` in the
+ * admin capability set is narrow — "show which code is being replaced" — and
+ * `components/admin/rotate-code-form.tsx` reads `current.code` alone. The QR
+ * `token` is something else entirely: a 160-bit bearer credential that is by
+ * itself sufficient to call `join.join` and be admitted as a `guest`, at which
+ * point `resolveEventRole` returns `guest` (a membership outranks the admin
+ * role), `media.viewApproved` succeeds and the console's "no media access"
+ * invariant is gone — signed read URLs for the whole approved gallery of a
+ * stranger's private party. `stats.overview` already withholds its contributor
+ * breakdown from admins for exactly this reason; this is the same rule applied
+ * to the credential that opens the door rather than to the data behind it.
+ *
+ * The pivot is refused at `join.ts` as well. Two independent barriers, because
+ * either one alone is a single edit away from being removed by somebody who
+ * cannot see the other.
  */
 export const current = query({
   args: { eventId: v.id("events") },
@@ -176,7 +193,8 @@ export const current = query({
       inviteVersionId: v.id("inviteVersions"),
       version: v.number(),
       code: v.string(),
-      token: v.string(),
+      /** Absent for a global admin — see the note above. */
+      token: v.optional(v.string()),
       createdAt: v.number(),
     }),
   ),
@@ -195,7 +213,7 @@ export const current = query({
       inviteVersionId: version._id,
       version: version.version,
       code: version.code,
-      token: version.token,
+      ...(actor.role === "globalAdmin" ? {} : { token: version.token }),
       createdAt: version.createdAt,
     };
   },

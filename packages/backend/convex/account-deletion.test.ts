@@ -45,6 +45,57 @@ describe("scheduleAccountDeletion", () => {
   const jobs = () => t.run(async (ctx) => ctx.db.query("deletionJobs").collect());
   const audits = () => t.run(async (ctx) => ctx.db.query("auditEvents").collect());
 
+  /**
+   * The one capability that outlives the state change.
+   *
+   * `accountStateAllows` reduces a `deletionScheduled` account to `account.view`
+   * — but `media.completeUpload` validates the **grant**, not the account, so an
+   * unspent grant issued moments earlier still landed a file. `admin.lockAccount`
+   * swept grants and this path did not, which made the console's own copy
+   * ("access is revoked immediately, exactly as a lock does") true of one route
+   * and false of the other. The sweep lives in `scheduleAccountDeletion` so both
+   * entry points — the console and `users.requestAccountDeletion` — get it.
+   */
+  it("expires every outstanding upload grant, exactly as a lock does", async () => {
+    const eventId = await t.run(async (ctx) =>
+      ctx.db.insert("events", {
+        ownerUserId: userId,
+        name: "Party",
+        state: "live",
+        moderationMode: "manual",
+        allowLibraryImport: true,
+        startsAt: NOW,
+        timeZone: "UTC",
+        storageRegion: "pdx1",
+        counts: { pending: 0, approved: 0, declined: 0, total: 0 },
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+    const grantId = await t.run(async (ctx) =>
+      ctx.db.insert("uploadGrants", {
+        eventId,
+        userId,
+        captureId: "capture-abcdefgh",
+        secretHash: "c".repeat(64),
+        status: "issued",
+        mediaType: "photo",
+        fromLibrary: false,
+        storageRegion: "pdx1",
+        byteSize: 1024,
+        mimeType: "image/jpeg",
+        checksum: "d".repeat(64),
+        issuedAt: NOW,
+        expiresAt: NOW + 60_000,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+
+    await run();
+    expect((await t.run(async (ctx) => ctx.db.get(grantId)))?.status).toBe("expired");
+  });
+
   it("moves the account to deletionScheduled, never straight to deleted", async () => {
     await run();
     const after = await user();

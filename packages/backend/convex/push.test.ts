@@ -2,6 +2,8 @@ import {
   AUDIT_ACTIONS,
   DEFAULT_PENDING_THRESHOLD,
   PUSH_FAILURE_LIMIT,
+  PUSH_RECEIPT_WINDOW_MS,
+  PUSH_SEND_MAX_ATTEMPTS,
 } from "@partybooth/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -500,8 +502,11 @@ describe("dispatch, receipts and pruning", () => {
     expect(row?.receiptCheckedAt).toBeUndefined();
   });
 
-  it(`disables a token after ${PUSH_FAILURE_LIMIT} consecutive non-fatal failures`, async () => {
-    useFakePush({ ticketErrors: { [token]: "MessageTooBig" } });
+  it(`disables a token after ${PUSH_FAILURE_LIMIT} consecutive uncoded refusals`, async () => {
+    // Uncoded on purpose: a rate limit is the project's, a credential error is
+    // the project's and `MessageTooBig` is the message's, so a per-message
+    // refusal Expo gave no code for is the only evidence about *this* phone.
+    useFakePush({ ticketRefusals: [token] });
     for (let index = 0; index < PUSH_FAILURE_LIMIT; index += 1) {
       await queueOne(`n${index}`);
       await t.action(internal.push.dispatchQueued, {});
@@ -517,6 +522,22 @@ describe("dispatch, receipts and pruning", () => {
     expect(device?.disabledReason).toBe("failureLimit");
   });
 
+  /**
+   * `MessageTooBig` is a defect in the copy, not the phone, and it fails the
+   * same way for every device the message goes to. Counting it meant a long
+   * party name disabled the whole table three notifications later.
+   */
+  it("never disables a token for a payload-level error, however often it happens", async () => {
+    useFakePush({ ticketErrors: { [token]: "MessageTooBig" } });
+    for (let index = 0; index < PUSH_FAILURE_LIMIT + 2; index += 1) {
+      await queueOne(`n${index}`);
+      await t.action(internal.push.dispatchQueued, {});
+    }
+    const device = await t.run(async (ctx) => ctx.db.get(deviceId));
+    expect(device?.failureCount).toBe(0);
+    expect(device?.disabledAt).toBeUndefined();
+  });
+
   it("does not blame the device for a project-level rate limit", async () => {
     useFakePush({ ticketErrors: { [token]: "MessageRateExceeded" } });
     await queueOne();
@@ -525,6 +546,120 @@ describe("dispatch, receipts and pruning", () => {
     const device = await t.run(async (ctx) => ctx.db.get(deviceId));
     expect(device?.failureCount).toBe(0);
     expect(device?.disabledAt).toBeUndefined();
+  });
+
+  /**
+   * Expo, on `MessageRateExceeded`: "implement exponential backoff and slowly
+   * retry sending messages." Marking the row terminally `failed` threw away a
+   * notification the service had explicitly asked us to send again.
+   */
+  it("re-queues a rate-limited message with a backoff instead of failing it", async () => {
+    useFakePush({ ticketErrors: { [token]: "MessageRateExceeded" } });
+    const id = await queueOne();
+    const result = await t.action(internal.push.dispatchQueued, {});
+
+    expect(result.failed).toBe(0);
+    expect(result.deferred).toBe(1);
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row?.state).toBe("queued");
+    expect(row?.attempts).toBe(1);
+    expect(row?.nextAttemptAt).toBeTypeOf("number");
+    expect(row?.nextAttemptAt ?? 0).toBeGreaterThan(Date.now());
+  });
+
+  /**
+   * Expo's retry guidance covers "a network error - a HTTP 429 error […] or a
+   * HTTP 5xx error". Before this the rows simply stayed `queued` with nothing
+   * scheduled, so they moved again only if an unrelated mutation happened to
+   * notify somebody — which between parties is never.
+   */
+  it("backs a chunk off after a transport failure rather than losing it", async () => {
+    useFakePush({ failTransport: true });
+    const id = await queueOne();
+    const result = await t.action(internal.push.dispatchQueued, {});
+
+    expect(result.deferred).toBe(1);
+    expect(result.dropped).toBe(0);
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row?.state).toBe("queued");
+    expect(row?.attempts).toBe(1);
+    expect(row?.nextAttemptAt).toBeTypeOf("number");
+    // The phone did nothing wrong — a socket that never opened says nothing
+    // about any device.
+    expect((await t.run(async (ctx) => ctx.db.get(deviceId)))?.failureCount).toBe(0);
+  });
+
+  it("honours the backoff instead of re-sending immediately", async () => {
+    const push = useFakePush({ failTransport: true });
+    await queueOne();
+    await t.action(internal.push.dispatchQueued, {});
+    const attemptsAfterFirst = push.chunkSizes.length;
+
+    // Same run again: the row is inside its backoff window and must be skipped.
+    const second = await t.action(internal.push.dispatchQueued, {});
+    expect(second.deferred).toBe(0);
+    expect(push.chunkSizes.length).toBe(attemptsAfterFirst);
+  });
+
+  it("gives up after a bounded number of attempts and says so", async () => {
+    useFakePush({ failTransport: true });
+    const id = await queueOne();
+    for (let attempt = 0; attempt < PUSH_SEND_MAX_ATTEMPTS; attempt += 1) {
+      // Clear the backoff between rounds; the delay itself is unit-tested in
+      // `@partybooth/contracts`, and waiting it out here would take minutes.
+      await t.run(async (ctx) => ctx.db.patch(id, { nextAttemptAt: undefined }));
+      await t.action(internal.push.dispatchQueued, {});
+    }
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row?.state).toBe("failed");
+    expect(row?.attempts).toBe(PUSH_SEND_MAX_ATTEMPTS);
+    expect((await t.run(async (ctx) => ctx.db.get(deviceId)))?.failureCount).toBe(0);
+  });
+
+  /**
+   * Expo keeps receipts for twenty-four hours. A row still `sent` after that can
+   * never be resolved, and leaving it there is what let stuck rows fill the
+   * sweep's window and starve newer `DeviceNotRegistered` receipts.
+   */
+  it("retires a ticket whose 24-hour receipt window has elapsed", async () => {
+    const push = useFakePush();
+    const id = await queueOne();
+    await t.action(internal.push.dispatchQueued, {});
+
+    const ticketId = (await t.run(async (ctx) => ctx.db.get(id)))?.ticketId ?? "";
+    void push;
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { sentAt: Date.now() - PUSH_RECEIPT_WINDOW_MS - 1_000 }),
+    );
+
+    clearFakePush();
+    useFakePush({ withholdReceipts: [ticketId] });
+    const result = await t.action(internal.push.checkReceipts, {});
+
+    expect(result.retired).toBe(1);
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row?.state).toBe("failed");
+    expect(row?.receiptCheckedAt).toBeTypeOf("number");
+    // Retirement is a fact about Expo's retention, not about the phone.
+    expect((await t.run(async (ctx) => ctx.db.get(deviceId)))?.disabledAt).toBeUndefined();
+  });
+
+  it("leaves a ticket inside the window alone and does not retire it", async () => {
+    const push = useFakePush();
+    const id = await queueOne();
+    await t.action(internal.push.dispatchQueued, {});
+    const ticketId = (await t.run(async (ctx) => ctx.db.get(id)))?.ticketId ?? "";
+    void push;
+
+    clearFakePush();
+    useFakePush({ withholdReceipts: [ticketId] });
+    const result = await t.action(internal.push.checkReceipts, {});
+
+    expect(result.retired).toBe(0);
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.state).toBe("sent");
   });
 
   it("skips a queued row whose device has since been disabled", async () => {

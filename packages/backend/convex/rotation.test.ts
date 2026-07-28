@@ -11,6 +11,7 @@ import {
   seedInviteVersion,
   seedMembership,
   seedUser,
+  setSiteUrl,
   useFakeStorage,
   type T,
 } from "./testing.helpers";
@@ -262,5 +263,150 @@ describe("invites.rotate — the budget", () => {
 
     // One compromised party must not stop a host rotating a different one.
     await as.mutation(api.invites.rotate, { eventId: second });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The sweep marker as a decision, not a memory                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `memberships.revokedByRotation` means **"swept, and not since re-decided"**.
+ *
+ * That definition is what makes the join path safe to be lenient about a sweep
+ * (a reprinted sign is not a ban) while still refusing a removal. The flag was
+ * only ever *set*, never cleared or overwritten, and two things fell out of it:
+ *
+ * 1. **A removed co-host could restore their own seat.** Guest joins → owner
+ *    rotates with revoke → owner invites that address as a co-host → owner
+ *    removes them. The re-invitation reactivated the row without clearing the
+ *    stale `revokedByRotation: true`, the removal never wrote it, so the join
+ *    path read a *sweep* where a host had made a *removal* — and `admit`
+ *    inherited the row's old `role`, so they came back as a co-host holding the
+ *    moderation queue and `event.rotateInvite`.
+ * 2. **A swept guest could not be banned at all**, because both removal
+ *    mutations no-op'd on a non-`active` membership and returned "nothing to do".
+ */
+describe("a sweep is not a permanent decision, and a removal is", () => {
+  let t: T;
+  let ownerId: Id<"users">;
+  let personId: Id<"users">;
+  let eventId: Id<"events">;
+  const address = "returner@partybooth.test";
+
+  async function membership() {
+    return await t.run(async (ctx) =>
+      ctx.db
+        .query("memberships")
+        .withIndex("by_event_and_user", (q) => q.eq("eventId", eventId).eq("userId", personId))
+        .unique(),
+    );
+  }
+
+  beforeEach(async () => {
+    t = makeTest();
+    useFakeStorage();
+    setSiteUrl();
+    ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    personId = await seedUser(t, {
+      authId: "person",
+      email: address,
+      // Verified, because co-host matching binds on a *proven* address.
+      emailVerified: true,
+    });
+    eventId = await seedEvent(t, ownerId, { state: "live" });
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+  });
+
+  afterEach(() => {
+    clearFakeStorage();
+    setSiteUrl(undefined);
+  });
+
+  it("lets a swept guest back in on the new code", async () => {
+    await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: "482913" } });
+
+    const rotated = await t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.invites.rotate, { eventId, keepExistingMemberships: false });
+    expect((await membership())?.revokedByRotation).toBe(true);
+
+    const back = await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: rotated.code } });
+    expect(back.outcome).toBe("joined");
+    // Back as a guest, and the marker is gone: the next removal is a decision.
+    expect(back.outcome === "joined" ? back.role : null).toBe("guest");
+    expect((await membership())?.revokedByRotation).toBeUndefined();
+  });
+
+  /** The four-step chain, end to end. */
+  it("does not let a removed co-host walk back in by re-scanning the QR", async () => {
+    // 1. They join as a guest.
+    await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: "482913" } });
+
+    // 2. The owner rotates and sweeps the guest list.
+    const rotated = await t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.invites.rotate, { eventId, keepExistingMemberships: false });
+    expect((await membership())?.revokedByRotation).toBe(true);
+
+    // 3. The owner invites the same address as a co-host, and they accept.
+    await t.run(async (ctx) =>
+      ctx.db.insert("cohostInvitations", {
+        eventId,
+        email: address,
+        status: "pending",
+        invitedByUserId: ownerId,
+        token: "TOKEN0123456789ABCDEF",
+        expiresAt: Date.now() + 86_400_000,
+        createdAt: Date.now(),
+      }),
+    );
+    await t.withIdentity({ subject: "person" }).mutation(api.users.refreshRoles, {});
+    expect((await membership())?.role).toBe("cohost");
+    // The stale sweep marker must not survive the reactivation.
+    expect((await membership())?.revokedByRotation).toBeUndefined();
+
+    // 4. The owner changes their mind and removes them.
+    const removal = await t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.cohosts.remove, { eventId, userId: personId, reason: "Changed my mind" });
+    expect(removal.revokedMembership).toBe(true);
+    expect((await membership())?.revokedByRotation).toBe(false);
+
+    // …and the QR on the wall does not undo it.
+    const retry = await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: rotated.code } });
+    expect(retry.outcome).toBe("rejected");
+    expect((await membership())?.status).toBe("revoked");
+    expect((await membership())?.role).toBe("cohost");
+  });
+
+  it("lets a swept guest be banned for good", async () => {
+    await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: "482913" } });
+    const rotated = await t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.invites.rotate, { eventId, keepExistingMemberships: false });
+
+    // A swept row is not `active`, and refusing to touch it meant a guest in
+    // this state could never be removed — the ban silently did nothing.
+    const removal = await t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.cohosts.remove, { eventId, userId: personId, reason: "Not welcome back" });
+    expect(removal.revokedMembership).toBe(true);
+    expect((await membership())?.revokedByRotation).toBe(false);
+
+    const retry = await t
+      .withIdentity({ subject: "person" })
+      .mutation(api.join.join, { invite: { via: "code", code: rotated.code } });
+    expect(retry.outcome).toBe("rejected");
   });
 });

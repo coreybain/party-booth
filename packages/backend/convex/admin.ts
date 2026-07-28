@@ -37,7 +37,11 @@ import { requireGlobalAdmin, requirePermission, toPermissionActor } from "./lib/
 import { parseInput } from "./lib/input";
 import { storedBytesOf } from "./lib/media";
 import { checkRotationThrottle, recordRotation } from "./lib/rotation-throttle";
-import { expireGrantsForUser } from "./lib/upload-grants";
+import {
+  expireGrantsForAccount,
+  expireGrantsForEvent,
+  expireGrantsForUser,
+} from "./lib/upload-grants";
 import { accountState, eventState } from "./lib/validators";
 
 /**
@@ -573,7 +577,21 @@ function stripTrailingSlash(value: string): string {
  *
  * Outstanding upload grants are expired here, though, because those are the one
  * capability that outlives a permission check: `completeUpload` validates the
- * grant, not the membership.
+ * grant, not the membership and not the account state.
+ *
+ * Two sweeps, because "whose grant is it" and "whose party is it" are different
+ * questions and the freeze needs both answered:
+ *
+ * - **Every grant this account holds**, in every event — including parties they
+ *   are only a guest or a co-host in, which the per-event loop never reached.
+ * - **Every grant anybody holds** for a party this account *owns*, because those
+ *   parties are now frozen for everyone. This is the half that was missing: a
+ *   guest whose grant was minted seconds before the lock could still land a file
+ *   in a suspended party, move its counters and ping its hosts.
+ *
+ * `media.completeUpload` re-asks the freeze question at the moment bytes are
+ * accepted as well, so the guarantee does not rest on this enumeration being
+ * exhaustive.
  */
 export const lockAccount = mutation({
   args: { userId: v.id("users"), reason: v.string() },
@@ -601,12 +619,14 @@ export const lockAccount = mutation({
       updatedAt: now,
     });
 
+    let expiredGrants = await expireGrantsForAccount(ctx, target._id, now);
+
     const owned = await ctx.db
       .query("events")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", target._id))
       .collect();
     for (const event of owned) {
-      await expireGrantsForUser(ctx, event._id, target._id, now);
+      expiredGrants += await expireGrantsForEvent(ctx, event._id, now);
     }
 
     await writeAuditEvent(ctx, {
@@ -615,7 +635,7 @@ export const lockAccount = mutation({
       subjectId: target._id,
       actor: { userId: admin._id, role: "globalAdmin" },
       reason: input.reason,
-      metadata: { previousState: "active", ownedEvents: owned.length },
+      metadata: { previousState: "active", ownedEvents: owned.length, expiredGrants },
       now,
     });
 
@@ -906,7 +926,6 @@ export const rotateEventCode = mutation({
     inviteVersionId: v.id("inviteVersions"),
     version: v.number(),
     code: v.string(),
-    token: v.string(),
     revokedMemberships: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -974,11 +993,15 @@ export const rotateEventCode = mutation({
 
     await recordRotation(ctx, event._id, now);
 
+    // The code, and **not** the token. An administrator rotating somebody
+    // else's party needs to be able to tell the host the new six digits; the QR
+    // token is the bearer credential that would let the console walk into the
+    // party it just rotated, which is the one thing `/admin` is defined as not
+    // being able to do. The host reads it from their own `invites.current`.
     return {
       inviteVersionId: result.inviteVersionId,
       version: result.version,
       code: result.code,
-      token: result.token,
       revokedMemberships: result.revokedMembershipIds.length,
     };
   },
@@ -1014,7 +1037,21 @@ export const revokeMembership = mutation({
       event: { state: event.state },
     });
 
-    if (membership.status !== "active") return { revoked: false, expiredGrants: 0 };
+    /*
+     * A membership that is already `revoked` is still acted on, and that is not
+     * belt-and-braces.
+     *
+     * A rotation sweep leaves rows in `status: "revoked", revokedByRotation:
+     * true`, and `join.evaluateCredential` deliberately readmits those on a
+     * fresh scan — a sweep is a reprinted sign, not a ban. So no-op-ing here
+     * meant a guest sitting in the swept state could not be banned **at all**:
+     * every call returned `revoked: false` and the next scan let them back in.
+     * Re-revoking overwrites the sweep marker with `false`, which is what turns
+     * it into a decision.
+     */
+    if (membership.status === "revoked" && membership.revokedByRotation !== true) {
+      return { revoked: false, expiredGrants: 0 };
+    }
 
     const now = Date.now();
     await ctx.db.patch(membership._id, {
@@ -1022,6 +1059,12 @@ export const revokeMembership = mutation({
       revokedAt: now,
       revokedByUserId: admin._id,
       revokeReason: input.reason,
+      // `false`, not `undefined`: the flag means "swept and not since
+      // re-decided", and this *is* the re-decision. Clearing it would leave the
+      // row indistinguishable from one nobody ever swept, which is right; saying
+      // `false` says the same thing and survives a later reader asking whether
+      // the question was ever put.
+      revokedByRotation: false,
     });
 
     const expiredGrants = await expireGrantsForUser(ctx, event._id, membership.userId, now);

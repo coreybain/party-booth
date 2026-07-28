@@ -15,10 +15,25 @@ import {
   expoPushTokenSchema,
   fitsPushPayload,
   isExpoPushToken,
+  eventClosedMessage,
+  eventOpenedMessage,
+  isPayloadError,
   isProjectCredentialError,
   isRetryablePushError,
+  isRetryableTransportStatus,
   nextDeviceHealth,
+  pendingThresholdMessage,
+  PUSH_EVENT_NAME_MAX_LENGTH,
+  PUSH_PAYLOAD_ERRORS,
   PUSH_PROJECT_CREDENTIAL_ERRORS,
+  PUSH_SEND_BACKOFF_BASE_MS,
+  PUSH_SEND_BACKOFF_CAP_MS,
+  PUSH_SEND_MAX_ATTEMPTS,
+  pushRetriesExhausted,
+  pushRetryDelayMs,
+  sanitisePushText,
+  uploadFailedMessage,
+  uploadRecoveredMessage,
   notificationPreferencesSchema,
   pendingThresholdOf,
   PUSH_CATEGORIES,
@@ -260,11 +275,32 @@ describe("the Expo service contract", () => {
 });
 
 describe("device health", () => {
-  it("resets on success", () => {
-    expect(nextDeviceHealth({ failureCount: 2, disabledAt: 5 }, { ok: true, now: 10 })).toEqual({
+  it("resets the counter on success", () => {
+    expect(nextDeviceHealth({ failureCount: 2 }, { ok: true, now: 10 })).toEqual({
       failureCount: 0,
       disabledAt: undefined,
     });
+  });
+
+  /**
+   * Expo: stop sending to a `DeviceNotRegistered` token "until it re-registers
+   * with your server". A later delivery success is not a re-registration — it is
+   * a message we should not have sent — so it must not resurrect the row.
+   * `registerDevice` is the only path that clears `disabledAt`.
+   */
+  it("does not re-enable a disabled token on a later success", () => {
+    expect(nextDeviceHealth({ failureCount: 2, disabledAt: 5 }, { ok: true, now: 10 })).toEqual({
+      failureCount: 0,
+      disabledAt: 5,
+    });
+  });
+
+  it("keeps the original disabledAt when a disabled token fails again", () => {
+    const next = nextDeviceHealth(
+      { failureCount: 1, disabledAt: 5 },
+      { ok: false, errorCode: "DeviceNotRegistered", now: 99 },
+    );
+    expect(next.disabledAt).toBe(5);
   });
 
   it("kills a token outright on DeviceNotRegistered", () => {
@@ -302,18 +338,128 @@ describe("device health", () => {
     }
   });
 
-  it(`disables after ${PUSH_FAILURE_LIMIT} consecutive ordinary failures`, () => {
+  /**
+   * `MessageTooBig` is a defect in the copy we composed, not in the phone, and
+   * it fails identically for every device the same message goes to. Counting it
+   * disabled healthy tokens three notifications after somebody shipped a long
+   * party name — the same failure mode as a rotated APNs key, one layer up.
+   */
+  it("does not blame the device for a payload-level error", () => {
+    for (const code of PUSH_PAYLOAD_ERRORS) {
+      expect(isPayloadError(code), code).toBe(true);
+      let state: { failureCount: number; disabledAt: number | undefined } = {
+        failureCount: 0,
+        disabledAt: undefined,
+      };
+      for (let index = 0; index < PUSH_FAILURE_LIMIT + 2; index += 1) {
+        state = nextDeviceHealth(state, { ok: false, errorCode: code, now: 10 });
+      }
+      expect(state, code).toEqual({ failureCount: 0, disabledAt: undefined });
+    }
+  });
+
+  /**
+   * What is left after the three exemptions: a per-message failure Expo gave no
+   * code for. That is the only evidence we have that is genuinely about *this*
+   * device, so it is the only thing the failure budget counts.
+   */
+  it(`disables after ${PUSH_FAILURE_LIMIT} consecutive uncoded failures`, () => {
     let state: { failureCount: number; disabledAt: number | undefined } = {
       failureCount: 0,
       disabledAt: undefined,
     };
     for (let index = 0; index < PUSH_FAILURE_LIMIT - 1; index += 1) {
-      state = nextDeviceHealth(state, { ok: false, errorCode: "MessageTooBig", now: 10 });
+      state = nextDeviceHealth(state, { ok: false, now: 10 });
       expect(state.disabledAt).toBeUndefined();
     }
-    state = nextDeviceHealth(state, { ok: false, errorCode: "MessageTooBig", now: 10 });
+    state = nextDeviceHealth(state, { ok: false, now: 10 });
     expect(state.failureCount).toBe(PUSH_FAILURE_LIMIT);
     expect(state.disabledAt).toBe(10);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Retries                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Expo's docs: "if the Expo push notification service is down or unreachable and
+ * you get a network error - a HTTP 429 error (Too Many Requests), or a HTTP 5xx
+ * error (Server Errors) - use exponential backoff". These pin that sentence.
+ */
+describe("transient send failures", () => {
+  it("retries a network error, a 429 and every 5xx", () => {
+    expect(isRetryableTransportStatus(undefined)).toBe(true);
+    expect(isRetryableTransportStatus(429)).toBe(true);
+    for (const status of [500, 502, 503, 504, 599]) {
+      expect(isRetryableTransportStatus(status), String(status)).toBe(true);
+    }
+  });
+
+  it("does not retry a request the service will refuse identically for ever", () => {
+    for (const status of [400, 401, 403, 404, 422]) {
+      expect(isRetryableTransportStatus(status), String(status)).toBe(false);
+    }
+  });
+
+  it("backs off exponentially and then stops climbing", () => {
+    expect(pushRetryDelayMs(0)).toBe(PUSH_SEND_BACKOFF_BASE_MS);
+    expect(pushRetryDelayMs(1)).toBe(PUSH_SEND_BACKOFF_BASE_MS * 2);
+    expect(pushRetryDelayMs(2)).toBe(PUSH_SEND_BACKOFF_BASE_MS * 4);
+    // Monotonic, and never past the cap.
+    let previous = 0;
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      const delay = pushRetryDelayMs(attempts);
+      expect(delay).toBeGreaterThanOrEqual(previous);
+      expect(delay).toBeLessThanOrEqual(PUSH_SEND_BACKOFF_CAP_MS);
+      previous = delay;
+    }
+  });
+
+  it("is bounded, so a broken queue eventually says so", () => {
+    expect(pushRetriesExhausted(PUSH_SEND_MAX_ATTEMPTS - 1)).toBe(false);
+    expect(pushRetriesExhausted(PUSH_SEND_MAX_ATTEMPTS)).toBe(true);
+  });
+
+  it("treats MessageRateExceeded as a retry rather than a verdict", () => {
+    expect(isRetryablePushError("MessageRateExceeded")).toBe(true);
+    expect(isRetryablePushError("DeviceNotRegistered")).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Attacker-influenced copy                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An event name is free text chosen by whoever created the party, and it is the
+ * only such string that reaches a lock screen. Interpolating it raw let its
+ * author write what reads as a second sentence from PartyBooth.
+ */
+describe("sanitising a party name", () => {
+  it("strips control characters rather than passing them through", () => {
+    const composed = sanitisePushText("Sam's party\n\nPartyBooth: enter your password");
+    expect(composed).not.toContain("\n");
+    expect(composed).toBe("Sam's party PartyBooth: enter your password");
+  });
+
+  it("caps the length so our own sentence survives", () => {
+    const long = "x".repeat(500);
+    expect(sanitisePushText(long).length).toBeLessThanOrEqual(PUSH_EVENT_NAME_MAX_LENGTH);
+  });
+
+  it("falls back rather than emitting an empty quotation", () => {
+    expect(sanitisePushText("   ")).toBe("your party");
+    expect(sanitisePushText("\u0000\u200b")).toBe("your party");
+  });
+
+  it("is applied by every message builder", () => {
+    const nasty = "Party\nBooth";
+    expect(uploadFailedMessage(nasty).body).not.toContain("\n");
+    expect(uploadRecoveredMessage(nasty).body).not.toContain("\n");
+    expect(eventOpenedMessage(nasty).title).not.toContain("\n");
+    expect(eventClosedMessage(nasty).title).not.toContain("\n");
+    expect(pendingThresholdMessage(nasty, 4).body).not.toContain("\n");
   });
 });
 
