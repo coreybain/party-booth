@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURE_ID_BYTES,
   CAPTURE_ID_PREFIXES,
+  DERIVATIVE_FILE_KINDS,
   DERIVATIVE_MIME_TYPE,
   DERIVATIVE_PROFILES,
   derivativeFileName,
@@ -10,9 +11,17 @@ import {
   isValidCaptureId,
   needsResize,
   newCaptureId,
+  posterFrameTime,
   toHex,
+  videoContainerFor,
 } from "./capture";
-import { allowedMimeTypes, PHOTO_MAX_BYTES } from "./media";
+import {
+  allowedMimeTypes,
+  DERIVATIVE_FILE_ROLES,
+  DERIVATIVE_LIMITS,
+  MEDIA_LIMITS,
+  PHOTO_MAX_BYTES,
+} from "./media";
 import { captureIdSchema, checksumSchema } from "./schemas";
 
 /** Deterministic bytes, so an id is an assertion rather than a coin toss. */
@@ -88,18 +97,106 @@ describe("DERIVATIVE_PROFILES", () => {
     }
   });
 
-  it("makes the preview smaller than the thing it previews", () => {
+  it("orders the three tiers: thumbnail under shared, shared under original", () => {
     for (const profile of Object.values(DERIVATIVE_PROFILES)) {
-      expect(profile.previewMaxEdge).toBeLessThan(profile.uploadMaxEdge);
-      expect(profile.previewQuality).toBeLessThan(profile.uploadQuality);
+      expect(profile.thumbnailMaxEdge).toBeLessThan(profile.sharedMaxEdge);
+      expect(profile.sharedMaxEdge).toBeLessThan(profile.uploadMaxEdge);
+      expect(profile.thumbnailQuality).toBeLessThan(profile.sharedQuality);
+      expect(profile.sharedQuality).toBeLessThan(profile.uploadQuality);
+    }
+  });
+
+  it("serves every platform the same shared derivative", () => {
+    // The artefact third parties see must not depend on which app took it: a
+    // photo from the app and one from mobile web sit in the same grid.
+    const platforms = Object.values(DERIVATIVE_PROFILES);
+    const edges = new Set(platforms.map((profile) => profile.sharedMaxEdge));
+    const qualities = new Set(platforms.map((profile) => profile.sharedQuality));
+    expect(edges.size).toBe(1);
+    expect(qualities.size).toBe(1);
+  });
+
+  it("keeps the shared derivative inside the cap its grant is held to", () => {
+    for (const profile of Object.values(DERIVATIVE_PROFILES)) {
+      // Same wild over-estimate as above. A derivative grant is refused over
+      // `DERIVATIVE_LIMITS.image.maxBytes`, so this is the cap that bites.
+      const worstCase = profile.sharedMaxEdge * profile.sharedMaxEdge * 0.75 * 0.5;
+      expect(worstCase).toBeLessThan(DERIVATIVE_LIMITS.image.maxBytes);
     }
   });
 });
 
 describe("derivativeFileName", () => {
-  it("names both files from the capture id, so an orphan is recognisable", () => {
+  it("names every file from the capture id, so an orphan is recognisable", () => {
     expect(derivativeFileName("mabc123def", "original")).toBe("mabc123def-original.jpg");
+    expect(derivativeFileName("mabc123def", "thumbnail")).toBe("mabc123def-thumbnail.jpg");
     expect(derivativeFileName("mabc123def", "preview")).toBe("mabc123def-preview.jpg");
+    expect(derivativeFileName("mabc123def", "poster")).toBe("mabc123def-poster.jpg");
+  });
+
+  it("takes a container for the one artefact that is not a JPEG", () => {
+    expect(derivativeFileName("mabc", "original", "mov")).toBe("mabc-original.mov");
+    // A recorder's extension arrives however the platform spells it.
+    expect(derivativeFileName("mabc", "original", ".MOV")).toBe("mabc-original.mov");
+    expect(derivativeFileName("mabc", "original", "")).toBe("mabc-original.jpg");
+  });
+
+  it("spells the uploaded kinds exactly as their file roles", () => {
+    // `derivativeFileName(id, "preview")` must name the file uploaded with
+    // `fileRole: "preview"`. The two vocabularies drifting is the bug this
+    // alignment exists to prevent.
+    for (const role of DERIVATIVE_FILE_ROLES) {
+      expect(DERIVATIVE_FILE_KINDS).toContain(role);
+    }
+  });
+});
+
+describe("videoContainerFor", () => {
+  it("recognises what each platform's recorder actually writes", () => {
+    expect(videoContainerFor("file:///x/clip.mov")).toEqual({
+      mimeType: "video/quicktime",
+      extension: "mov",
+    });
+    expect(videoContainerFor("file:///x/clip.mp4")).toEqual({
+      mimeType: "video/mp4",
+      extension: "mp4",
+    });
+    expect(videoContainerFor("file:///x/clip.webm")).toEqual({
+      mimeType: "video/webm",
+      extension: "webm",
+    });
+  });
+
+  it("falls back to MP4 for anything it does not know", () => {
+    expect(videoContainerFor("file:///x/clip")).toEqual({
+      mimeType: "video/mp4",
+      extension: "mp4",
+    });
+  });
+
+  it("only ever names a type the contract accepts", () => {
+    for (const uri of ["a.mov", "a.mp4", "a.webm", "a.bin"]) {
+      expect(MEDIA_LIMITS.video.mimeTypes).toContain(videoContainerFor(uri).mimeType);
+    }
+  });
+});
+
+describe("posterFrameTime", () => {
+  it("never takes frame zero, where the lens is still adjusting", () => {
+    expect(posterFrameTime(60)).toBe(1);
+    expect(posterFrameTime(2)).toBe(1);
+  });
+
+  it("stays inside a clip shorter than the usual offset", () => {
+    expect(posterFrameTime(0.5)).toBe(0.25);
+    expect(posterFrameTime(1)).toBe(0.5);
+  });
+
+  it("answers 0 rather than NaN for a duration it cannot use", () => {
+    expect(posterFrameTime(0)).toBe(0);
+    expect(posterFrameTime(-1)).toBe(0);
+    expect(posterFrameTime(Number.NaN)).toBe(0);
+    expect(posterFrameTime(Number.POSITIVE_INFINITY)).toBe(0);
   });
 });
 

@@ -23,13 +23,15 @@
 
 import {
   captureStateMachine,
+  DERIVATIVE_FILE_ROLES,
   MEDIA_SOURCES,
   MEDIA_TYPES,
+  type DerivativeFileRole,
   type MediaSource,
   type MediaType,
 } from "@partybooth/contracts/media";
 
-import type { QueueItem } from "./types";
+import type { DerivativeState, QueueDerivative, QueueItem } from "./types";
 
 /** Bumped only when a field changes meaning. Adding an optional field does not. */
 export const QUEUE_FORMAT_VERSION = 1;
@@ -65,6 +67,96 @@ function isMediaType(value: unknown): value is MediaType {
 
 function isMediaSource(value: unknown): value is MediaSource {
   return typeof value === "string" && (MEDIA_SOURCES as readonly string[]).includes(value);
+}
+
+function isDerivativeRole(value: unknown): value is DerivativeFileRole {
+  return typeof value === "string" && (DERIVATIVE_FILE_ROLES as readonly string[]).includes(value);
+}
+
+const DERIVATIVE_STATES: readonly DerivativeState[] = [
+  "pending",
+  "uploading",
+  "uploaded",
+  "abandoned",
+];
+
+function isDerivativeState(value: unknown): value is DerivativeState {
+  return typeof value === "string" && (DERIVATIVE_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * Read one persisted derivative, or `null` if it cannot be trusted.
+ *
+ * Same rule as a queue row: the required set is what an upload attempt needs to
+ * be reconstructible without the device that made it. A derivative that fails
+ * this drops out and its capture keeps every other one — losing a thumbnail is
+ * not a reason to lose a photograph.
+ *
+ * An `uploading` state is read back as `pending`, for the same reason `hydrate`
+ * rewrites the capture's: a request cannot outlive its process, so a row that
+ * claims to be mid-flight on a cold start is a row that needs attempting again.
+ */
+function parseDerivative(raw: unknown): QueueDerivative | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const source = raw as Record<string, unknown>;
+
+  const uri = str(source.uri);
+  const mimeType = str(source.mimeType);
+  const checksum = str(source.checksum);
+  const byteSize = num(source.byteSize);
+
+  if (
+    !isDerivativeRole(source.role) ||
+    uri === null ||
+    mimeType === null ||
+    checksum === null ||
+    byteSize === null ||
+    byteSize <= 0
+  ) {
+    return null;
+  }
+
+  const stored = isDerivativeState(source.state) ? source.state : "pending";
+  const width = optionalNum(source.width);
+  const height = optionalNum(source.height);
+  const durationSeconds = optionalNum(source.durationSeconds);
+
+  return {
+    role: source.role,
+    state: stored === "uploading" ? "pending" : stored,
+    uri,
+    byteSize,
+    mimeType,
+    checksum,
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
+    attempts: Math.max(0, Math.trunc(num(source.attempts) ?? 0)),
+    nextAttemptAt: num(source.nextAttemptAt) ?? 0,
+  };
+}
+
+/**
+ * All of a row's derivatives.
+ *
+ * Absent reads as none, which is exactly right for a row written before Sprint 4
+ * — that capture genuinely has no derivative and never will, and the read path
+ * copes (`mayServeOriginal`'s "serve nothing" branch survives for this case).
+ * Duplicates are dropped rather than merged: one capture has one object per
+ * role, and a second is the shape that would produce `duplicateDerivative` on
+ * the server.
+ */
+function readDerivatives(value: unknown): QueueDerivative[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<DerivativeFileRole>();
+  const derivatives: QueueDerivative[] = [];
+  for (const entry of value) {
+    const derivative = parseDerivative(entry);
+    if (derivative === null || seen.has(derivative.role)) continue;
+    seen.add(derivative.role);
+    derivatives.push(derivative);
+  }
+  return derivatives;
 }
 
 function readFailure(value: unknown): QueueItem["failure"] {
@@ -138,6 +230,14 @@ export function parseQueueItem(raw: unknown): QueueItem | null {
     ...(durationSeconds === undefined ? {} : { durationSeconds }),
     capturedAt,
     sourceMetadataStripped: bool(source.sourceMetadataStripped, false),
+    // Left absent rather than defaulted when a stored row does not have it: an
+    // absent value means "same as the re-encode claim", which is exactly what
+    // every row written before the split meant. Defaulting it to `false` here
+    // would silently withdraw a restored photo from the gallery.
+    ...(typeof source.sourceCarriesNoLocation === "boolean"
+      ? { sourceCarriesNoLocation: source.sourceCarriesNoLocation }
+      : {}),
+    derivatives: readDerivatives(source.derivatives),
     // A row from before this field existed was auto-send by definition — it is
     // the only thing the app could produce at the time.
     autoSend: bool(source.autoSend, true),

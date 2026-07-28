@@ -26,7 +26,7 @@ interface NavItem {
 export const ORGANISER_NAV: readonly NavItem[] = [
   { href: "/dashboard", label: "Home", Icon: HomeIcon, owns: ["/events"] },
   { href: "/slideshow", label: "Slideshow", Icon: SlideshowIcon },
-  { href: "/media", label: "Media", Icon: MediaIcon },
+  { href: "/media", label: "Moderate", Icon: MediaIcon },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
 

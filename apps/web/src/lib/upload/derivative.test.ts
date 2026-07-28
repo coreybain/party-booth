@@ -74,10 +74,20 @@ describe("fitWithin", () => {
 });
 
 describe("planDerivatives", () => {
-  it("plans both sizes from one source", () => {
+  it("plans all three sizes from one source", () => {
     const plan = planDerivatives({ width: 4032, height: 3024 });
     expect(plan.upload).toEqual({ width: 2560, height: 1920 });
-    expect(plan.preview).toEqual({ width: 480, height: 360 });
+    expect(plan.shared).toEqual({ width: 1280, height: 960 });
+    expect(plan.thumbnail).toEqual({ width: 480, height: 360 });
+  });
+
+  it("keeps the uploaded preview bigger than the local thumbnail", () => {
+    // The regression: the thumbnail used to be uploaded as the `preview`
+    // derivative, so third parties on the web path were served 480 px where the
+    // app served 1280 px.
+    const plan = planDerivatives({ width: 4032, height: 3024 });
+    expect(plan.shared.width).toBeGreaterThan(plan.thumbnail.width);
+    expect(plan.upload.width).toBeGreaterThan(plan.shared.width);
   });
 });
 
@@ -93,13 +103,14 @@ describe("buildPhotoDerivatives", () => {
 
     const result = await buildPhotoDerivatives(SOURCE, runtime);
 
-    expect(encodes).toHaveLength(2);
+    expect(encodes).toHaveLength(3);
     for (const call of encodes) expect(call.mimeType).toBe(DERIVATIVE_POLICY.outputMimeType);
     expect(result.upload.type).toBe("image/jpeg");
-    expect(result.preview.type).toBe("image/jpeg");
+    expect(result.shared.type).toBe("image/jpeg");
+    expect(result.thumbnail.type).toBe("image/jpeg");
   });
 
-  it("encodes the upload derivative before the preview, at the policy's sizes and qualities", async () => {
+  it("encodes original, then shared preview, then thumbnail, at the policy's numbers", async () => {
     const { runtime, encodes } = fakeRuntime({ width: 4032, height: 3024 });
 
     await buildPhotoDerivatives(SOURCE, runtime);
@@ -109,8 +120,12 @@ describe("buildPhotoDerivatives", () => {
       quality: DERIVATIVE_POLICY.uploadQuality,
     });
     expect(encodes[1]).toMatchObject({
+      size: { width: 1280, height: 960 },
+      quality: DERIVATIVE_POLICY.sharedQuality,
+    });
+    expect(encodes[2]).toMatchObject({
       size: { width: 480, height: 360 },
-      quality: DERIVATIVE_POLICY.previewQuality,
+      quality: DERIVATIVE_POLICY.thumbnailQuality,
     });
   });
 
@@ -172,7 +187,13 @@ describe("buildPhotoDerivatives", () => {
 });
 
 describe("derivativeFileName", () => {
-  it("names the file after the capture, with the output extension", () => {
-    expect(derivativeFileName("w0123456789abcdef")).toBe("w0123456789abcdef.jpg");
+  it("names the file after the capture and the artefact it is", () => {
+    expect(derivativeFileName("w0123456789abcdef", "original")).toBe(
+      "w0123456789abcdef-original.jpg",
+    );
+    // Same function `apps/mobile` calls, so both clients name a preview the same.
+    expect(derivativeFileName("w0123456789abcdef", "preview")).toBe(
+      "w0123456789abcdef-preview.jpg",
+    );
   });
 });

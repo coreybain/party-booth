@@ -99,6 +99,11 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      // Explicit rather than inferred from the `<Text>` child, because while
+      // `busy` the child is a spinner and the button would otherwise have no
+      // accessible name at all — exactly when a screen reader user most needs
+      // to know which button they are waiting on.
+      accessibilityLabel={label}
       accessibilityState={{ disabled: isDisabled, busy }}
       accessibilityHint={accessibilityHint}
       disabled={isDisabled}

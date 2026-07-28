@@ -57,6 +57,8 @@ fresh clone typechecks offline; `npx convex dev` regenerates it once a real depl
 | `pnpm format`     | Prettier write · `pnpm format:check` in CI             |
 | `pnpm check`      | typecheck + lint + test in one go                      |
 | `pnpm env:doctor` | diff the current environment against `.env.example`    |
+| `pnpm seed:demo`  | seed the App Review demo party (needs the demo vars)   |
+| `pnpm icons`      | regenerate the app icon set from source                |
 
 Scope a command to one package with `--filter`:
 
@@ -168,8 +170,25 @@ client refreshes rather than serving a broken image. Withdrawal does not wait fo
 is deleted, which invalidates every outstanding URL immediately. Withdrawal is **permanent**.
 
 **Location metadata is stripped at capture, by re-encoding, on the client.** The checksum is taken
-over the re-encoded bytes, so the grant is minted against the stripped file. `sourceMetadataStripped`
-records what the pipeline actually did — it is never a hardcoded `true`.
+over the re-encoded bytes, so the grant is minted against the stripped file. The claim records what
+the pipeline actually did — it is never a hardcoded `true`.
+
+Since Sprint 4 the claim is **two** booleans, because video broke the identity between them:
+`sourceMetadataStripped` ("these bytes were re-encoded", which a **derivative grant requires**) and
+`sourceCarriesNoLocation` ("these bytes carry no location", which the **read path** consults). For a
+photograph they are the same fact; for a clip — which no client can transcode in the time a guest
+will wait — they are not. Absent means "same as the re-encode claim", so nothing already stored
+changed meaning. See `metadataClaimOf` in `@partybooth/contracts/media`.
+
+**One capture is one submission, however many objects it is made of.** A photo is two files
+(`original`, `preview`) and a video up to three (`original`, `poster`, `preview`), each with its own
+bound single-use grant under the same `captureId`. Only the `original` pass creates the media row and
+settles its state; a derivative attaches a key and stops — no counter, no state change — so a phone
+that dies between the two never strands a capture. The `shared` tier in `DERIVATIVE_PROFILES` is
+deliberately identical on both clients: it is the artefact third parties are served, and a photo
+should not look different in the same grid depending on which app took it.
+[ADR 0008](docs/adr/0008-client-produced-derivatives.md) is why the client makes them and the server
+does not.
 
 **The wire between clients and the route handler lives in contracts.** `uploadTicketSchema` and
 `buildUploadTicket` in `@partybooth/contracts/upload`, and the capture arithmetic (`fitWithin`,

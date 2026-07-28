@@ -244,6 +244,179 @@ export function isCaptureInFlight(state: CaptureState): boolean {
 export const CAPTURE_UNDO_WINDOW_MS = 15_000;
 
 /* -------------------------------------------------------------------------- */
+/* File roles — one capture, several stored objects                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which artefact of a capture a stored object *is*.
+ *
+ * A capture is one `media` row and one `captureId`, but up to three objects in
+ * storage. They are distinguished by role rather than by separate captures,
+ * because everything that makes the upload spine safe — the single-use grant,
+ * `(eventId, captureId)` idempotency, withdrawal expiring every unspent grant —
+ * is keyed on the capture and must stay keyed on the capture.
+ *
+ * - `original` — the frame the guest submitted. Full resolution. Served only to
+ *   its submitter and the hosts unless the client confirmed it re-encoded away
+ *   the EXIF/GPS block (see `mayServeOriginal` in the backend).
+ * - `preview` — the artefact a **third party** is served: a downscaled image for
+ *   a photo, a short muted clip for a video. This is what a gallery and a
+ *   slideshow render.
+ * - `poster` — a video's still frame, for the thumbnail and the first painted
+ *   frame before playback starts. Photos have no poster.
+ *
+ * ADR 0008 is where the "who produces these" question is answered, and the
+ * answer is the client: Convex's isolate cannot host an image pipeline, and a
+ * server-side step would have to write the GPS-bearing original to storage
+ * before it could strip anything (ADR 0004 §7).
+ */
+export const MEDIA_FILE_ROLES = ["original", "preview", "poster"] as const;
+
+export type MediaFileRole = (typeof MEDIA_FILE_ROLES)[number];
+
+export const mediaFileRoleSchema = z.enum(MEDIA_FILE_ROLES);
+
+/** Every role that is not the submitted frame itself. */
+export const DERIVATIVE_FILE_ROLES = ["preview", "poster"] as const;
+
+export type DerivativeFileRole = (typeof DERIVATIVE_FILE_ROLES)[number];
+
+export function isDerivativeRole(role: MediaFileRole): role is DerivativeFileRole {
+  return role !== "original";
+}
+
+/**
+ * The derivatives a client is expected to send alongside each type of original.
+ *
+ * "Expected", not "required": a media row settles out of `processing` when its
+ * **original** lands, and derivatives attach whenever they arrive, in any order.
+ * That is deliberate — a phone that dies between the original and the preview
+ * must not leave a capture stranded in `processing` for ever. What a missing
+ * preview costs is visibility to fellow guests, not the item itself.
+ */
+export const DERIVATIVE_ROLES_BY_TYPE = {
+  photo: ["preview"],
+  /**
+   * A video has a **poster and nothing else**.
+   *
+   * The `preview` slot was open for a downscaled muted clip that neither client
+   * has ever produced — nothing in Expo or in a browser transcodes video — and an
+   * open slot is not free. It carried a 25 MiB ceiling and the *same*
+   * `MEDIA_LIMITS.video.mimeTypes` containers as the original, so a guest whose
+   * original was withheld from third parties could have re-uploaded the identical
+   * bytes as a "preview" and had them served to the whole gallery: nothing
+   * corroborated the re-encode claim, because a same-container file of similar
+   * size is exactly what a genuine re-encode would look like.
+   *
+   * Closing the slot is the honest fix while the artefact does not exist. Video
+   * `preview` is P2 work (`TODO.md`), and it comes back with a transcoder and a
+   * container/duration check, not before.
+   */
+  video: ["poster"],
+} as const satisfies Record<MediaType, readonly DerivativeFileRole[]>;
+
+export function derivativeRolesFor(mediaType: MediaType): readonly DerivativeFileRole[] {
+  return DERIVATIVE_ROLES_BY_TYPE[mediaType];
+}
+
+/** Whether this role is meaningful for this media type. Photos have no poster. */
+export function isFileRoleAllowed(mediaType: MediaType, role: MediaFileRole): boolean {
+  if (role === "original") return true;
+  return derivativeRolesFor(mediaType).includes(role);
+}
+
+/* -------------------------------------------------------------------------- */
+/* What a client claims about the bytes it is sending                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The two separate promises a client makes about a file's metadata.
+ *
+ * These were one boolean (`sourceMetadataStripped`) until Sprint 4, and for a
+ * photograph they really are the same fact: the re-encode *is* the mechanism by
+ * which no location survives. Video broke that identity, and the single flag
+ * then had to mean whichever of the two the reader happened to need:
+ *
+ * - **`reEncoded`** — these bytes went through a decode/encode round trip, so
+ *   whatever container the camera wrote no longer exists. This is the claim a
+ *   **derivative** grant requires (`derivativeMetadataNotStripped`), because a
+ *   derivative is what third parties are handed and "I re-encoded it" is a
+ *   statement about a process we can reason about.
+ * - **`carriesNoLocation`** — there is no location fix in this file. This is the
+ *   claim the **read path** consults (`mayServeOriginal` in the backend), because
+ *   the privacy invariant in PLAN.md is about location, not about encoders.
+ *
+ * A 60-second clip cannot be re-encoded on a phone in the time a guest will
+ * wait, and nothing in either client's toolchain transcodes video at all. So
+ * `apps/mobile` sends a clip with `reEncoded: false` and `carriesNoLocation:
+ * true` — the second justified structurally rather than mechanically: the app
+ * ships no location permission on either platform (`blockedPermissions` on
+ * Android, no `NSLocation*` on iOS), so there is no fix for the recorder to
+ * embed, and video library import is deliberately not built. `apps/web` cannot
+ * make either claim for a clip a guest picked from their camera roll, and says
+ * so: both `false`.
+ *
+ * Keeping them apart is what lets each side ask its own question honestly
+ * instead of reading a flag whose name answers the other one.
+ */
+export interface MetadataClaim {
+  /** The bytes were decoded and re-encoded, so no source container survived. */
+  readonly reEncoded: boolean;
+  /** No location metadata is present, by whatever route. */
+  readonly carriesNoLocation: boolean;
+}
+
+/**
+ * How the claim travels: two optional booleans, both absent on every pre-Sprint-4
+ * row.
+ *
+ * `sourceMetadataStripped` keeps its name and its meaning — *the strip happened,
+ * by re-encoding* — so no stored row changes meaning and no migration is needed.
+ * `sourceCarriesNoLocation` is the new half, and is only ever set by a client
+ * that means something different by it.
+ */
+export interface MetadataClaimFields {
+  readonly sourceMetadataStripped?: boolean | undefined;
+  readonly sourceCarriesNoLocation?: boolean | undefined;
+}
+
+/**
+ * Read a stored or wire-borne claim, defaulting the way history requires.
+ *
+ * The fallback is the load-bearing part: a row written before the split carries
+ * only `sourceMetadataStripped`, and a client that re-encoded a photograph was
+ * thereby also promising there was no location left in it. So an absent
+ * `sourceCarriesNoLocation` inherits the re-encode claim, and every existing row
+ * keeps exactly the visibility it had. Absent-and-absent is `false` on both,
+ * which is the conservative reading and the one Sprint 3 already applied.
+ */
+export function metadataClaimOf(fields: MetadataClaimFields): MetadataClaim {
+  const reEncoded = fields.sourceMetadataStripped === true;
+  return {
+    reEncoded,
+    carriesNoLocation: fields.sourceCarriesNoLocation ?? reEncoded,
+  };
+}
+
+/**
+ * May the **original** be handed to somebody who is not its submitter or a host?
+ *
+ * Location, not encoding — see {@link MetadataClaim}. The backend's
+ * `mayServeOriginal` is this rule plus the viewer check.
+ */
+export function originalIsServableToThirdParties(fields: MetadataClaimFields): boolean {
+  return metadataClaimOf(fields).carriesNoLocation;
+}
+
+/** Write a claim back out to the wire. Omits `false`-by-default absences. */
+export function metadataClaimFields(claim: MetadataClaim): MetadataClaimFields {
+  return {
+    sourceMetadataStripped: claim.reEncoded,
+    sourceCarriesNoLocation: claim.carriesNoLocation,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Per-file limits                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -270,6 +443,28 @@ export const PHOTO_MAX_BYTES = MEDIA_LIMITS.photo.maxBytes;
 export const VIDEO_MAX_BYTES = MEDIA_LIMITS.video.maxBytes;
 export const VIDEO_MAX_DURATION_SECONDS = MEDIA_LIMITS.video.maxDurationSeconds;
 
+/**
+ * Ceilings for the derivatives, which are much tighter than the originals'.
+ *
+ * The tightness is doing real work rather than saving pennies. A derivative is
+ * the one artefact served to people who are not the submitter, so "this is a
+ * re-encode" has to be more than a claim — and a 12-megapixel camera JPEG with
+ * its EXIF block intact does not fit in two megabytes. It is not proof (a small
+ * image can still carry GPS) but it is the cheapest available corroboration,
+ * and it is why the preview cap is not simply "the photo cap".
+ *
+ * **Every derivative is an image**, and that is now the whole rule. A video's
+ * `preview` — a downscaled muted clip with its own 25 MiB ceiling and the
+ * original's containers — was the one derivative that could not be corroborated
+ * at all, and no client produces it; see {@link DERIVATIVE_ROLES_BY_TYPE}.
+ */
+export const DERIVATIVE_IMAGE_MIME_TYPES = ["image/jpeg", "image/webp", "image/png"] as const;
+
+export const DERIVATIVE_LIMITS = {
+  /** Applies to a photo's preview and to any poster. */
+  image: { maxBytes: 2 * MIB },
+} as const;
+
 export function maxBytesFor(mediaType: MediaType): number {
   return MEDIA_LIMITS[mediaType].maxBytes;
 }
@@ -278,16 +473,42 @@ export function allowedMimeTypes(mediaType: MediaType): readonly string[] {
   return MEDIA_LIMITS[mediaType].mimeTypes;
 }
 
+/** The byte ceiling for one exact `(mediaType, role)` pair. */
+export function maxBytesForRole(mediaType: MediaType, role: MediaFileRole): number {
+  if (role === "original") return maxBytesFor(mediaType);
+  return DERIVATIVE_LIMITS.image.maxBytes;
+}
+
+/** The formats accepted for one exact `(mediaType, role)` pair. */
+export function allowedMimeTypesForRole(
+  mediaType: MediaType,
+  role: MediaFileRole,
+): readonly string[] {
+  if (role === "original") return allowedMimeTypes(mediaType);
+  return DERIVATIVE_IMAGE_MIME_TYPES;
+}
+
 export interface MediaFileCandidate {
   mediaType: MediaType;
   byteSize: number;
   mimeType?: string | undefined;
   /** Required for videos; ignored for photos. */
   durationSeconds?: number | undefined;
+  /**
+   * Which artefact of the capture this is. Absent means `original`, which is
+   * what every pre-Sprint-4 caller meant and still means.
+   */
+  fileRole?: MediaFileRole | undefined;
 }
 
 export type MediaRejectionReason =
-  "emptyFile" | "tooLarge" | "unsupportedMimeType" | "missingDuration" | "tooLong";
+  | "emptyFile"
+  | "tooLarge"
+  | "unsupportedMimeType"
+  | "missingDuration"
+  | "tooLong"
+  /** A poster for a photo, or any other role its media type does not have. */
+  | "unsupportedFileRole";
 
 export type MediaValidationResult =
   { ok: true } | { ok: false; reason: MediaRejectionReason; message: string; limit?: number };
@@ -296,33 +517,53 @@ export type MediaValidationResult =
  * Validate a candidate file **before** asking Convex for an upload grant, and
  * again inside the grant mutation. Same function both sides: a client that
  * skips the check gets the identical rejection from the server.
+ *
+ * Every ceiling it consults is `(mediaType, fileRole)`-shaped, so a preview is
+ * held to the preview cap rather than to the original's — which is the whole
+ * reason the caps are separate. `durationSeconds` is required for a video's
+ * original and for a video's preview clip, and meaningless for a poster.
  */
 export function validateMediaFile(candidate: MediaFileCandidate): MediaValidationResult {
   const { mediaType, byteSize, mimeType, durationSeconds } = candidate;
+  const fileRole: MediaFileRole = candidate.fileRole ?? "original";
+
+  if (!isFileRoleAllowed(mediaType, fileRole)) {
+    return {
+      ok: false,
+      reason: "unsupportedFileRole",
+      message: `A ${mediaType} has no ${fileRole}.`,
+    };
+  }
 
   if (!Number.isFinite(byteSize) || byteSize <= 0) {
     return { ok: false, reason: "emptyFile", message: "File is empty." };
   }
 
-  const maxBytes = maxBytesFor(mediaType);
+  const maxBytes = maxBytesForRole(mediaType, fileRole);
   if (byteSize > maxBytes) {
     return {
       ok: false,
       reason: "tooLarge",
-      message: `${mediaType === "photo" ? "Photos" : "Videos"} must be ${formatMib(maxBytes)} or smaller.`,
+      message:
+        fileRole === "original"
+          ? `${mediaType === "photo" ? "Photos" : "Videos"} must be ${formatMib(maxBytes)} or smaller.`
+          : `A ${fileRole} must be ${formatMib(maxBytes)} or smaller.`,
       limit: maxBytes,
     };
   }
 
-  if (mimeType !== undefined && !allowedMimeTypes(mediaType).includes(mimeType)) {
+  if (mimeType !== undefined && !allowedMimeTypesForRole(mediaType, fileRole).includes(mimeType)) {
     return {
       ok: false,
       reason: "unsupportedMimeType",
-      message: `${mimeType} is not a supported ${mediaType} format.`,
+      message: `${mimeType} is not a supported ${mediaType} ${fileRole} format.`,
     };
   }
 
-  if (mediaType === "video") {
+  // A poster is a still frame: it has no duration, and demanding one would
+  // refuse every legitimate video thumbnail.
+  const needsDuration = mediaType === "video" && fileRole === "original";
+  if (needsDuration) {
     if (durationSeconds === undefined || !Number.isFinite(durationSeconds)) {
       return {
         ok: false,
@@ -367,6 +608,157 @@ export const moderationActorSchema = z.enum(MODERATION_ACTORS);
 export function mediaStateForDecision(decision: ModerationDecision): MediaState {
   return decision;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Moderation actions                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a host presses, as opposed to what gets recorded.
+ *
+ * `approve` and `decline` map one-to-one onto {@link MODERATION_DECISIONS}.
+ * `revoke` is the third button and it is **not** a fourth decision: it lands the
+ * item in `declined` exactly as a decline does, and the `moderationDecisions`
+ * row it writes says `declined`. What makes it its own action is the *guard* —
+ * it refuses anything that is not currently `approved`, so "un-approve this"
+ * cannot silently become "decline this thing that was never approved" when two
+ * hosts moderate the same grid at once.
+ *
+ * There is no `approved → pending`. The media state machine does not have that
+ * edge and it should not: a host taking a photo off the wall has made a
+ * decision, and putting it back in the queue would mean the pending badge — the
+ * thing that tells a host whether to keep moderating — counts items nobody is
+ * waiting on.
+ */
+export const MODERATION_ACTIONS = ["approve", "decline", "revoke"] as const;
+
+export type ModerationActionName = (typeof MODERATION_ACTIONS)[number];
+
+export const moderationActionSchema = z.enum(MODERATION_ACTIONS);
+
+/**
+ * Why a moderation action could not be applied.
+ *
+ * - `stillProcessing` — the bytes have not landed. There is nothing to look at.
+ * - `withdrawn` — the submitter took it back. Withdrawal is permanent.
+ * - `notApproved` — `revoke` against something that is not approved.
+ */
+export const MODERATION_REFUSALS = ["stillProcessing", "withdrawn", "notApproved"] as const;
+
+export type ModerationRefusal = (typeof MODERATION_REFUSALS)[number];
+
+export const MODERATION_REFUSAL_MESSAGES: Record<ModerationRefusal, string> = {
+  stillProcessing: "That one is still uploading.",
+  withdrawn: "The guest withdrew that one.",
+  notApproved: "That one is not approved, so there is nothing to take back.",
+};
+
+export type ModerationTransition =
+  | {
+      ok: true;
+      next: MediaState;
+      decision: ModerationDecision;
+      /** `false` when the item was already in the target state — a no-op. */
+      changed: boolean;
+    }
+  | { ok: false; reason: ModerationRefusal; message: string };
+
+/**
+ * Is this action legal on an item in this state, and where does it land?
+ *
+ * Pure, so the moderation grid can grey out a button using the same rule the
+ * mutation enforces, and so the bulk path can partition a selection into "these
+ * moved" and "these could not" without a round trip per item.
+ *
+ * Idempotence is a first-class answer rather than an error: approving something
+ * already approved returns `changed: false`. Two hosts double-tapping the same
+ * card at 1am is the common case, and it must not produce a second
+ * `moderationDecisions` row or a second audit line.
+ */
+export function moderationTransition(
+  action: ModerationActionName,
+  from: MediaState,
+): ModerationTransition {
+  if (from === "deleted") return moderationRefused("withdrawn");
+  if (from === "processing") return moderationRefused("stillProcessing");
+
+  if (action === "revoke" && from !== "approved") return moderationRefused("notApproved");
+
+  const next: MediaState = action === "approve" ? "approved" : "declined";
+  return {
+    ok: true,
+    next,
+    decision: next === "approved" ? "approved" : "declined",
+    changed: from !== next,
+  };
+}
+
+function moderationRefused(reason: ModerationRefusal): ModerationTransition {
+  return { ok: false, reason, message: MODERATION_REFUSAL_MESSAGES[reason] };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Chronological cursors (gallery and slideshow)                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A position in a chronologically-ordered media list.
+ *
+ * `createdAt` alone is not a position: two captures uploaded in the same
+ * millisecond at a party where fifty phones are firing is not a hypothetical,
+ * and a cursor that cannot break that tie either skips an item or repeats one.
+ * Pairing the timestamp with the row id makes the ordering total.
+ */
+export interface MediaCursor {
+  createdAt: number;
+  /** Convex document id. Opaque outside `packages/backend`. */
+  id: string;
+}
+
+const CURSOR_PATTERN = /^(\d{1,15}):([A-Za-z0-9_-]{1,64})$/;
+
+export function encodeMediaCursor(cursor: MediaCursor): string {
+  return `${Math.trunc(cursor.createdAt)}:${cursor.id}`;
+}
+
+/** `undefined` for anything that is not a cursor — a bad one means "start". */
+export function decodeMediaCursor(value: string | null | undefined): MediaCursor | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = CURSOR_PATTERN.exec(value);
+  if (!match) return undefined;
+  const [, createdAt, id] = match;
+  if (createdAt === undefined || id === undefined) return undefined;
+  return { createdAt: Number(createdAt), id };
+}
+
+/** Oldest first, ties broken by id. The slideshow's order. */
+export function compareChronological(a: MediaCursor, b: MediaCursor): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** Strictly after the cursor, in {@link compareChronological} order. */
+export function isAfterCursor(item: MediaCursor, cursor: MediaCursor | undefined): boolean {
+  if (cursor === undefined) return true;
+  return compareChronological(item, cursor) > 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Report lifecycle                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What has happened to a content report.
+ *
+ * Reports are not decisions. A host who declines the reported item resolves the
+ * report as `actioned`; one who looks and disagrees resolves it as `dismissed`.
+ * Both are answers, and App Review wants to see that an answer is possible.
+ */
+export const REPORT_STATUSES = ["open", "actioned", "dismissed"] as const;
+
+export type ReportStatus = (typeof REPORT_STATUSES)[number];
+
+export const reportStatusSchema = z.enum(REPORT_STATUSES);
 
 /* -------------------------------------------------------------------------- */
 /* Content reports (App Review requirement)                                   */

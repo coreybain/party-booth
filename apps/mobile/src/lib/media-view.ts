@@ -184,15 +184,14 @@ function entryFor(input: {
 /* Formatting                                                                 */
 /* -------------------------------------------------------------------------- */
 
-const KIB = 1024;
-
-/** "812 KB" / "2.4 MB". Binary units, matching `MEDIA_LIMITS`. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
-  if (bytes < KIB * KIB) return `${String(Math.max(1, Math.round(bytes / KIB)))} KB`;
-  const mib = bytes / (KIB * KIB);
-  return `${mib < 10 ? mib.toFixed(1) : String(Math.round(mib))} MB`;
-}
+/**
+ * Re-exported rather than reimplemented.
+ *
+ * This app had its own copy, identical except that it stopped at megabytes — so
+ * a party's total storage rendered as "4096 MB" here and "4.0 GB" on the web
+ * console, from the same number. Exactly the drift a shared formatter prevents.
+ */
+export { formatBytes } from "@partybooth/contracts/copy";
 
 /**
  * Is this signed URL still worth putting in an `<Image>`?

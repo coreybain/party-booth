@@ -111,9 +111,15 @@ export interface DerivativeProfile {
   /** Longest edge of the file actually uploaded — the submitted original. */
   readonly uploadMaxEdge: number;
   readonly uploadQuality: number;
+  /**
+   * Longest edge of the **shared** derivative — a photo's `preview`, a video's
+   * `poster`. Uploaded, and the artefact third parties are served.
+   */
+  readonly sharedMaxEdge: number;
+  readonly sharedQuality: number;
   /** Longest edge of the local thumbnail. Never uploaded — see below. */
-  readonly previewMaxEdge: number;
-  readonly previewQuality: number;
+  readonly thumbnailMaxEdge: number;
+  readonly thumbnailQuality: number;
   /** The only MIME type either pipeline produces. */
   readonly outputMimeType: "image/jpeg";
   readonly outputExtension: "jpg";
@@ -140,26 +146,54 @@ export interface DerivativeProfile {
  * guest has already waited for it to encode, and every megabyte past what a
  * slideshow can show is a second of party wifi and another chance to drop.
  *
- * The **preview is local-only** on both platforms. `media.completeUpload` takes
- * one `fileKey` per capture, so there is nowhere to put a second object; the
- * thumbnail exists so a guest sees their own photo the instant they press send
- * rather than a grey box, and so a failed upload still looks like the picture it
- * is. Sprint 4's video poster needs a second upload path — noted in the report.
+ * ## Three tiers, and why the middle one exists
+ *
+ * - `upload*` — the submitted **original**. Platform-specific, for the encoder
+ *   reasons above.
+ * - `shared*` — the uploaded **derivative**: a photo's `preview`, a video's
+ *   `poster`. This is what a fellow guest's gallery renders, what a video paints
+ *   before playback, and — via `projectMedia`'s `previewKey ?? posterKey` — the
+ *   fallback anywhere the original is withheld.
+ * - `thumbnail*` — a **local-only** thumbnail. Never uploaded. It exists so a
+ *   guest sees their own photo the instant they press send rather than a grey
+ *   box, and so a failed upload still looks like the picture it is.
+ *
+ * The middle tier is **identical on both platforms**, deliberately: it is the
+ * artefact other people are served, so a photo taken on the app and one taken on
+ * mobile web should look the same in the same grid. Both clients had
+ * independently landed on 1280 px at q0.8 in their own files — the same two
+ * numbers, in two places, free to drift — which is why they are here now.
+ *
+ * 1280 at q0.8 puts a typical frame around 250–400 KB, comfortably inside
+ * `DERIVATIVE_LIMITS.image.maxBytes` (2 MiB) with room for a busy, high-detail
+ * photograph. That cap is not a suggestion — `checkGrantEligibility` refuses the
+ * grant over it — and its tightness is itself part of the privacy argument: a
+ * 12-megapixel camera JPEG with its EXIF block intact does not fit in two
+ * megabytes, which is the cheapest available corroboration that a derivative
+ * really is a re-encode.
+ *
+ * The thumbnail tier is **not** a substitute for the shared one. 480–640 px is
+ * visibly soft on a modern phone's grid and embarrassing on a tablet; it is
+ * drawn at 64 px in a list and sized for that.
  */
 export const DERIVATIVE_PROFILES = {
   web: {
     uploadMaxEdge: 2560,
     uploadQuality: 0.85,
-    previewMaxEdge: 480,
-    previewQuality: 0.6,
+    sharedMaxEdge: 1280,
+    sharedQuality: 0.8,
+    thumbnailMaxEdge: 480,
+    thumbnailQuality: 0.6,
     outputMimeType: "image/jpeg",
     outputExtension: "jpg",
   },
   native: {
     uploadMaxEdge: 4096,
     uploadQuality: 0.92,
-    previewMaxEdge: 640,
-    previewQuality: 0.6,
+    sharedMaxEdge: 1280,
+    sharedQuality: 0.8,
+    thumbnailMaxEdge: 640,
+    thumbnailQuality: 0.6,
     outputMimeType: "image/jpeg",
     outputExtension: "jpg",
   },
@@ -179,7 +213,22 @@ export type DerivativePlatform = keyof typeof DERIVATIVE_PROFILES;
  */
 export const DERIVATIVE_MIME_TYPE = "image/jpeg";
 
-export type DerivativeKind = "original" | "preview";
+/** The extension that goes with {@link DERIVATIVE_MIME_TYPE}. */
+export const DERIVATIVE_EXTENSION = "jpg";
+
+/**
+ * The artefacts a client writes to disk for one capture.
+ *
+ * Three of these four are a `MediaFileRole` spelled the same way, on
+ * purpose: `derivativeFileName(id, "preview")` names the file that is uploaded
+ * with `fileRole: "preview"`, and the alignment is what stops the two vocabularies
+ * drifting. `thumbnail` is the odd one out precisely *because* it has no role —
+ * it is local-only and never uploaded, and calling it "preview" (as the profile
+ * fields once did) is what made the two meanings collide in the first place.
+ */
+export const DERIVATIVE_FILE_KINDS = ["original", "thumbnail", "preview", "poster"] as const;
+
+export type DerivativeKind = (typeof DERIVATIVE_FILE_KINDS)[number];
 
 /**
  * Where a capture's files live on disk, for the client that keeps them there.
@@ -188,9 +237,69 @@ export type DerivativeKind = "original" | "preview";
  * rows needs no index, and so a crash between "file written" and "row persisted"
  * leaves something a later sweep can recognise as an orphan rather than a
  * mystery.
+ *
+ * `extension` defaults to JPEG because every *image* either pipeline produces is
+ * one ({@link DERIVATIVE_MIME_TYPE}). It is a parameter because a video's
+ * original is not: `expo-camera` writes QuickTime on iOS and MP4 on Android, and
+ * hardcoding `.jpg` here is what pushed `apps/mobile` into keeping a second,
+ * private naming function — so the two clients named the same artefact
+ * differently and neither could tell.
  */
-export function derivativeFileName(captureId: string, kind: DerivativeKind): string {
-  return `${captureId}-${kind}.jpg`;
+export function derivativeFileName(
+  captureId: string,
+  kind: DerivativeKind,
+  extension: string = DERIVATIVE_EXTENSION,
+): string {
+  return `${captureId}-${kind}.${normaliseExtension(extension)}`;
+}
+
+/** Lower-case, no leading dot — `".MOV"` and `"mov"` name the same file. */
+function normaliseExtension(extension: string): string {
+  const trimmed = extension.trim().replace(/^\.+/, "").toLowerCase();
+  return trimmed === "" ? DERIVATIVE_EXTENSION : trimmed;
+}
+
+/**
+ * The container `expo-camera`/`MediaRecorder` wrote, from the path it wrote to.
+ *
+ * Guessing from the extension rather than sniffing the file is correct here
+ * because *we* wrote the file: the extension is the recorder's, not a name a
+ * guest chose. iOS writes QuickTime and Android writes MP4, both of which are in
+ * `MEDIA_LIMITS.video.mimeTypes`. Anything unrecognised falls back to MP4, which
+ * is what a server-side default would assume anyway.
+ *
+ * Shared rather than per-client because the answer decides the `mimeType` on the
+ * upload ticket, and `checkTicketAgainstGrant` refuses a ticket whose MIME type
+ * disagrees with the grant's — so two clients guessing differently is a class of
+ * refusal nobody could debug from the outside.
+ */
+export function videoContainerFor(uri: string): { mimeType: string; extension: string } {
+  const extension = normaliseExtension(uri.split(".").pop() ?? "");
+  if (extension === "mov" || extension === "qt") return { mimeType: "video/quicktime", extension };
+  if (extension === "webm") return { mimeType: "video/webm", extension };
+  return { mimeType: "video/mp4", extension: "mp4" };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Posters                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where in a clip to grab the still that represents it.
+ *
+ * **Not frame zero.** The first frame of a phone recording is very often the
+ * lens still adjusting exposure — a black or blown-out rectangle — and that
+ * frame then represents the video everywhere it appears, for the whole evening.
+ *
+ * One second in, or the midpoint of anything shorter, so it is never past the
+ * end: a seek beyond `duration` settles wherever the decoder feels like, which
+ * is a different frame on every device. Both clients used to answer this
+ * question separately (one at a flat 150 ms, one at this rule), which meant the
+ * same clip got a different thumbnail depending on which app recorded it.
+ */
+export function posterFrameTime(durationSeconds: number): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 0;
+  return Math.min(1, durationSeconds / 2);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -62,20 +62,27 @@ export type DerivativePolicy = DerivativeProfile;
  * `@partybooth/contracts/capture` next to the native profile — so the two
  * clients' choices sit side by side and the difference between them is a
  * documented decision rather than an accident of who wrote which file. The
- * short version: the ceiling here is set by mobile Safari's canvas area limit,
- * which `expo-image-manipulator` does not have. `fitWithin` is shared for the
- * same reason: two copies of one piece of arithmetic is one copy too many.
+ * short version: the `upload` ceiling here is set by mobile Safari's canvas area
+ * limit, which `expo-image-manipulator` does not have. `fitWithin` is shared for
+ * the same reason: two copies of one piece of arithmetic is one copy too many.
  *
- * `previewMaxEdge` is a local thumbnail only. It never leaves the device — the
- * completion API takes one file per capture, so there is nowhere to put a second
- * object. It exists so "My media" shows the guest their own photo the instant
- * they press send rather than a grey box until a signed URL arrives.
+ * Three tiers, and only the middle one leaves the device as a derivative:
+ *
+ * - `upload*` — the submitted original.
+ * - `shared*` — the uploaded `preview`. **Identical to the native profile's**,
+ *   because it is the artefact other guests are served and a photo should not
+ *   look different in the same grid depending on which app took it.
+ * - `thumbnail*` — local only, so "My media" shows the guest their own photo the
+ *   instant they press send rather than a grey box until a signed URL arrives.
  */
 export const DERIVATIVE_POLICY: DerivativeProfile = DERIVATIVE_PROFILES.web;
 
 export interface DerivativePlan {
   readonly upload: Dimensions;
-  readonly preview: Dimensions;
+  /** The uploaded `preview` derivative. */
+  readonly shared: Dimensions;
+  /** The local-only thumbnail. */
+  readonly thumbnail: Dimensions;
 }
 
 export function planDerivatives(
@@ -84,7 +91,8 @@ export function planDerivatives(
 ): DerivativePlan {
   return {
     upload: fitWithin(source, policy.uploadMaxEdge),
-    preview: fitWithin(source, policy.previewMaxEdge),
+    shared: fitWithin(source, policy.sharedMaxEdge),
+    thumbnail: fitWithin(source, policy.thumbnailMaxEdge),
   };
 }
 
@@ -122,8 +130,17 @@ export class DerivativeError extends Error {
 export interface Derivatives {
   /** The frame that is actually uploaded. Re-encoded, so metadata-free. */
   readonly upload: Blob;
+  /**
+   * The uploaded `preview` derivative — what a fellow guest is served.
+   *
+   * Its own encode since Sprint 4's integration pass. It used to be the local
+   * thumbnail doing double duty, which was cheap and correct on privacy but
+   * meant third parties got a 480 px image where the app's guests got 1280 px,
+   * from the same contract.
+   */
+  readonly shared: Blob;
   /** A local thumbnail. Never uploaded — see {@link DERIVATIVE_POLICY}. */
-  readonly preview: Blob;
+  readonly thumbnail: Blob;
   /** Pixel dimensions of {@link upload}, for the media row. */
   readonly dimensions: Dimensions;
   readonly sourceDimensions: Dimensions;
@@ -139,8 +156,8 @@ export interface Derivatives {
 }
 
 /**
- * Decode a captured photo and re-encode it twice: once for upload, once for a
- * local thumbnail.
+ * Decode a captured photo and re-encode it three times: the submitted original,
+ * the `preview` derivative other guests are served, and a local thumbnail.
  *
  * Throws {@link DerivativeError} on any failure, and that is the correct
  * behaviour rather than a fallback to the original bytes: uploading the file
@@ -170,11 +187,17 @@ export async function buildPhotoDerivatives(
       policy.outputMimeType,
       policy.uploadQuality,
     );
-    const preview = await runtime.encode(
+    const shared = await runtime.encode(
       decoded,
-      plan.preview,
+      plan.shared,
       policy.outputMimeType,
-      policy.previewQuality,
+      policy.sharedQuality,
+    );
+    const thumbnail = await runtime.encode(
+      decoded,
+      plan.thumbnail,
+      policy.outputMimeType,
+      policy.thumbnailQuality,
     );
 
     if (upload.size <= 0) {
@@ -183,7 +206,8 @@ export async function buildPhotoDerivatives(
 
     return {
       upload,
-      preview,
+      shared,
+      thumbnail,
       dimensions: plan.upload,
       sourceDimensions,
       metadataStripped: true,
@@ -198,13 +222,14 @@ export async function buildPhotoDerivatives(
   }
 }
 
-/** `image/jpeg` → a filename the storage provider and the host can both read. */
-export function derivativeFileName(
-  captureId: string,
-  policy: DerivativePolicy = DERIVATIVE_POLICY,
-): string {
-  return `${captureId}.${policy.outputExtension}`;
-}
+/**
+ * `image/jpeg` → a filename the storage provider and the host can both read.
+ *
+ * Re-exported from the contract rather than built here, so both clients name the
+ * same artefact the same way — `derivativeFileName(id, "preview")` is the file
+ * uploaded with `fileRole: "preview"`, on the web and on the app.
+ */
+export { derivativeFileName } from "@partybooth/contracts/capture";
 
 /* -------------------------------------------------------------------------- */
 /* The browser implementation                                                 */

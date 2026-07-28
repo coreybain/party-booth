@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { PrivacyLink } from "@/components/layout/site-footer";
 import { cn } from "@/lib/cn";
 
 export interface AppShellProps {
@@ -62,6 +63,15 @@ export function AppShell({
       >
         {children}
       </main>
+
+      {/*
+        One line, always present. The privacy policy has to be reachable from
+        every signed-in screen as well as every signed-out one — App Review
+        checks that a person can find it, not merely that the URL resolves.
+      */}
+      <footer className="border-t border-line px-4 py-4 text-center text-xs text-faint">
+        PartyBooth · <PrivacyLink />
+      </footer>
     </div>
   );
 }

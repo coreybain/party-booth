@@ -37,7 +37,25 @@ Reversible: a host may approve later.
 revoked **immediately**; it is not a warning state. The hard purge is post-launch.
 
 **Derivative** — any processed version of an original: preview image, video poster, thumbnail.
-Location metadata is stripped from every served derivative.
+Location metadata is stripped from every served derivative — and since Sprint 4 a derivative's grant
+is **refused** unless the client claims the re-encode, because the derivative is the artefact
+everybody except the submitter and the hosts is actually served. See
+[ADR 0008](adr/0008-client-produced-derivatives.md).
+
+**File role** — which artefact of a capture a stored object is: `original`, `preview` or `poster`.
+One capture is one media row and one `captureId`, but up to three objects, each with its own bound
+single-use grant. Absent means `original`, which is what every pre-Sprint-4 row means.
+
+**Flagged** — a media item with at least one open report on it. It sorts to the top of the host's
+queue and is nothing else: a report is a complaint, not a moderation decision.
+
+**Block** — one guest choosing not to see another. Per-account, global, silent, and a filter on the
+blocker's own reads only. It is not ejecting: it changes nothing for anybody else and does not touch
+a membership.
+
+**Revoke (an approval)** — taking an approved item back off the wall. It lands in `declined` like a
+decline, but refuses anything not currently approved, so it cannot silently become "decline this
+thing nobody approved" when two hosts work the same grid.
 
 **Dress rehearsal** — the ~3 Aug run-through with about five real people and real phones. The last
 point at which a finding can still change the build.

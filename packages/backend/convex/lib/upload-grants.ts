@@ -1,5 +1,5 @@
 import { generateSecret, type RandomBytes } from "@partybooth/contracts/codes";
-import type { MediaType } from "@partybooth/contracts/media";
+import type { MediaFileRole, MediaType } from "@partybooth/contracts/media";
 import type { StorageRegion } from "@partybooth/contracts/storage";
 import { grantExpiresAt, isGrantUsable, type GrantUsability } from "@partybooth/contracts/upload";
 
@@ -39,6 +39,8 @@ export interface IssueGrantParams {
   userId: Id<"users">;
   captureId: string;
   mediaType: MediaType;
+  /** Which artefact of the capture. `original` when omitted. */
+  fileRole?: MediaFileRole | undefined;
   fromLibrary: boolean;
   storageRegion: StorageRegion;
   byteSize: number;
@@ -47,6 +49,7 @@ export interface IssueGrantParams {
   durationSeconds?: number | undefined;
   capturedAt?: number | undefined;
   sourceMetadataStripped?: boolean | undefined;
+  sourceCarriesNoLocation?: boolean | undefined;
   now: number;
   /** Injectable randomness, for deterministic tests. */
   randomBytes?: RandomBytes | undefined;
@@ -73,6 +76,12 @@ export async function issueGrant(
     secretHash: await sha256Hex(secret),
     status: "issued",
     mediaType: params.mediaType,
+    // Omitted rather than defaulted, so an `original` row reads exactly as it
+    // did before Sprint 4 and `fileRoleOf` stays the one place that decides what
+    // an absent value means.
+    ...(params.fileRole === undefined || params.fileRole === "original"
+      ? {}
+      : { fileRole: params.fileRole }),
     fromLibrary: params.fromLibrary,
     storageRegion: params.storageRegion,
     byteSize: params.byteSize,
@@ -83,6 +92,13 @@ export async function issueGrant(
     ...(params.sourceMetadataStripped === undefined
       ? {}
       : { sourceMetadataStripped: params.sourceMetadataStripped }),
+    // Same rule as `fileRole` above: omitted rather than defaulted, so a row
+    // that says nothing keeps meaning what `metadataClaimOf` says it means
+    // (inherit the re-encode claim) rather than being pinned to a value nobody
+    // chose.
+    ...(params.sourceCarriesNoLocation === undefined
+      ? {}
+      : { sourceCarriesNoLocation: params.sourceCarriesNoLocation }),
     issuedAt: params.now,
     expiresAt,
     createdAt: params.now,

@@ -23,6 +23,7 @@
  * That keeps hook order stable; the branch can never flip during a render.
  */
 
+import { TERMS_VERSION } from "@partybooth/contracts/terms";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   createContext,
@@ -365,7 +366,13 @@ export function LiveSessionProvider({
       // the picker hands back a `file://` path that no other device can resolve.
       // Sprint 3 builds the upload, and the argument is already there for it.
       try {
-        await updateProfile({ displayName: name.value });
+        // Terms acceptance travels with the confirmation, because onboarding is
+        // the one screen every account passes through before it can post and
+        // Play's UGC policy asks for agreement *before* content is created. The
+        // server records it only if it matches the version it publishes, so a
+        // stale build cannot record agreement to a document it never showed —
+        // and an account without one is refused an upload grant.
+        await updateProfile({ displayName: name.value, acceptedTermsVersion: TERMS_VERSION });
       } catch (error) {
         captureHandledError(error, { scope: "session.confirmProfile" });
         return { status: "error", message: describeError(error).message };

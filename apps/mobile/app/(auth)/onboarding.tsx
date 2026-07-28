@@ -1,9 +1,11 @@
+import { TERMS_ACCEPTANCE_PROMPT, TERMS_PATH } from "@partybooth/contracts/terms";
 import { Image } from "expo-image";
 import { Redirect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
+import { appConfig } from "@/env";
 import { captureHandledError } from "@/lib/sentry";
 import { DISPLAY_NAME_MAX_LENGTH, initialFor, readDisplayName } from "@/lib/profile";
 import { useSession } from "@/providers/session";
@@ -24,6 +26,23 @@ import { colors, radius, spacing, typography } from "@/theme";
  * path built now is one that has to be deleted again next sprint. So the choice is
  * kept (`src/lib/local-profile.ts`) and uploaded when there is somewhere to put it.
  */
+/**
+ * Open a public legal page in the system browser sheet.
+ *
+ * `expo-web-browser`, imported on demand, so a guest reading the terms halfway
+ * through onboarding comes back to the screen they left rather than to the app's
+ * cold start.
+ */
+async function openLegalPage(path: string): Promise<void> {
+  if (appConfig.status !== "ready") return;
+  try {
+    const WebBrowser = await import("expo-web-browser");
+    await WebBrowser.openBrowserAsync(`${appConfig.siteUrl}${path}`);
+  } catch (cause) {
+    captureHandledError(cause, { scope: "onboarding.legal" });
+  }
+}
+
 export default function OnboardingScreen() {
   const router = useRouter();
   const { state, localProfile, confirmProfile } = useSession();
@@ -172,12 +191,48 @@ export default function OnboardingScreen() {
           disabled={!field.valid || saving}
           busy={saving}
         />
+
+        {/*
+          The acceptance, next to the button that gives it.
+
+          Play's UGC policy asks for terms that define and prohibit objectionable
+          content *and* for the user to have agreed to them before they create
+          any; a link buried in Settings is the first half only. `confirmProfile`
+          sends `TERMS_VERSION` with the name, and an account with no accepted
+          version is refused an upload grant, so this sentence and that refusal
+          are the same rule seen from two sides.
+        */}
+        <Text style={styles.legal}>
+          {TERMS_ACCEPTANCE_PROMPT}{" "}
+          <Text
+            style={styles.legalLink}
+            accessibilityRole="link"
+            onPress={() => void openLegalPage(TERMS_PATH)}
+          >
+            Read the terms
+          </Text>
+          {" · "}
+          <Text
+            style={styles.legalLink}
+            accessibilityRole="link"
+            onPress={() => void openLegalPage("/privacy")}
+          >
+            Privacy
+          </Text>
+        </Text>
       </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  legal: {
+    ...typography.caption,
+    color: colors.textFaint,
+    textAlign: "center",
+    paddingHorizontal: spacing.md,
+  },
+  legalLink: { color: colors.textMuted, textDecorationLine: "underline" },
   content: { paddingBottom: spacing.xxl, gap: spacing.lg },
   avatarRow: { flexDirection: "row", alignItems: "center", gap: spacing.lg },
   avatar: {

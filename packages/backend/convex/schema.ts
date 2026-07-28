@@ -11,6 +11,7 @@ import {
   eventRole,
   eventState,
   inviteVersionStatus,
+  mediaFileRole,
   mediaState,
   mediaType,
   membershipStatus,
@@ -19,6 +20,8 @@ import {
   moderationMode,
   organiserInvitationStatus,
   pushPlatform,
+  reportReason,
+  reportStatus,
   storageRegion,
   uploadGrantStatus,
   userEmailStatus,
@@ -75,6 +78,23 @@ export default defineSchema({
     /** Apple private relay addresses cannot receive organiser invites. */
     isPrivateRelayEmail: v.optional(v.boolean()),
 
+    /**
+     * The version of the user terms this account accepted, and when.
+     *
+     * Both Play's UGC policy and Apple's guideline 1.2 ask for terms that define
+     * and prohibit objectionable content *and* for the user to have accepted
+     * them. A published page nobody agreed to satisfies neither, which is what
+     * the repository had — no terms at all, and a store listing that said the
+     * follow-ups were done.
+     *
+     * Versioned rather than a boolean, because the question that gets asked
+     * afterwards is "which text did they agree to". `TERMS_VERSION` in
+     * `@partybooth/contracts/terms` is compared for equality, so bumping it asks
+     * everybody again — see `hasAcceptedTerms`.
+     */
+    acceptedTermsVersion: v.optional(v.string()),
+    acceptedTermsAt: v.optional(v.number()),
+
     accountState,
     /** Invitation-only private beta: `true` unlocks event creation. */
     isOrganiser: v.boolean(),
@@ -97,6 +117,23 @@ export default defineSchema({
      * Cleared when the membership behind it goes away.
      */
     activeEventId: v.optional(v.id("events")),
+
+    /**
+     * This row was written by `demo.seedDemoEvent`, not by an authentication.
+     *
+     * It exists for one reason: the seeded reviewer has to become the *same*
+     * account the reviewer signs into. The seed cannot reach inside Better
+     * Auth's tables to pre-create a user, so it writes a mirror row with a
+     * placeholder `authId`, and the `user.onCreate` trigger adopts that row —
+     * matching on the normalised address — instead of inserting a second one.
+     * Without it the reviewer signed into an account with no membership of the
+     * seeded party and found an empty shell.
+     *
+     * Adoption is deliberately confined to rows carrying this flag. Adopting any
+     * matching address would mean a mirror row could be claimed by whoever next
+     * signs up with that address, which is a different and much worse feature.
+     */
+    seeded: v.optional(v.boolean()),
 
     lastSeenAt: v.optional(v.number()),
     createdAt: v.number(),
@@ -248,6 +285,17 @@ export default defineSchema({
       total: v.number(),
     }),
 
+    /**
+     * The App Review demo party, seeded by `demo.seedDemoEvent`.
+     *
+     * The demo identity is confined to events carrying this flag —
+     * `assertDemoConfinement` in `lib/guards.ts` refuses it every other one, at
+     * join and on every event-scoped read and write. Before that, the only thing
+     * keeping the published reviewer credentials out of real parties was that
+     * nobody had handed them a code, which is an absence rather than a control.
+     */
+    isDemo: v.optional(v.boolean()),
+
     /** Locks `storageRegion`. */
     firstUploadAt: v.optional(v.number()),
     archivedAt: v.optional(v.number()),
@@ -381,6 +429,17 @@ export default defineSchema({
     status: uploadGrantStatus,
 
     mediaType,
+    /**
+     * Which artefact of the capture this grant authorises — the submitted frame
+     * or one of its derivatives (ADR 0008).
+     *
+     * Optional in the schema and read through `fileRoleOf`, because every grant
+     * minted before Sprint 4 is an original and carries no value here. It is
+     * part of what a completion is checked against: a preview grant may not be
+     * spent on a 20 MB body, and an original grant may not be spent on a file
+     * that would land in `previewKey`.
+     */
+    fileRole: v.optional(mediaFileRole),
     /** `true` when the file came from the photo roll — gated per event. */
     fromLibrary: v.boolean(),
     /** Copied from the event at issue time; the media row records it too. */
@@ -392,8 +451,16 @@ export default defineSchema({
     checksum: v.string(),
     durationSeconds: v.optional(v.number()),
     capturedAt: v.optional(v.number()),
-    /** The client's claim that it re-encoded away EXIF/GPS before uploading. */
+    /** The client's claim that it **re-encoded** the bytes before uploading. */
     sourceMetadataStripped: v.optional(v.boolean()),
+    /**
+     * The client's separate claim that the file **carries no location**.
+     *
+     * Absent means "same as the re-encode claim" (`metadataClaimOf` in
+     * `@partybooth/contracts/media`), which is what every grant minted before
+     * Sprint 4 meant — so this is additive and no stored row changes meaning.
+     */
+    sourceCarriesNoLocation: v.optional(v.boolean()),
 
     issuedAt: v.number(),
     expiresAt: v.number(),
@@ -462,32 +529,133 @@ export default defineSchema({
     /** Lower-case hex SHA-256, checked against the stored object. */
     checksum: v.string(),
     durationSeconds: v.optional(v.number()),
+    /**
+     * Whether `durationSeconds` was read out of the stored object rather than
+     * taken from the client.
+     *
+     * The 60-second cap used to be checked twice and independently zero times:
+     * the grant judged the client's estimate, and the completion callback
+     * forwards `metadata.durationSeconds`, which the route handler copies off
+     * the client-authored upload ticket. `media.verifyVideoDuration` fetches the
+     * file's own header and reads the container's duration; `true` means it
+     * agreed with the cap, `false` means the check ran and could not confirm
+     * (an unrecognised container, or storage unreachable), and absent means it
+     * has not run yet or the row is not a video.
+     */
+    durationVerified: v.optional(v.boolean()),
     width: v.optional(v.number()),
     height: v.optional(v.number()),
 
-    /** Derivatives. Location metadata is stripped from everything served. */
+    /**
+     * Derivatives — the artefacts everybody except the submitter and the hosts
+     * is actually served.
+     *
+     * `previewKey` is a downscaled image for a photo and a short muted clip for
+     * a video; `posterKey` is a video's still frame. Both are produced by the
+     * **client**, re-encoded, and uploaded through the same bound single-use
+     * grant spine as the original under the same `captureId` with a different
+     * `fileRole` (ADR 0008). A derivative grant is refused unless it claims the
+     * re-encode, which is the difference between this and the original's
+     * `sourceMetadataStripped` — that one is recorded, this one is required.
+     *
+     * `previewByteSize` / `posterByteSize` exist so the organiser's storage
+     * figure counts what is actually stored rather than only the originals.
+     */
     previewKey: v.optional(v.string()),
+    previewByteSize: v.optional(v.number()),
     posterKey: v.optional(v.string()),
+    posterByteSize: v.optional(v.number()),
+
+    /**
+     * The derivatives' own checksums and location claims.
+     *
+     * Both exist to make the re-encode claim falsifiable without an image
+     * pipeline, which it was not: the claim was required at grant time and then
+     * read by nothing, while `projectMedia` minted `previewUrl` for every viewer
+     * unconditionally. That made the derivative slot the way around
+     * `mayServeOriginal` — re-upload the withheld original under
+     * `fileRole: "preview"` and the whole gallery is served it.
+     *
+     * The checksum is compared against the original's (and the sibling
+     * derivative's) before a grant is issued and again before the object is
+     * attached: a decode/re-encode round trip never reproduces its input byte for
+     * byte, so equality means "this is the original, re-labelled".
+     *
+     * The location flag is the read-path half — `mayServeDerivative` withholds a
+     * derivative that cannot promise it from anyone but the submitter and the
+     * hosts, exactly as `mayServeOriginal` does for the original. Absent means
+     * "inherit the original's claim", so no stored row changes visibility.
+     */
+    previewChecksum: v.optional(v.string()),
+    previewCarriesNoLocation: v.optional(v.boolean()),
+    posterChecksum: v.optional(v.string()),
+    posterCarriesNoLocation: v.optional(v.boolean()),
 
     fromLibrary: v.boolean(),
     /**
-     * Whether the client re-encoded the frame — dropping the EXIF/GPS block —
-     * before it left the device. See ADR 0004: client-side stripping is the
-     * chosen strategy, and this records whether it actually happened for this
-     * item rather than assuming it did.
+     * Whether the client **re-encoded** the frame before it left the device. See
+     * ADR 0004: client-side stripping is the chosen strategy, and this records
+     * whether it actually happened for this item rather than assuming it did.
      *
-     * **Read on the read path**, not merely recorded: `projectMedia` omits the
-     * URL entirely for an item whose flag is not `true` unless the viewer is the
-     * submitter or a host. Sprint 3 writes no derivative, so the URL a read
-     * mints *is* the uploaded original — without that check a `false` here cost
-     * a bypassing client nothing.
+     * This is the half a **derivative grant requires** — a preview that is not a
+     * re-encode is refused before a grant exists.
      */
     sourceMetadataStripped: v.optional(v.boolean()),
+    /**
+     * Whether the file **carries no location fix**, which is the question the
+     * read path actually needs answered.
+     *
+     * Split from `sourceMetadataStripped` in Sprint 4 because the two stopped
+     * being the same fact once video existed: a clip cannot be re-encoded on a
+     * phone, but `apps/mobile` ships no location permission on either platform,
+     * so it can promise the second without the first. `apps/web` can promise
+     * neither for a clip picked from a camera roll.
+     *
+     * **Read on the read path**, not merely recorded: `mayServeOriginal` omits
+     * the original's URL entirely for an item that cannot promise this, unless
+     * the viewer is the submitter or a host. Absent means "same as the re-encode
+     * claim", so every pre-Sprint-4 row keeps exactly the visibility it had.
+     */
+    sourceCarriesNoLocation: v.optional(v.boolean()),
     capturedAt: v.optional(v.number()),
     uploadedAt: v.optional(v.number()),
 
     moderatedAt: v.optional(v.number()),
     moderatedByUserId: v.optional(v.id("users")),
+
+    /**
+     * When this item most recently became `approved` — the slideshow's clock.
+     *
+     * Separate from `moderatedAt`, which moves on a decline and on a revoke too.
+     * The slideshow's cursor used to run on `createdAt`, which is *capture*
+     * order, and that is not the order approvals happen in: a photo taken at
+     * eight o'clock and approved at midnight sits behind a cursor that passed it
+     * hours ago, so it never reached the television until the five-minute full
+     * refresh. "Approve on the laptop and it is on the wall a moment later" is
+     * the whole feature.
+     *
+     * Set by `settleAfterProcessing` (automatic mode) and by `applyModeration`
+     * (a host's approve). Left in place on a decline or a revoke: the row leaves
+     * the index the moment its state moves, and keeping the timestamp means a
+     * re-approval is a new one and sorts as one.
+     */
+    approvedAt: v.optional(v.number()),
+
+    /**
+     * When a member first reported this item, and how many have.
+     *
+     * Denormalised onto the row rather than counted from `mediaReports` on every
+     * read for the same reason the event counters are: the host's flagged view
+     * is a live subscription during a party, and a per-item sub-query is a
+     * per-item sub-query. `mediaReports` stays the record of *who* and *why*;
+     * these two are the badge.
+     *
+     * `flaggedAt` is cleared when the last open report is resolved, so "flagged"
+     * means "somebody is waiting on a host", not "somebody once complained".
+     */
+    flaggedAt: v.optional(v.number()),
+    reportCount: v.optional(v.number()),
+
     withdrawnAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
     /**
@@ -509,10 +677,79 @@ export default defineSchema({
   })
     .index("by_event", ["eventId"])
     .index("by_event_and_state", ["eventId", "state"])
+    .index("by_event_state_and_created", ["eventId", "state", "createdAt"])
+    /**
+     * The slideshow's index.
+     *
+     * **Approval** order over one state, resumable from a cursor: a TV left
+     * running all night asks for "approved items after the last one I have"
+     * every time the subscription re-runs, and without this that is a full scan
+     * of the party's media on every approval.
+     *
+     * Approval order rather than capture order because the cursor is what makes
+     * the show live, and a cursor that advances by capture time silently drops
+     * every item approved out of capture order — which is most of them, once a
+     * host works through a backlog.
+     */
+    .index("by_event_state_and_approved", ["eventId", "state", "approvedAt"])
     .index("by_event_and_capture", ["eventId", "captureId"])
     .index("by_event_and_uploader", ["eventId", "uploaderUserId"])
     .index("by_uploader", ["uploaderUserId"])
     .index("by_state", ["state"]),
+
+  /**
+   * A member's report of somebody else's media — the App Review "report
+   * objectionable content" requirement, and the host's flagged queue.
+   *
+   * A report is **not** a moderation decision and does not move the media state.
+   * It raises `media.flaggedAt` so the item surfaces at the top of the host's
+   * queue, and a host then approves, declines or dismisses. Auto-hiding on
+   * report would hand any guest a veto over any other guest's photo.
+   *
+   * One open row per `(mediaId, reporterUserId)`: reporting twice is a person
+   * pressing the button twice, not two complaints.
+   */
+  mediaReports: defineTable({
+    mediaId: v.id("media"),
+    eventId: v.id("events"),
+    reporterUserId: v.id("users"),
+    reason: reportReason,
+    /** The reporter's own words. Free text, capped, never shown to the uploader. */
+    details: v.optional(v.string()),
+    status: reportStatus,
+    resolvedAt: v.optional(v.number()),
+    resolvedByUserId: v.optional(v.id("users")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_media", ["mediaId"])
+    .index("by_event", ["eventId"])
+    .index("by_event_and_status", ["eventId", "status"])
+    .index("by_media_and_reporter", ["mediaId", "reporterUserId"]),
+
+  /**
+   * One guest choosing not to see another — the App Review "block abusive
+   * users" requirement.
+   *
+   * **Per-account and global**, not per-event: someone you have blocked is
+   * someone you have blocked, and a block that evaporated when the same two
+   * people turned up at a second party would not be a block. `eventId` records
+   * where it was made, for the audit row and nothing else.
+   *
+   * It is a *view* filter, not a moderation action. Nothing about the blocked
+   * person's media changes for anyone else, and the blocked person is never told
+   * — a block that notifies is a block nobody dares use.
+   */
+  userBlocks: defineTable({
+    blockerUserId: v.id("users"),
+    blockedUserId: v.id("users"),
+    /** Where the block was made. Context for the audit trail, not a scope. */
+    eventId: v.optional(v.id("events")),
+    createdAt: v.number(),
+  })
+    .index("by_blocker", ["blockerUserId"])
+    .index("by_blocker_and_blocked", ["blockerUserId", "blockedUserId"])
+    .index("by_blocked", ["blockedUserId"]),
 
   /**
    * Append-only history of moderation. One row per decision, including

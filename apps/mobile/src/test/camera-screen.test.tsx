@@ -30,7 +30,12 @@ const fake = vi.hoisted(() => ({
   isDevice: true,
   permission: null as { granted: boolean; canAskAgain: boolean } | null,
   requestPermission: vi.fn(),
+  microphone: null as { granted: boolean; canAskAgain: boolean } | null,
+  requestMicrophone: vi.fn(),
   takePictureAsync: vi.fn(),
+  recordAsync: vi.fn(),
+  stopRecording: vi.fn(),
+  captureVideo: vi.fn(),
   launchImageLibraryAsync: vi.fn(),
   openSettings: vi.fn(),
   capture: vi.fn(),
@@ -43,20 +48,34 @@ const fake = vi.hoisted(() => ({
 
 vi.mock("expo-camera", () => ({
   useCameraPermissions: () => [fake.permission, fake.requestPermission, fake.requestPermission],
-  // A stand-in that records the props the screen chose and exposes the one
-  // imperative method the shutter calls.
+  useMicrophonePermissions: () => [fake.microphone, fake.requestMicrophone, fake.requestMicrophone],
+  // A stand-in that records the props the screen chose and exposes the three
+  // imperative methods the shutter calls.
+  //
+  // `onCameraReady` fires on every *mode* change as well as on mount, which is
+  // the behaviour the arming phase depends on: the screen flips `mode` to
+  // "video" and waits to be told the rebuilt session is up before recording.
+  // A fake that only fired once would make the recording path untestable and
+  // would hide a real regression.
   CameraView: forwardRef<unknown, Record<string, unknown>>((props, ref) => {
-    useImperativeHandle(ref, () => ({ takePictureAsync: fake.takePictureAsync }));
+    useImperativeHandle(ref, () => ({
+      takePictureAsync: fake.takePictureAsync,
+      recordAsync: fake.recordAsync,
+      stopRecording: fake.stopRecording,
+    }));
     const onCameraReady = props.onCameraReady as (() => void) | undefined;
+    const mode = props.mode;
     useEffect(() => {
       onCameraReady?.();
-    }, [onCameraReady]);
+    }, [onCameraReady, mode]);
     return createElement("div", {
       "data-testid": "camera-view",
       "data-facing": String(props.facing),
       "data-flash": String(props.flash),
       "data-mode": String(props.mode),
       "data-active": String(props.active),
+      "data-torch": String(props.enableTorch),
+      "data-video-quality": String(props.videoQuality),
     });
   }),
 }));
@@ -95,7 +114,11 @@ vi.mock("react-native-safe-area-context", () => ({
 }));
 
 vi.mock("@/hooks/use-capture", () => ({
-  useCapture: () => ({ busy: fake.captureBusy, capture: fake.capture }),
+  useCapture: () => ({
+    busy: fake.captureBusy,
+    capture: fake.capture,
+    captureVideo: fake.captureVideo,
+  }),
 }));
 
 vi.mock("@/providers/session", () => ({ useSession: () => fake.session }));
@@ -136,6 +159,7 @@ function anUndoableItem(): QueueItem {
     checksum: "a".repeat(64),
     capturedAt: NOW,
     sourceMetadataStripped: true,
+    derivatives: [],
     autoSend: true,
     sendAt: NOW + 15_000,
     undoDelayMs: 15_000,
@@ -155,7 +179,10 @@ beforeEach(() => {
   fake.isDevice = true;
   fake.focused = true;
   fake.permission = { granted: true, canAskAgain: true };
+  fake.microphone = { granted: true, canAskAgain: true };
   fake.captureBusy = false;
+  fake.recordAsync.mockResolvedValue({ uri: "file:///tmp/clip.mov" });
+  fake.captureVideo.mockResolvedValue({ status: "queued", item: anUndoableItem() });
   fake.takePictureAsync.mockResolvedValue({
     uri: "file:///tmp/frame.jpg",
     width: 4032,
@@ -235,51 +262,70 @@ describe("CameraScreen — the viewfinder is mounted", () => {
   });
 });
 
+/*
+ * What is deliberately **not** tested here: pressing the shutter.
+ *
+ * `react-native-web`'s `Pressable` routes `onPressIn`/`onPressOut` through its
+ * responder system, which needs a real pointer pipeline and does not fire under
+ * jsdom — synthetic touch, mouse and pointer events all reach the responder and
+ * none of them grant it. So the button can be rendered here and can never be
+ * pressed, and a test that appeared to press it would be testing the fake.
+ *
+ * The orchestration those presses drive lives behind `useShutter`, and
+ * `src/test/use-shutter.test.tsx` calls `onPressIn()` / `onPressOut()` directly
+ * against a two-method fake camera: tap → `takePictureAsync`, hold → mode flip →
+ * `recordAsync`, release → `stopRecording`, the sixty-second cap, and the torch
+ * going out. The decision logic underneath is `src/lib/shutter.test.ts`, in
+ * Node. What this file is for is that the screen *renders* the right things and
+ * hands them the right props.
+ */
 describe("CameraScreen — the shutter", () => {
-  it("takes a picture and hands the frame to the capture pipeline", async () => {
+  it("offers one control that is both shutter and recorder", async () => {
     await renderCamera();
 
-    fireEvent.click(screen.getByLabelText("Take a photo"));
-
-    await waitFor(() => {
-      expect(fake.takePictureAsync).toHaveBeenCalledTimes(1);
-    });
-
-    // EXIF is dropped at the source as well as by the re-encode.
-    expect(fake.takePictureAsync.mock.calls[0]?.[0]).toMatchObject({ exif: false });
-
-    await waitFor(() => {
-      expect(fake.capture).toHaveBeenCalledTimes(1);
-    });
-    expect(fake.capture.mock.calls[0]?.[0]).toMatchObject({
-      fromLibrary: false,
-      source: { uri: "file:///tmp/frame.jpg", width: 4032, height: 3024 },
-    });
-  });
-
-  it("shows a refusal from the contract verbatim", async () => {
-    // Refusals are values, not exceptions (ADR 0004 §2), and arrive pre-worded.
-    fake.capture.mockResolvedValue({
-      status: "refused",
-      message: "The host paused this party.",
-    });
-    await renderCamera();
-
-    fireEvent.click(screen.getByLabelText("Take a photo"));
-
-    await waitFor(() => {
-      expect(screen.getByText("The host paused this party.")).toBeTruthy();
-    });
-  });
-
-  it("says what the hold gesture will do, rather than letting it do nothing", async () => {
-    // A guest will try holding for video. Silence reads as a broken button, and
-    // an `accessibilityHint` only ever reaches a screen reader.
+    const shutter = screen.getByLabelText("Take a photo");
+    expect(shutter).toBeTruthy();
+    // The hold is advertised on screen, not only in an accessibility hint that
+    // a sighted guest never hears.
     const { SHUTTER_HINT } = await import("../../app/(tabs)/camera");
+    expect(screen.getByText(SHUTTER_HINT)).toBeTruthy();
+  });
+
+  it("says the camera is 1080p and starts in picture mode", async () => {
+    // Both are load-bearing: `mode` decides whether `recordAsync` is even legal,
+    // and the quality cap is what keeps a 60-second clip inside the 250 MB
+    // ceiling `checkGrantEligibility` will hold it to.
+    await renderCamera();
+    const view = screen.getByTestId("camera-view");
+    expect(view.getAttribute("data-mode")).toBe("picture");
+    expect(view.getAttribute("data-video-quality")).toBe("1080p");
+    expect(view.getAttribute("data-torch")).toBe("false");
+  });
+
+  it("drops the hold from the hint when the microphone has been refused", async () => {
+    // `recordAudioAndroid` is on, so a recording without the permission fails
+    // outright. Advertising a gesture that cannot work is worse than not
+    // advertising it — photos still work, and the copy says only that.
+    fake.microphone = { granted: false, canAskAgain: true };
     await renderCamera();
 
-    expect(screen.getByLabelText("Take a photo")).toBeTruthy();
-    expect(screen.getByText(SHUTTER_HINT)).toBeTruthy();
+    const { SHUTTER_HINT } = await import("../../app/(tabs)/camera");
+    expect(screen.queryByText(SHUTTER_HINT)).toBeNull();
+    expect(screen.getByLabelText("Allow the microphone to record video")).toBeTruthy();
+  });
+
+  it("asks for the microphone only when the guest reaches for video", async () => {
+    // Not on mount: two permission prompts on the first screen of the app reads
+    // as greedy, and the camera one is the only one photos need.
+    fake.microphone = { granted: false, canAskAgain: true };
+    fake.requestMicrophone.mockResolvedValue({ granted: true });
+    await renderCamera();
+
+    expect(fake.requestMicrophone).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("Allow the microphone to record video"));
+    await waitFor(() => {
+      expect(fake.requestMicrophone).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("is disabled when the party is not taking photographs", async () => {

@@ -5,15 +5,25 @@ import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
 
 /**
- * The account-deletion lifecycle.
+ * The account-deletion lifecycle — the **scheduling** half.
  *
- * PLAN.md: "accounts move to `deletionScheduled` immediately and lose access",
- * and "the 30-day purge job is post-launch". So deletion at launch is exactly
- * three things — a state change, a `deletionJobs` row recording the intent and
- * the due date, and an audit row — and **nothing** moves an account to
- * `deleted`. That state belongs to the P1 purge worker, which is also what
- * makes the restore window real: an admin can cancel a `scheduled` job right up
- * until it runs.
+ * Requesting deletion is three things: a state change to `deletionScheduled`
+ * (which revokes access there and then, because `accountStateAllows` lets such
+ * an account do nothing but view itself), a `deletionJobs` row recording the
+ * intent and a due date thirty days out, and an audit row.
+ *
+ * Nothing here moves an account to `deleted`, and that is deliberate: the gap
+ * between the two is the restore window, and an admin can cancel a `scheduled`
+ * job right up until it runs. What *does* move an account to `deleted` is
+ * `convex/deletion.ts`, run daily by `convex/crons.ts` — the erasure worker.
+ *
+ * **The worker is not optional and it is not post-launch.** It was, and that
+ * made this feature indefinite deactivation with a deletion label on the button:
+ * no account ever reached `deleted`, the provider credentials stayed live, and
+ * the uploads stayed in private storage indefinitely. Apple's account-deletion
+ * guideline asks for the account *and its associated data*; Play's data-safety
+ * form asks the same question differently. Shipping the button without the
+ * worker is a promise the product does not keep.
  *
  * Better Auth's `deleteUser` calls this through the `user.onDelete` trigger in
  * `auth.ts`, which is why it is a plain function rather than a mutation: the

@@ -32,10 +32,13 @@ import { normaliseDelayMs, sendAtFor } from "./countdown";
 import {
   isTerminalCapture,
   type CaptureDraft,
+  type QueueDerivative,
   type QueueFailure,
   type QueueItem,
   type QueueState,
 } from "./types";
+
+import type { DerivativeFileRole } from "@partybooth/contracts/media";
 
 /* -------------------------------------------------------------------------- */
 /* Admission                                                                  */
@@ -69,8 +72,10 @@ export function queueItemFromDraft(
   const undoDelayMs = normaliseDelayMs(policy.undoDelayMs);
   const sendAt = sendAtFor(draft.capturedAt, undoDelayMs);
 
+  const { derivatives: drafted, ...capture } = draft;
+
   return {
-    ...draft,
+    ...capture,
     state: "captured",
     autoSend: policy.autoSend,
     undoDelayMs,
@@ -78,8 +83,51 @@ export function queueItemFromDraft(
     attempts: 0,
     nextAttemptAt: sendAt,
     progress: 0,
+    // Same reasoning as the capture's own scheduling fields: the pipeline made
+    // the files, the queue decides when they go. `nextAttemptAt: 0` means "as
+    // soon as you are allowed to", and the engine's own rule — only after the
+    // original has landed — is what actually gates them.
+    derivatives: (drafted ?? []).map<QueueDerivative>((derivative) => ({
+      ...derivative,
+      state: "pending",
+      attempts: 0,
+      nextAttemptAt: 0,
+    })),
     updatedAt: now,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Derivative scheduling                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Attempts before a derivative is given up on for good.
+ *
+ * Much lower than `MAX_AUTO_ATTEMPTS` and deliberately so. The capture itself is
+ * the guest's photograph and is worth eight tries and a manual button; its
+ * thumbnail is a bandwidth optimisation whose absence costs a fellow guest a
+ * larger image, and a phone that has failed to upload a 300 KB JPEG three times
+ * has better things to spend the evening's battery on. There is no manual retry
+ * for a derivative for the same reason — there is nothing to show a guest that
+ * they could act on.
+ */
+export const MAX_DERIVATIVE_ATTEMPTS = 3;
+
+function updateDerivative(
+  item: QueueItem,
+  role: DerivativeFileRole,
+  change: (derivative: QueueDerivative) => QueueDerivative | null,
+): QueueItem | null {
+  let changed = false;
+  const derivatives = item.derivatives.map((derivative) => {
+    if (derivative.role !== role) return derivative;
+    const updated = change(derivative);
+    if (updated === null || updated === derivative) return derivative;
+    changed = true;
+    return updated;
+  });
+  return changed ? { ...item, derivatives } : null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -149,7 +197,29 @@ export type QueueAction =
   /** The app came back to the foreground, or the process restarted. */
   | { readonly type: "resume"; readonly now: number }
   /** Drop terminal rows once their local files are gone. */
-  | { readonly type: "forget"; readonly captureIds: readonly string[] };
+  | { readonly type: "forget"; readonly captureIds: readonly string[] }
+  /* ---- Derivatives ---------------------------------------------------- */
+  | {
+      readonly type: "derivativeStarted";
+      readonly captureId: string;
+      readonly role: DerivativeFileRole;
+      readonly now: number;
+    }
+  | {
+      readonly type: "derivativeSucceeded";
+      readonly captureId: string;
+      readonly role: DerivativeFileRole;
+      readonly now: number;
+    }
+  | {
+      readonly type: "derivativeFailed";
+      readonly captureId: string;
+      readonly role: DerivativeFileRole;
+      /** A refusal a later attempt cannot fix. Stops trying at once. */
+      readonly permanent: boolean;
+      readonly retryAfterMs?: number | undefined;
+      readonly now: number;
+    };
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -184,6 +254,37 @@ function moveTo(item: QueueItem, state: CaptureState, now: number): QueueItem | 
   return { ...item, state, updatedAt: now };
 }
 
+/**
+ * Put anything that claims to be in flight back to where it can be retried.
+ *
+ * A request cannot outlive the process that made it, and on iOS it does not
+ * reliably outlive a backgrounding either — what comes back is a promise that
+ * will never settle. Used by both `hydrate` (cold start) and `resume`
+ * (foreground), because the reconciliation is identical and writing it twice is
+ * how the derivative half gets forgotten in one of them.
+ *
+ * Returns the same reference when nothing needed reconciling, so a `resume` with
+ * an idle queue — the overwhelmingly common case — costs no re-render.
+ */
+function reconcileInFlight(item: QueueItem, now: number): QueueItem {
+  const stuck = item.derivatives.some((derivative) => derivative.state === "uploading");
+  if (item.state !== "uploading" && !stuck) return item;
+
+  return {
+    ...item,
+    ...(item.state === "uploading"
+      ? { state: "queued" as const, progress: 0, updatedAt: now }
+      : {}),
+    derivatives: stuck
+      ? item.derivatives.map((derivative) =>
+          derivative.state === "uploading"
+            ? { ...derivative, state: "pending" as const }
+            : derivative,
+        )
+      : item.derivatives,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Reducer                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -195,11 +296,7 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       // request died with the process. Putting it back to `queued` is what makes
       // "foreground resume" true across a cold start rather than only across a
       // backgrounding, and it is why the state on disk is never trusted as-is.
-      const items = action.items.map((item) =>
-        item.state === "uploading"
-          ? { ...item, state: "queued" as const, progress: 0, updatedAt: action.now }
-          : item,
-      );
+      const items = action.items.map((item) => reconcileInFlight(item, action.now));
       return { hydrated: true, items };
     }
 
@@ -315,9 +412,9 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       // what comes back is a promise that will never settle.
       let changed = false;
       const items = state.items.map((item) => {
-        if (item.state !== "uploading") return item;
-        changed = true;
-        return { ...item, state: "queued" as const, progress: 0, updatedAt: action.now };
+        const reconciled = reconcileInFlight(item, action.now);
+        if (reconciled !== item) changed = true;
+        return reconciled;
       });
       return changed ? { ...state, items } : state;
     }
@@ -327,6 +424,47 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       const drop = new Set(action.captureIds);
       const items = state.items.filter((item) => !drop.has(item.captureId));
       return items.length === state.items.length ? state : { ...state, items };
+    }
+
+    case "derivativeStarted": {
+      const items = updateItem(state.items, action.captureId, (item) =>
+        updateDerivative(item, action.role, (derivative) =>
+          derivative.state === "pending"
+            ? { ...derivative, state: "uploading", attempts: derivative.attempts + 1 }
+            : null,
+        ),
+      );
+      return items === state.items ? state : { ...state, items };
+    }
+
+    case "derivativeSucceeded": {
+      const items = updateItem(state.items, action.captureId, (item) =>
+        updateDerivative(item, action.role, (derivative) =>
+          derivative.state === "uploaded" ? null : { ...derivative, state: "uploaded" },
+        ),
+      );
+      return items === state.items ? state : { ...state, items };
+    }
+
+    case "derivativeFailed": {
+      const items = updateItem(state.items, action.captureId, (item) =>
+        updateDerivative(item, action.role, (derivative) => {
+          if (derivative.state === "uploaded" || derivative.state === "abandoned") return null;
+          // Out of tries, or told plainly that trying again cannot help. Either
+          // way the row stays — with `abandoned` on it — so the sweep knows the
+          // file is dead weight and `hasOutstandingDerivatives` stops holding
+          // the capture open.
+          const spent = derivative.attempts >= MAX_DERIVATIVE_ATTEMPTS;
+          if (action.permanent || spent) return { ...derivative, state: "abandoned" };
+          return {
+            ...derivative,
+            state: "pending",
+            nextAttemptAt:
+              action.now + Math.max(0, action.retryAfterMs ?? backoffMsFor(derivative.attempts)),
+          };
+        }),
+      );
+      return items === state.items ? state : { ...state, items };
     }
 
     default: {
@@ -390,9 +528,44 @@ export function forgettableItems(
 ): QueueItem[] {
   return items.filter((item) => {
     if (!isTerminalCapture(item.state)) return false;
+    // A capture whose preview is still queued has to stay: the row is what names
+    // the file, and forgetting it would delete the derivative before it was ever
+    // sent. Only `uploaded` can be held this way — a cancelled capture's
+    // derivatives are dead with it, which `derivativesSettled` covers because a
+    // `pending` derivative is never attempted for a cancelled capture.
+    if (item.state === "uploaded" && !derivativesSettled(item)) return false;
     const keepFor = item.state === "cancelled" ? policy.cancelledKeepMs : policy.uploadedKeepMs;
     return now - item.updatedAt >= keepFor;
   });
+}
+
+/** Every local file this capture owns — original, thumbnail and derivatives. */
+export function localFilesOf(item: QueueItem): string[] {
+  const files = new Set<string>([item.uri, item.previewUri]);
+  for (const derivative of item.derivatives) files.add(derivative.uri);
+  return [...files].filter((uri) => uri.length > 0);
+}
+
+/** Whether every derivative has reached an answer — uploaded or given up on. */
+export function derivativesSettled(item: QueueItem): boolean {
+  return item.derivatives.every(
+    (derivative) => derivative.state === "uploaded" || derivative.state === "abandoned",
+  );
+}
+
+/**
+ * The next derivative of this capture that may be attempted, if any.
+ *
+ * `null` unless the **original has landed**. The backend refuses a derivative
+ * grant with `derivativeWithoutOriginal` when no original grant exists for the
+ * capture, and although that refusal is deliberately retryable rather than
+ * permanent, racing it spends a round trip of party wifi to be told to wait.
+ */
+export function nextDerivative(item: QueueItem, now: number): QueueDerivative | undefined {
+  if (item.state !== "uploaded") return undefined;
+  return item.derivatives.find(
+    (derivative) => derivative.state === "pending" && derivative.nextAttemptAt <= now,
+  );
 }
 
 /** How many of this party's captures are still on their way. */

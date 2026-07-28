@@ -14,6 +14,9 @@ import {
   validateMediaFile,
   VIDEO_MAX_BYTES,
   VIDEO_MAX_DURATION_SECONDS,
+  metadataClaimFields,
+  metadataClaimOf,
+  originalIsServableToThirdParties,
 } from "./media";
 
 const MIB = 1024 * 1024;
@@ -169,5 +172,75 @@ describe("isCaptureInFlight", () => {
     for (const state of CAPTURE_STATES) {
       expect(isCaptureInFlight(state) && isTerminalCapture(state)).toBe(false);
     }
+  });
+});
+
+describe("metadataClaimOf", () => {
+  it("reads a photo's single claim as both halves", () => {
+    expect(metadataClaimOf({ sourceMetadataStripped: true })).toEqual({
+      reEncoded: true,
+      carriesNoLocation: true,
+    });
+  });
+
+  it("keeps every pre-split row at exactly the visibility it had", () => {
+    // The compatibility rule: an absent `sourceCarriesNoLocation` inherits the
+    // re-encode claim, because that is what the one flag used to mean.
+    expect(metadataClaimOf({ sourceMetadataStripped: false }).carriesNoLocation).toBe(false);
+    expect(metadataClaimOf({}).carriesNoLocation).toBe(false);
+    expect(metadataClaimOf({}).reEncoded).toBe(false);
+  });
+
+  it("lets a clip promise no location without claiming a re-encode", () => {
+    // `apps/mobile`'s video path: nothing is transcoded, but the app ships no
+    // location permission at all, so there is no fix to embed.
+    expect(
+      metadataClaimOf({ sourceMetadataStripped: false, sourceCarriesNoLocation: true }),
+    ).toEqual({ reEncoded: false, carriesNoLocation: true });
+  });
+
+  it("lets a browser refuse both for a clip it cannot vouch for", () => {
+    expect(
+      metadataClaimOf({ sourceMetadataStripped: false, sourceCarriesNoLocation: false }),
+    ).toEqual({ reEncoded: false, carriesNoLocation: false });
+  });
+
+  it("does not let a re-encode claim override an explicit location denial", () => {
+    // Belt and braces: an explicit `false` wins over the inherited `true`.
+    expect(
+      metadataClaimOf({ sourceMetadataStripped: true, sourceCarriesNoLocation: false })
+        .carriesNoLocation,
+    ).toBe(false);
+  });
+
+  it("round-trips through the wire fields", () => {
+    for (const reEncoded of [true, false]) {
+      for (const carriesNoLocation of [true, false]) {
+        const claim = { reEncoded, carriesNoLocation };
+        expect(metadataClaimOf(metadataClaimFields(claim))).toEqual(claim);
+      }
+    }
+  });
+});
+
+describe("originalIsServableToThirdParties", () => {
+  it("asks about location, not about encoding", () => {
+    // This is the whole point of the split: a clip that was never re-encoded is
+    // still servable when it can promise it carries no location.
+    expect(
+      originalIsServableToThirdParties({
+        sourceMetadataStripped: false,
+        sourceCarriesNoLocation: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("withholds an original that promises nothing", () => {
+    expect(originalIsServableToThirdParties({})).toBe(false);
+    expect(originalIsServableToThirdParties({ sourceMetadataStripped: false })).toBe(false);
+  });
+
+  it("serves a re-encoded photograph", () => {
+    expect(originalIsServableToThirdParties({ sourceMetadataStripped: true })).toBe(true);
   });
 });

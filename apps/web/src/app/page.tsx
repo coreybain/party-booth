@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { CentredPane } from "@/components/layout/centred-pane";
 import { Card } from "@/components/layout/card";
+import { PrivacyLink } from "@/components/layout/site-footer";
 import { OtpSignInForm } from "@/components/otp-sign-in-form";
 import { isAuthenticated } from "@/lib/auth-server";
 
@@ -27,7 +28,7 @@ export default async function SignInPage() {
     <CentredPane
       footer={
         <>
-          Private beta · 18+ ·{" "}
+          Private beta · 18+ · <PrivacyLink /> ·{" "}
           <Link href="/admin/login" className="underline underline-offset-2 hover:text-muted">
             Admin
           </Link>

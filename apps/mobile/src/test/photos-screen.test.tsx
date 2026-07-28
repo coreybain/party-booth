@@ -32,6 +32,11 @@ const fake = vi.hoisted(() => ({
   items: [] as unknown[],
   session: {} as Record<string, unknown>,
   queue: {} as Record<string, unknown>,
+  report: vi.fn(),
+  block: vi.fn(),
+  play: vi.fn(),
+  playerSource: null as string | null,
+  playerMuted: false,
 }));
 
 // `useQuery` is dispatched on which function reference it was handed, exactly as
@@ -42,7 +47,11 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     return reference.name === "myMedia" ? fake.myMedia : fake.eventMedia;
   },
-  useMutation: () => fake.withdraw,
+  useMutation: (reference: { name: string }) => {
+    if (reference.name === "report") return fake.report;
+    if (reference.name === "block") return fake.block;
+    return fake.withdraw;
+  },
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -55,6 +64,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
         eventMedia: { name: "eventMedia" },
         withdraw: { name: "withdraw" },
       },
+      moderation: { report: { name: "report" } },
+      blocks: { block: { name: "block" } },
     },
   };
 });
@@ -73,6 +84,22 @@ vi.mock("expo-image", () => ({
 vi.mock("@expo/vector-icons", () => ({
   Ionicons: (props: Record<string, unknown>) =>
     createElement("span", { "data-icon": String(props.name) }),
+}));
+
+// `expo-video` reaches for `globalThis.expo.EventEmitter` at import time, which
+// exists only inside a real Expo runtime. Faked at the module rather than at
+// `@/components/media-video`, so the poster tile, the duration badge and the
+// lightbox under test are the real components.
+vi.mock("expo-video", () => ({
+  VideoView: () =>
+    createElement("div", { "data-testid": "video-view", "data-muted": String(fake.playerMuted) }),
+  useVideoPlayer: (source: { uri: string }, setup?: (player: Record<string, unknown>) => void) => {
+    const player = { muted: false, loop: false, play: fake.play, pause: vi.fn() };
+    setup?.(player);
+    fake.playerSource = source.uri;
+    fake.playerMuted = player.muted;
+    return player;
+  },
 }));
 
 vi.mock("react-native-safe-area-context", () => ({
@@ -117,6 +144,7 @@ function anItem(overrides: Partial<QueueItem> & { captureId: string }): QueueIte
     checksum: "a".repeat(64),
     capturedAt: NOW,
     sourceMetadataStripped: true,
+    derivatives: [],
     autoSend: true,
     sendAt: NOW,
     undoDelayMs: 15_000,
@@ -159,6 +187,10 @@ beforeEach(() => {
   fake.eventMedia = [];
   fake.items = [];
   fake.withdraw.mockResolvedValue({ state: "deleted" });
+  fake.report.mockResolvedValue({ reportId: "report_1", created: true, reportCount: 1 });
+  fake.block.mockResolvedValue({ blocked: true, created: true });
+  fake.playerSource = null;
+  fake.playerMuted = false;
   fake.session = { activeEvent: anEvent(), eventsLoading: false };
   fake.queue = {
     offline: false,

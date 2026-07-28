@@ -44,7 +44,16 @@ import type {
   ModerationMode,
 } from "@partybooth/contracts/events";
 import type { JoinResult } from "@partybooth/contracts/join";
-import type { MediaSource, MediaState, MediaType } from "@partybooth/contracts/media";
+import type {
+  MediaFileRole,
+  MediaSource,
+  MediaState,
+  MediaType,
+  ModerationActionName,
+  ModerationRefusal,
+  ReportReason,
+  ReportStatus,
+} from "@partybooth/contracts/media";
 import type { EventRole } from "@partybooth/contracts/roles";
 import type { StorageRegion } from "@partybooth/contracts/storage";
 import type { GrantResult, UploadCompletionOutcome } from "@partybooth/contracts/upload";
@@ -110,6 +119,14 @@ export interface CurrentUser {
   /** Unlocked by an accepted organiser invitation. Gates event creation. */
   readonly isOrganiser: boolean;
   readonly isGlobalAdmin: boolean;
+  /**
+   * The version of the user terms this account agreed to, if any.
+   *
+   * Compare with `TERMS_VERSION` through `hasAcceptedTerms` rather than by hand
+   * — see `@partybooth/contracts/terms`. An account that has not accepted the
+   * current version cannot be issued an upload grant.
+   */
+  readonly acceptedTermsVersion?: string;
 }
 
 /** `users.updateProfile`. */
@@ -118,6 +135,13 @@ export interface UpdateProfileResult {
   readonly avatarKey?: string;
   /** Stamped on the first confirmation and never moved afterwards. */
   readonly onboardedAt: number;
+  readonly acceptedTermsVersion?: string;
+}
+
+/** `users.acceptTerms`. */
+export interface AcceptTermsResult {
+  readonly acceptedTermsVersion: string;
+  readonly acceptedTermsAt: number;
 }
 
 /** `users.refreshRoles` — the result of re-running verified-email matching. */
@@ -248,10 +272,33 @@ export interface MediaItem {
   readonly capturedAt?: number;
   readonly uploadedAt?: number;
   readonly moderatedAt?: number;
+  /**
+   * How many members have reported this item, and when it was first flagged.
+   *
+   * **Present for hosts only.** A guest learning that three people reported the
+   * photo next to theirs is a leak, and telling an uploader they have been
+   * reported turns a report into a confrontation.
+   */
+  readonly reportCount?: number;
+  readonly flaggedAt?: number;
+  /**
+   * The **original**. Absent while processing, when storage is unreachable, and —
+   * for a viewer who is neither the submitter nor a host — whenever the client
+   * did not confirm it re-encoded away the EXIF/GPS block (ADR 0004 §7).
+   */
   readonly url?: string;
   readonly urlExpiresAt?: number;
+  /**
+   * The artefact to render: a downscaled image for a photo, a short muted clip
+   * for a video. Since Sprint 4 this is what a fellow guest is served when the
+   * original is withheld — "serve the derivative" rather than "serve nothing"
+   * (ADR 0008). Absent when no derivative has landed yet.
+   */
   readonly previewUrl?: string;
   readonly previewUrlExpiresAt?: number;
+  /** A video's still frame, for the thumbnail and the first painted frame. */
+  readonly posterUrl?: string;
+  readonly posterUrlExpiresAt?: number;
 }
 
 /**
@@ -267,6 +314,16 @@ export interface UploadGrantRequestArgs {
   /** Client-generated and stable across retries. Uploads are idempotent on it. */
   readonly captureId: string;
   readonly mediaType: MediaType;
+  /**
+   * Which artefact of the capture this is. Omitted means `original`, which is
+   * what every Sprint-3 call meant and still means.
+   *
+   * A derivative (`preview`, `poster`) is a **separate grant for the same
+   * `captureId`**, held to its own much tighter cap, and **refused unless
+   * `sourceMetadataStripped` is `true`** — it is the artefact third parties are
+   * served, so there the claim is a precondition rather than a record. ADR 0008.
+   */
+  readonly fileRole?: MediaFileRole;
   readonly byteSize: number;
   readonly mimeType: string;
   /** Lower-case hex SHA-256 of the exact bytes about to be sent. */
@@ -275,8 +332,21 @@ export interface UploadGrantRequestArgs {
   readonly capturedAt?: number;
   readonly mediaSource?: MediaSource;
   readonly fromLibrary?: boolean;
-  /** Whether the client re-encoded away EXIF/GPS first — see ADR 0004. */
+  /**
+   * Whether the client **re-encoded** the bytes first — see ADR 0004. This is
+   * the half a derivative grant requires.
+   */
   readonly sourceMetadataStripped?: boolean;
+  /**
+   * Whether the file **carries no location fix** — the half the read path
+   * consults (`mayServeOriginal`).
+   *
+   * Absent means "same as the re-encode claim", which is what every Sprint-3
+   * call meant, so omitting it is always safe. Send it explicitly only when the
+   * two differ: a recorded clip that could not be transcoded but that the client
+   * can still vouch for. See `MetadataClaim` in `@partybooth/contracts/media`.
+   */
+  readonly sourceCarriesNoLocation?: boolean;
 }
 
 /** `media.completeUpload` — the outcome of registering a stored file. */
@@ -314,6 +384,147 @@ export interface StuckPurges {
   }[];
 }
 
+/* ---- Moderation, reports and blocks --------------------------------------- */
+
+export type ReportId = string;
+
+/**
+ * `moderation.moderate` — the result of one tap or of a selection of forty.
+ *
+ * **Partial success is the contract.** A grid that has been live for thirty
+ * seconds contains items another host has dealt with and items the submitter has
+ * withdrawn since, so every item is attempted and the refusals come back
+ * itemised. The mutation throws only for failures of the *request*.
+ */
+export interface ModerationResult {
+  /** Items whose state actually moved. */
+  readonly changed: number;
+  /** Items already where the action would have put them — a no-op, not an error. */
+  readonly unchanged: number;
+  readonly refused: readonly {
+    readonly mediaId: MediaId;
+    readonly reason: ModerationRefusal;
+    readonly message: string;
+  }[];
+  readonly results: readonly {
+    readonly mediaId: MediaId;
+    readonly state?: MediaState;
+    readonly changed?: boolean;
+  }[];
+}
+
+/** `moderation.report`. Idempotent per `(media, reporter)`. */
+export interface ReportResult {
+  readonly reportId: ReportId;
+  /** `false` when this reporter had already reported this item. */
+  readonly created: boolean;
+  /**
+   * How many members have reported this item. **Hosts only** — a guest is never
+   * told, for the same reason `MediaView.reportCount` is host-only: a tally a
+   * guest can poll by pressing the button again is a step towards identifying
+   * who else pressed it.
+   */
+  readonly reportCount?: number;
+}
+
+/**
+ * `moderation.flagged` — a reported item with its complaints.
+ *
+ * The reporters' free text is here, for the one audience that has to read it.
+ * **Who** reported is never returned: a host who knows which guest reported which
+ * other guest is a host who can be asked to take sides.
+ */
+export interface FlaggedItem {
+  readonly media: MediaItem;
+  readonly reports: readonly {
+    readonly id: ReportId;
+    readonly reason: ReportReason;
+    readonly status: ReportStatus;
+    readonly details?: string;
+    readonly createdAt: number;
+  }[];
+}
+
+/** `blocks.myBlocks` — the Settings list App Review looks for. */
+export interface BlockedAccount {
+  readonly userId: UserId;
+  readonly displayName: string;
+  readonly eventId?: EventId;
+  readonly createdAt: number;
+}
+
+/* ---- Organiser home and slideshow ----------------------------------------- */
+
+/** `stats.overview` — numbers only, so a global admin may read it. */
+export interface EventOverview {
+  readonly pending: number;
+  readonly approved: number;
+  readonly declined: number;
+  readonly total: number;
+  /** Uploads still in flight — deliberately outside the pending badge. */
+  readonly processing: number;
+  readonly flagged: number;
+  readonly byType: { readonly photo: number; readonly video: number };
+  readonly byState: {
+    readonly processing: number;
+    readonly pending: number;
+    readonly approved: number;
+    readonly declined: number;
+  };
+  /** Approximate: the sum of the byte sizes on the record, derivatives included. */
+  readonly storageBytes: number;
+  readonly contributorCount: number;
+  readonly topContributors: readonly {
+    readonly userId: UserId;
+    readonly displayName: string;
+    readonly approved: number;
+    readonly total: number;
+  }[];
+}
+
+/** `stats.recentSubmissions` — thumbnails, so hosts only. */
+export interface RecentSubmission {
+  readonly media: MediaItem;
+  readonly state: MediaState;
+  readonly mediaType: MediaType;
+}
+
+/**
+ * `slideshow.feed` — one page of the show.
+ *
+ * `nextCursor` is what the client asks with next time. A re-run with a full
+ * cursor returns an empty page, which is what keeps the currently-displayed photo
+ * on screen instead of restarting the show every time somebody approves
+ * something. **Shuffle is the client's job** — the server's order has to be
+ * stable for the cursor to mean anything.
+ */
+export interface SlideshowPage {
+  readonly items: readonly MediaItem[];
+  readonly nextCursor?: string;
+  /** `true` when the page was capped, so ask again at once. */
+  readonly hasMore: boolean;
+  /** Approved items in the event, ignoring the cursor. For "12 of 240". */
+  readonly total: number;
+  /**
+   * Every approved id this viewer may see, ignoring the cursor.
+   *
+   * A cursor can only add. This is how a client learns about **removal** — an
+   * item a host has declined, revoked or that a block now hides — so a photo
+   * taken off the wall mid-party comes off the television at once instead of
+   * cycling for the rest of the session behind a still-live signed URL.
+   */
+  readonly approvedIds: readonly MediaId[];
+  /** `false` when the list above was truncated. Do not prune when it is. */
+  readonly approvedIdsComplete: boolean;
+}
+
+/** `users.requestAccountDeletion` — Apple's in-app deletion requirement. */
+export interface AccountDeletionResult {
+  readonly accountState: string;
+  /** When the purge becomes due — thirty days out. */
+  readonly scheduledAt: number | null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The surface                                                                */
 /* -------------------------------------------------------------------------- */
@@ -322,10 +533,31 @@ export interface BackendApi {
   readonly users: {
     readonly currentUser: Query<NoArgs, CurrentUser | null>;
     readonly updateProfile: Mutation<
-      { displayName: string; avatarKey?: string },
+      { displayName: string; avatarKey?: string; acceptedTermsVersion?: string },
       UpdateProfileResult
     >;
+    /**
+     * Agree to the current user terms.
+     *
+     * Onboarding takes acceptance alongside the name, which covers every new
+     * account; this is for the two cases it does not — an account that predates
+     * the terms, and everybody after `TERMS_VERSION` moves. Play's UGC policy
+     * asks for accepted terms before content is created, so an account without
+     * one is refused an upload grant with `termsNotAccepted`.
+     */
+    readonly acceptTerms: Mutation<{ version: string }, AcceptTermsResult>;
     readonly refreshRoles: Mutation<NoArgs, RefreshRolesResult>;
+    /**
+     * Delete this account, from inside the app (Apple 5.1.1(v)).
+     *
+     * Moves to `deletionScheduled` and revokes access **immediately**. Thirty
+     * days later `deletion.runDueDeletions` erases the account and its
+     * associated data — media, stored objects, memberships, blocks, push
+     * devices and the Better Auth credential. Until then submissions stay in
+     * their party with the attribution removed, so a host mid-event does not
+     * lose the evening and a change of mind is still possible.
+     */
+    readonly requestAccountDeletion: Mutation<{ reason?: string }, AccountDeletionResult>;
   };
   readonly events: {
     readonly create: Mutation<
@@ -391,6 +623,8 @@ export interface BackendApi {
         mediaId: MediaId | null;
         state: MediaState | null;
         mediaType: MediaType | null;
+        /** Which artefact the grant authorised — the cap the edge applies. */
+        fileRole: MediaFileRole | null;
         byteSize: number | null;
         mimeType: string | null;
       }
@@ -423,6 +657,65 @@ export interface BackendApi {
     readonly storageStatus: Query<{ eventId: EventId }, StorageStatus>;
     /** Host-only. Withdrawn rows whose objects a purge never removed. */
     readonly stuckPurges: Query<{ eventId: EventId; limit?: number }, StuckPurges>;
+  };
+  readonly moderation: {
+    /**
+     * Approve, decline or revoke — one item or a selection of up to 200.
+     *
+     * One mutation for both, because the grid's single tap and its "select all
+     * and approve" are the same operation with a different array length.
+     * `revoke` refuses anything not currently `approved`.
+     */
+    readonly moderate: Mutation<
+      {
+        eventId: EventId;
+        mediaIds: readonly MediaId[];
+        action: ModerationActionName;
+        reason?: string;
+      },
+      ModerationResult
+    >;
+    /** The host's queue: flagged first, then oldest first. */
+    readonly pending: Query<{ eventId: EventId; limit?: number }, MediaItem[]>;
+    /**
+     * Report somebody else's item. Any member may; it **flags** the item for a
+     * host and moderates nothing, because auto-hiding on report would hand any
+     * guest a veto over any other guest's photograph.
+     */
+    readonly report: Mutation<
+      { mediaId: MediaId; reason: ReportReason; details?: string },
+      ReportResult
+    >;
+    readonly resolveReport: Mutation<
+      { reportId: ReportId; status: "actioned" | "dismissed"; reason?: string },
+      { status: ReportStatus; stillFlagged: boolean }
+    >;
+    readonly flagged: Query<{ eventId: EventId; limit?: number }, FlaggedItem[]>;
+  };
+  readonly blocks: {
+    /**
+     * Stop seeing another guest. Per-account and global, silent, and a filter on
+     * **your own** reads: nothing changes for anybody else and no membership is
+     * touched. Blocking is not ejecting.
+     */
+    readonly block: Mutation<
+      { eventId: EventId; userId: UserId },
+      { blocked: boolean; created: boolean }
+    >;
+    readonly unblock: Mutation<{ userId: UserId }, { blocked: boolean; removed: boolean }>;
+    readonly myBlocks: Query<NoArgs, BlockedAccount[]>;
+  };
+  readonly slideshow: {
+    readonly feed: Query<{ eventId: EventId; after?: string; limit?: number }, SlideshowPage>;
+  };
+  readonly stats: {
+    /** Numbers only — a global admin may read this and must not read the next. */
+    readonly overview: Query<{ eventId: EventId; contributorLimit?: number }, EventOverview>;
+    /** Thumbnails, so host-only: admins never look at guests' photos. */
+    readonly recentSubmissions: Query<
+      { eventId: EventId; recentLimit?: number },
+      RecentSubmission[]
+    >;
   };
   readonly join: {
     readonly join: Mutation<

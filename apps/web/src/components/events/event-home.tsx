@@ -7,11 +7,12 @@ import { useEffect } from "react";
 import { BackendGate } from "@/components/backend-gate";
 import { BackendNotConfigured } from "@/components/backend-not-configured";
 import { EventStateControl } from "@/components/events/event-state-control";
+import { EventStats } from "@/components/events/event-stats";
 import { InvitePanel } from "@/components/events/invite-panel";
 import { StateBadge } from "@/components/events/state-badge";
 import { UsersIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
-import { Card, Placeholder, SectionHeading } from "@/components/layout/card";
+import { Card, SectionHeading } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { backendApi } from "@/lib/convex-api";
@@ -134,16 +135,13 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
           </Card>
         ) : null}
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Card>
-            <SectionHeading title="Pending review" description="Submissions waiting on you." />
-            <Placeholder className="mt-4" title="Nothing to moderate" sprint="Sprint 4" />
-          </Card>
-          <Card>
-            <SectionHeading title="Recent submissions" description="Live, as guests upload." />
-            <Placeholder className="mt-4" title="No media yet" sprint="Sprint 3" />
-          </Card>
-        </div>
+        {/*
+          Sprint 4 replaces the two placeholders that stood here with the real
+          numbers. Guests reaching an event page they host see them too — the
+          queries are permission-checked in Convex, and `event.viewStats` is a
+          host power, so a plain guest never gets this far down the page.
+        */}
+        {isHost ? <EventStats eventId={event.id} isHost={isHost} /> : null}
       </div>
     </>
   );

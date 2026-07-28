@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
+import { SiteFooter } from "@/components/layout/site-footer";
 import { JoinByCode } from "@/components/join/join-by-code";
 
 export const metadata: Metadata = {
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
  */
 export default function JoinPage() {
   return (
-    <CentredPane width="md" footer="Private beta · 18+ · Photos stay private to this event.">
+    <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
       <Card>
         <JoinByCode />
       </Card>

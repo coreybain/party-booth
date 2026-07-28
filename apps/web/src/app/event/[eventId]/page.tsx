@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { GuestEventView } from "@/components/guest/guest-event-view";
 import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
+import { SiteFooter } from "@/components/layout/site-footer";
 
 export const metadata: Metadata = {
   title: "Your event",
@@ -25,7 +26,7 @@ export default async function GuestEventPage({
   const { eventId } = await params;
 
   return (
-    <CentredPane width="md" footer="Private beta · 18+ · Photos stay private to this event.">
+    <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
       <Card>
         <GuestEventView eventId={eventId} />
       </Card>

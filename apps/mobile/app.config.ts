@@ -56,12 +56,37 @@ const easOwner = process.env.EXPO_OWNER;
 const sentryOrg = process.env.SENTRY_ORG;
 const sentryProject = process.env.SENTRY_PROJECT;
 
+/**
+ * Purpose strings, in plain honest English.
+ *
+ * App Review rejects a build whose strings are generic ("This app needs camera
+ * access"), and it rejects one whose strings describe something the app does not
+ * do. Each of these names the **feature** the permission is for and the **limit**
+ * on it, because that is what the guideline asks for and because it is what a
+ * guest at a party actually wants to know before tapping Allow.
+ *
+ * Two are deliberately narrower than they could be:
+ *
+ * - **Photo library** says "when the host allows it", because the per-event
+ *   `allowLibraryImport` flag really can turn the button off, and a string that
+ *   promised the feature unconditionally would be wrong half the time.
+ * - **Photo library add** is only claimed because the string is required the
+ *   moment anything in the dependency tree can write to the roll. Nothing in
+ *   the app saves captures back today — the re-encoded original goes to the
+ *   party, not to the camera roll — so the wording is about what the *guest*
+ *   chooses to save. **Owner note:** if this stays unused through review, the
+ *   honest thing is to drop `NSPhotoLibraryAddUsageDescription` entirely rather
+ *   than declare a capability we do not use.
+ */
 const permissionCopy = {
-  camera: "PartyBooth uses the camera so you can take photos and videos at the party you joined.",
-  microphone: "PartyBooth records audio with your videos so party clips have sound.",
+  camera:
+    "PartyBooth uses the camera so you can take photos and record videos at the party you joined. It is only used while the camera screen is open.",
+  microphone:
+    "PartyBooth uses the microphone to record sound with your party videos. It is only used while you are holding the shutter to record.",
   photoLibrary:
-    "PartyBooth lets you choose existing photos and videos to share with the party, when the host allows it.",
-  photoLibraryAdd: "PartyBooth saves the photos and videos you capture back to your own library.",
+    "PartyBooth lets you choose an existing photo to share with the party you joined, when the host has allowed it.",
+  photoLibraryAdd:
+    "PartyBooth asks for this so you can save a photo from the party back to your own library.",
 } as const;
 
 export default ({ config }: ConfigContext): ExpoConfig => {
@@ -75,8 +100,27 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     orientation: "default",
     userInterfaceStyle: "dark",
     icon: "./assets/icon.png",
-    // Build numbers are managed by EAS (`cli.appVersionSource: "remote"` in eas.json),
-    // so no buildNumber / versionCode is pinned here.
+    /*
+     * ## Versioning scheme
+     *
+     * `version` is the **marketing version** — what a guest sees in Settings →
+     * About and what App Store Connect calls the version number. It is bumped by
+     * hand, here, and only for a release worth naming. 0.1.0 is the private
+     * beta; the party build is whatever this says on 1 August.
+     *
+     * `buildNumber` (iOS) and `versionCode` (Android) are **deliberately not
+     * pinned in this file**. `eas.json` sets `cli.appVersionSource: "remote"`
+     * and `autoIncrement: true` on the store profiles, so EAS holds the counter
+     * and bumps it per build. That matters more than it sounds: App Store
+     * Connect refuses a second upload with a build number it has already seen,
+     * and the failure arrives *after* the upload — so a number kept in a file
+     * that two people can edit is a rejected submission on the day it matters.
+     * `eas build:version:get` reads the current values.
+     *
+     * `runtimeVersion: { policy: "appVersion" }` ties OTA update compatibility
+     * to the marketing version, so a JS-only fix ships to the build it was
+     * written against and a native change forces a new binary.
+     */
     runtimeVersion: { policy: "appVersion" },
     ...(easOwner ? { owner: easOwner } : {}),
 
@@ -93,8 +137,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         NSMicrophoneUsageDescription: permissionCopy.microphone,
         NSPhotoLibraryUsageDescription: permissionCopy.photoLibrary,
         NSPhotoLibraryAddUsageDescription: permissionCopy.photoLibraryAdd,
-        // No proprietary cryptography — avoids the export-compliance questionnaire
-        // on every single TestFlight/App Store upload.
+        /*
+         * No proprietary cryptography — avoids the export-compliance
+         * questionnaire on every single TestFlight/App Store upload.
+         *
+         * This is the correct answer and not a shortcut: the app's only
+         * cryptography is HTTPS (an OS-provided, exempt use) and SHA-256 from
+         * `expo-crypto` for upload checksums, which is a hash rather than
+         * encryption. Nothing here implements or bundles an encryption
+         * algorithm. Answer "No" to the ECCN question in App Store Connect to
+         * match — see `docs/store/ios-submission.md`.
+         */
         ITSAppUsesNonExemptEncryption: false,
       },
     },
@@ -104,13 +157,32 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // Edge-to-edge is unconditional from SDK 54 onwards — there is no longer a flag.
       adaptiveIcon: {
         foregroundImage: "./assets/adaptive-icon.png",
-        backgroundColor: "#12091B",
+        // The brand accent, matching the iOS icon's field. The glyph's lens and
+        // flash are punched *through* the foreground (see `scripts/make-icons.mjs`),
+        // so this colour shows through them on every launcher mask shape.
+        backgroundColor: "#FF2E88",
       },
+      /*
+       * Two permissions, and deliberately not four.
+       *
+       * `READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` used to be here, and they are
+       * exactly the pair current Play policy restricts to apps that need broad,
+       * persistent access to a device's whole media library. PartyBooth needs no
+       * such thing: library import is a **single** image chosen through
+       * `expo-image-picker`, which routes through the Android system photo
+       * picker and hands back one URI with no permission at all, and there is no
+       * video-library import anywhere in the product. Declaring them bought
+       * nothing and put the release in the path of a policy rejection with a
+       * declaration form attached.
+       *
+       * They are listed under `blockedPermissions` below rather than merely
+       * omitted, because an autolinked library adding them back to the merged
+       * manifest is precisely the failure mode — verify the **release** manifest
+       * (`docs/store/android-internal.md`) rather than this file.
+       */
       permissions: [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.POST_NOTIFICATIONS",
       ],
       // Autolinked libraries like to add these; PartyBooth never reads arbitrary
@@ -118,6 +190,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       blockedPermissions: [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
       ],
@@ -143,8 +217,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         {
           cameraPermission: permissionCopy.camera,
           microphonePermission: permissionCopy.microphone,
+          // Video is launch scope (hold the shutter to record), and a recording
+          // without RECORD_AUDIO fails outright on Android rather than producing
+          // a silent clip — so the camera screen gates the hold gesture on the
+          // microphone permission and falls back to a tap. See `useShutter`.
           recordAudioAndroid: true,
-          // Sprint 2 joins by six-digit code / universal link, not by in-app scanning.
+          // Joining is by six-digit code / universal link, not by in-app
+          // scanning. Leaving the scanner off keeps the barcode framework — and
+          // the questions Play asks about it — out of the binary.
           barcodeScannerEnabled: false,
         },
       ],
@@ -153,6 +233,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         {
           photosPermission: permissionCopy.photoLibrary,
           cameraPermission: permissionCopy.camera,
+        },
+      ],
+      [
+        "expo-video",
+        {
+          // Both off deliberately. PiP would keep a guest's clip playing over
+          // the rest of the party's gallery, and background playback is a
+          // capability App Review asks you to justify — neither earns its
+          // review question for a fifteen-second party video.
+          supportsBackgroundPlayback: false,
+          supportsPictureInPicture: false,
         },
       ],
       [

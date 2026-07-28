@@ -1,4 +1,4 @@
-import { AUDIT_ACTIONS, GRANT_POLICY, PHOTO_MAX_BYTES } from "@partybooth/contracts";
+import { AUDIT_ACTIONS, GRANT_POLICY, PHOTO_MAX_BYTES, TERMS_VERSION } from "@partybooth/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Id } from "./_generated/dataModel";
@@ -580,6 +580,7 @@ describe("completion idempotency", () => {
       mediaId: null,
       state: null,
       mediaType: "photo",
+      fileRole: "original",
       byteSize: 2048,
       mimeType: "image/jpeg",
     });
@@ -1069,6 +1070,65 @@ describe("sourceMetadataStripped is load-bearing on the read path", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* …and since Sprint 4 it is the *location* half that is load-bearing         */
+/* -------------------------------------------------------------------------- */
+
+describe("the read path asks about location, not about re-encoding", () => {
+  async function seedClaim(
+    f: Fixture,
+    claim: { sourceMetadataStripped?: boolean; sourceCarriesNoLocation?: boolean },
+  ) {
+    const mediaId = await seedMedia(f.t, f.eventId, f.otherGuestId, { state: "approved" });
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(mediaId, claim);
+    });
+    return mediaId;
+  }
+
+  async function urlSeenByFellowGuest(f: Fixture) {
+    const [seen] = await f.t
+      .withIdentity({ subject: "guest" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    return seen?.url;
+  }
+
+  it("serves a clip that was never re-encoded but carries no location", async () => {
+    const f = await fixture();
+    // `apps/mobile`'s video path: nothing is transcoded, because nothing can be
+    // in the time a guest will wait — but the app ships no location permission
+    // on either platform, so there is no fix for the recorder to embed.
+    await seedClaim(f, { sourceMetadataStripped: false, sourceCarriesNoLocation: true });
+    expect(await urlSeenByFellowGuest(f)).toMatch(/^https:\/\/fake\.ufs\.test\//);
+  });
+
+  it("withholds a clip that can promise neither", async () => {
+    const f = await fixture();
+    // `apps/web`'s video path: a browser has no transcoder, and a clip picked
+    // from a camera roll can genuinely carry somebody's GPS trace.
+    await seedClaim(f, { sourceMetadataStripped: false, sourceCarriesNoLocation: false });
+    expect(await urlSeenByFellowGuest(f)).toBeUndefined();
+  });
+
+  it("lets an explicit location denial override a re-encode claim", async () => {
+    const f = await fixture();
+    await seedClaim(f, { sourceMetadataStripped: true, sourceCarriesNoLocation: false });
+    expect(await urlSeenByFellowGuest(f)).toBeUndefined();
+  });
+
+  it("leaves every pre-split row at exactly the visibility it had", async () => {
+    // The compatibility rule that makes this a no-migration change: a row with
+    // only the old flag inherits it for the new question.
+    const served = await fixture();
+    await seedClaim(served, { sourceMetadataStripped: true });
+    expect(await urlSeenByFellowGuest(served)).toMatch(/^https:\/\/fake\.ufs\.test\//);
+
+    const withheld = await fixture();
+    await seedClaim(withheld, { sourceMetadataStripped: false });
+    expect(await urlSeenByFellowGuest(withheld)).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* A purge that does not finish                                               */
 /* -------------------------------------------------------------------------- */
 
@@ -1186,5 +1246,81 @@ describe("purging is retried, then surfaced", () => {
       .withIdentity({ subject: "owner" })
       .query(api.media.stuckPurges, { eventId: f.eventId });
     expect(stuck).toEqual({ count: 0, items: [] });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Terms before content                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Play's UGC policy asks for accepted terms that define and prohibit
+ * objectionable content **before** the user creates any, and Apple's guideline
+ * 1.2 reads the same way. The repository had neither a document nor an
+ * acceptance, and the store checklist claimed both were done.
+ */
+describe("media.requestUploadGrant and the user terms", () => {
+  it("refuses an upload from an account that has not accepted them", async () => {
+    const t = makeTest();
+    const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    const guestId = await seedUser(t, {
+      authId: "newcomer",
+      email: "newcomer@partybooth.test",
+      acceptedTermsVersion: null,
+    });
+    const eventId = await seedEvent(t, ownerId, { state: "live" });
+    await seedMembership(t, eventId, guestId, "guest");
+
+    const result = await t
+      .withIdentity({ subject: "newcomer" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId,
+        captureId: "capture-00000009",
+        mediaType: "photo" as const,
+        byteSize: 2048,
+        mimeType: "image/jpeg",
+        checksum: "f".repeat(64),
+      });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "termsNotAccepted" });
+  });
+
+  it("lets the same account upload the moment it accepts", async () => {
+    const t = makeTest();
+    const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    const guestId = await seedUser(t, {
+      authId: "newcomer",
+      email: "newcomer@partybooth.test",
+      acceptedTermsVersion: null,
+    });
+    const eventId = await seedEvent(t, ownerId, { state: "live" });
+    await seedMembership(t, eventId, guestId, "guest");
+
+    await t
+      .withIdentity({ subject: "newcomer" })
+      .mutation(api.users.acceptTerms, { version: TERMS_VERSION });
+
+    const result = await t
+      .withIdentity({ subject: "newcomer" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId,
+        captureId: "capture-00000009",
+        mediaType: "photo" as const,
+        byteSize: 2048,
+        mimeType: "image/jpeg",
+        checksum: "f".repeat(64),
+      });
+    expect(result).toMatchObject({ outcome: "granted" });
+  });
+
+  it("refuses to record agreement to a version this deployment does not publish", async () => {
+    const t = makeTest();
+    await seedUser(t, {
+      authId: "newcomer",
+      email: "newcomer@partybooth.test",
+      acceptedTermsVersion: null,
+    });
+    await expect(
+      t.withIdentity({ subject: "newcomer" }).mutation(api.users.acceptTerms, { version: "1999" }),
+    ).rejects.toThrow(/out of date/);
   });
 });

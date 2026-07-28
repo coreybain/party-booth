@@ -40,10 +40,10 @@ app/                      Expo Router routes (file-based)
   (auth)/sign-in.tsx      Apple + Google buttons
   (auth)/onboarding.tsx   name + photo confirmation — saves the name for real
   (tabs)/_layout.tsx      tab shell; renders the event header; Host tab is conditional
-  (tabs)/camera.tsx       the viewfinder: CameraView, shutter, flip/flash, undo pill, library
+  (tabs)/camera.tsx       the viewfinder: CameraView, tap/hold shutter, flash/torch, undo pill, library
   (tabs)/photos.tsx       My media (queue + media.myMedia, merged) and the approved gallery
   (tabs)/host.tsx         host scaffold, re-checks the role itself
-  (tabs)/settings.tsx     profile, active party, sign-out, diagnostics
+  (tabs)/settings.tsx     profile, blocked people, privacy policy, account deletion, sign-out
   events.tsx              event switcher (modal): list, select, join another
   join/index.tsx          six-digit code entry (modal)
   join/[token].tsx        deep-link target for QR / partybooth:// / parked invite
@@ -51,11 +51,12 @@ src/
   env.ts                  the only place process.env is read
   lib/api.ts              typed seam over the Convex API — the one cast
   lib/                    pure, unit-tested logic + client singletons
-  hooks/                  useJoinEvent, useNow, useCapture
+  lib/shutter.ts          the tap-vs-hold gesture, as a pure state machine
+  hooks/                  useJoinEvent, useNow, useCapture, useShutter
   providers/              Convex + Better Auth + session/membership context
   upload/                 the durable queue: reducer, engine, persistence, transport
   components/, theme/     presentational primitives and tokens
-  test/                   jsdom screen tests (react-native → react-native-web)
+  test/                   jsdom screen + hook tests (react-native → react-native-web)
 ```
 
 ## Decisions
@@ -91,6 +92,75 @@ Why not vision-camera, given Sprint 4's hold-to-record requirement:
   queue's interface, so P3 can replace the implementation without touching the pipeline.
 
 Revisit at P3, not before.
+
+### Hold-to-record is a state machine, and the `arming` phase is not optional
+
+`expo-camera` records only in `mode="video"`, and **changing `mode` tears down and rebuilds
+the capture session**. So a naive "on long press, call `recordAsync`" fails on any device
+slow enough to still be reconfiguring — intermittently, and worse on cheaper phones.
+
+The gesture is therefore `idle → pressed → arming → recording → stopping`, in
+`src/lib/shutter.ts`, pure and unit-tested in Node:
+
+- `pressed` is the ambiguity. A release here is a photograph. The threshold is **250 ms**,
+  shorter than RN's 500 ms `delayLongPress` default, because below ~200 ms you get videos
+  from people trying to take a picture and above ~350 ms the button feels dead.
+- `arming` flips the mode and **waits for `onCameraReady` to fire again** before recording.
+  No guessed delay anywhere. This is also what makes the 60-second ring honest: it starts
+  when the recorder started, not when the finger landed, so the minute a guest watches is
+  the minute they get.
+- `stopping` exists so a second release, a late tick, or a guest jabbing the button while
+  the file finalises cannot open a second recorder on one session.
+
+`useShutter` (`src/hooks/use-shutter.ts`) holds the machine and performs its effects
+against a **structural** two-method camera interface. That split is what makes any of it
+testable: `react-native-web`'s `Pressable` routes `onPressIn`/`onPressOut` through its
+responder system, which needs a real pointer pipeline and does not fire under jsdom — a
+screen test can render the shutter and can never press it. Behind the hook, the presses
+are function calls. See `src/test/use-shutter.test.tsx`.
+
+### Derivatives are produced here, not on the server
+
+ADR 0008. Convex's isolate cannot host an image pipeline and a server-side step would have
+to store the GPS-bearing original before it could strip anything, so the same re-encode
+that already drops the EXIF block also produces what the party is served:
+
+| media | uploaded as `original` | uploaded as derivative        | local only         |
+| ----- | ---------------------- | ----------------------------- | ------------------ |
+| photo | 4096 px JPEG re-encode | `preview` — 1280 px JPEG      | 640 px thumbnail   |
+| video | the recorded clip      | `poster` — 1280 px JPEG still | (poster is reused) |
+
+Each derivative is a **separate grant under the same `captureId`** with a distinct
+`fileRole`, held to its own 2 MiB cap, and **refused unless it claims the re-encode** — on
+a derivative `sourceMetadataStripped` is a precondition rather than a record, because the
+derivative is what third parties are served. In the queue they are a `derivatives[]` array
+on the row rather than rows of their own, so one capture stays one submission, and they are
+attempted only _after_ the original has landed.
+
+A video's `preview` role — a downscaled muted clip — is **not** produced: that needs a
+transcoder this platform does not have. `projectMedia` falls back to the poster, so the
+cost is bandwidth on a grid rather than visibility. Post-launch (PLAN.md → P2).
+
+Video posters come from `expo-video`'s `player.generateThumbnailsAsync`, which returns a
+native `SharedRef<'image'>` rather than a file — that goes straight into
+`ImageManipulator.manipulate`, so the poster is a genuine re-encode from decoded pixels and
+comes out as a JPEG with a size and a checksum. `expo-video-thumbnails` is deprecated and
+was not added.
+
+**One honest caveat, written down rather than buried:** a 60-second clip cannot be
+re-encoded on a phone in the time a guest will wait, so the video original is uploaded as
+the recorder wrote it.
+
+The flag that used to have to cover this was split during Sprint 4's integration pass, which
+was exactly the contract-change request this paragraph used to end with. The clip now claims
+`sourceMetadataStripped: false` — truthfully, nothing was transcoded — and
+`sourceCarriesNoLocation: true`, justified structurally rather than mechanically: the app holds
+**no location permission on either platform** (`blockedPermissions` on Android, no `NSLocation*`
+on iOS), so there is no fix for the recorder to embed, and video library import is deliberately
+not built, so the one file type that could arrive carrying somebody else's GPS trace has no
+route in. The read path reads the second flag, so the clip is still shown to fellow guests —
+the difference is that the sentence is now true. See `buildVideoCapture` in
+`src/upload/media-pipeline.ts` and `MetadataClaim` in `@partybooth/contracts/media`.
 
 ### Better Auth is mounted on Convex, so `baseURL` is the `.convex.site` origin
 

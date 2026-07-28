@@ -121,11 +121,43 @@ export function isAdminEmail(email: string | null | undefined): boolean {
  * not exist in a deployment that has not opted in. Never enable this in a
  * deployment real guests use.
  */
-export function demoLogin(): { email: string; code: string } | undefined {
+export function demoLogin(now: number = Date.now()): { email: string; code: string } | undefined {
   const email = tolerant("DEMO_LOGIN_EMAIL", () => envOptional(serverEnv, "DEMO_LOGIN_EMAIL"));
   const code = tolerant("DEMO_LOGIN_OTP", () => envOptional(serverEnv, "DEMO_LOGIN_OTP"));
   if (!email || !code) return undefined;
+
+  /*
+   * **Three** variables, and the third is a clock.
+   *
+   * The mitigation for a leaked fixed credential used to be entirely
+   * operational — "unset both variables once the build is approved" — which is a
+   * line in a runbook standing between a published password and a production
+   * deployment. Review cycles run days and resubmissions run weeks, so the
+   * window is real and nobody is watching it.
+   *
+   * `DEMO_LOGIN_EXPIRES_AT` is required rather than optional, and it fails
+   * closed: an unparseable value, or one in the past, switches the bypass off
+   * exactly as an unset `DEMO_LOGIN_OTP` does. Forgetting to remove it therefore
+   * costs a resubmission rather than an open door.
+   */
+  const expiresAt = demoLoginExpiry();
+  if (expiresAt === undefined || now >= expiresAt) return undefined;
+
   return { email: email.toLowerCase(), code };
+}
+
+/** `DEMO_LOGIN_EXPIRES_AT` as epoch milliseconds, or `undefined` if unusable. */
+export function demoLoginExpiry(): number | undefined {
+  const raw = tolerant("DEMO_LOGIN_EXPIRES_AT", () =>
+    envOptional(serverEnv, "DEMO_LOGIN_EXPIRES_AT"),
+  );
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  if (Number.isNaN(parsed)) {
+    console.error("[config] DEMO_LOGIN_EXPIRES_AT is not a date, so the demo login is off.");
+    return undefined;
+  }
+  return parsed;
 }
 
 /**
@@ -134,17 +166,53 @@ export function demoLogin(): { email: string; code: string } | undefined {
  * The code comparison is constant-time. The address is not, and does not need
  * to be — it is not a secret, and `DEMO_LOGIN_EMAIL` is a value the reviewer is
  * handed. The code is the credential.
- *
- * TODO(Sprint 4): this is still unreferenced. When it *is* wired up, the bypass
- * must be gated on an explicit build/deployment marker
- * (`DEPLOYMENT_ENVIRONMENT !== "production"` at minimum) rather than on the
- * operator remembering not to set these two variables in the party deployment,
- * scoped to this one address and nothing else, given its own seeded demo event
- * with no real media, and audited on every sign-in.
  */
 export function isDemoLogin(email: string, code: string): boolean {
   const demo = demoLogin();
   if (!demo) return false;
-  if (demo.email !== email.trim().toLowerCase()) return false;
+  if (!isDemoAddress(email)) return false;
   return constantTimeEqual(demo.code, code);
+}
+
+/**
+ * Is this the reviewer's address, on a deployment that has opted in?
+ *
+ * The **whole** gate is "both variables are set". Sprint 3 left a note here
+ * asking for `DEPLOYMENT_ENVIRONMENT !== "production"` on top, and that note was
+ * wrong about the threat: App Review reviews the *production* build against the
+ * *production* backend, so a production block would not harden the bypass, it
+ * would delete the feature and guarantee a rejection. The environment marker
+ * cannot distinguish "the party deployment" from "the deployment Apple is
+ * looking at" because on 5 August they are the same deployment.
+ *
+ * So the controls are the ones that survive that:
+ *
+ * - **Three variables, all required.** A deployment that sets none — which is
+ *   every deployment by default, and `.env.example` ships all three blank — has
+ *   no bypass at all. There is no code path from an unset variable to a fixed
+ *   code. This is what the tests pin.
+ * - **It expires by itself.** `DEMO_LOGIN_EXPIRES_AT` is mandatory and fails
+ *   closed, so the credential stops working on a date rather than when somebody
+ *   remembers to unset it. See {@link demoLogin}.
+ * - **Exactly one address.** Nothing about any other account changes: other
+ *   addresses get a random code, a real email, and the full throttle.
+ * - **Audited on every use** (`auth.demo_sign_in`). If that action appears in a
+ *   deployment real guests are using, that is the incident, and it is greppable.
+ * - **Confined to the demo party.** The credential used to unlock "a party with
+ *   no real people in it" only because nothing had invited it anywhere else —
+ *   which is not a control, it is an absence. Anyone holding the published
+ *   credentials and a six-digit code could join and interact with a real party.
+ *   `assertDemoConfinement` in `lib/guards.ts` now refuses the demo identity
+ *   every event that is not `events.isDemo`, at join and on every event-scoped
+ *   read and write.
+ *
+ * The residual risk is a leaked `DEMO_LOGIN_OTP` against a deployment inside its
+ * expiry window, which now buys an attacker a fictional party. The runbook step
+ * survives as hygiene rather than as the only line of defence: **unset all three
+ * variables once the build is approved.**
+ */
+export function isDemoAddress(email: string | null | undefined): boolean {
+  const demo = demoLogin();
+  if (!demo || !email) return false;
+  return demo.email === email.trim().toLowerCase();
 }

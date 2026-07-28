@@ -59,6 +59,17 @@ import "server-only";
  * has already been settled comes back in a state other than `processing`, so a
  * replay is turned away before any bytes move.
  *
+ * ## Derivatives
+ *
+ * Since Sprint 4 the same route also carries **previews and posters** (ADR
+ * 0008). A derivative is its own single-use grant under the same `captureId`,
+ * so nothing about the flow above changes except the two places where "which
+ * artefact is this?" decides the answer: the state a settled row is allowed to
+ * be in, and the byte ceiling. Both read `fileRole` off `confirmUpload`'s reply
+ * rather than off the ticket, for the reason step 5 exists at all — the ticket's
+ * copy is a client's claim, and a preview relabelled `original` at the edge
+ * would be measured against 20 MB instead of two.
+ *
  * ## Private ACL
  *
  * `acl: "private"` is declared here, per file type, rather than inherited from
@@ -76,8 +87,10 @@ import { fetchAuthMutation } from "@/lib/auth-server";
 import {
   checkTicketAgainstFiles,
   checkTicketAgainstGrant,
+  isDerivativeRole,
   uploadTicketSchema,
   validateMediaFile,
+  type MediaFileRole,
   type MediaType,
   type UploadTicket,
 } from "@/lib/contracts";
@@ -191,6 +204,11 @@ export const partyBoothFileRouter = {
       // grant.
       const claimed = validateMediaFile({
         mediaType: ticket.mediaType,
+        // The ticket's own claim about which artefact it is. It selects the cap
+        // *and* whether a duration is required at all — a video's poster is a
+        // still frame and has none, so omitting the role here refuses every
+        // poster with "video duration is required".
+        fileRole: ticket.fileRole,
         byteSize: ticket.byteSize,
         mimeType: ticket.mimeType,
         durationSeconds: ticket.durationSeconds,
@@ -205,29 +223,56 @@ export const partyBoothFileRouter = {
       // else's device is refused by Convex rather than trusted by us.
       const confirmed = await confirmGrant(ticket.secret);
 
-      if (confirmed.mediaId === null || confirmed.state === null) {
-        // The grant ran out between being issued and the first byte. Two
-        // minutes is generous for that, so this is a slow phone or a long
-        // re-encode, and the honest fix is a fresh grant — which the client
-        // asks for automatically on retry.
+      /*
+       * A **derivative** is judged by a different rule, and it has to be.
+       *
+       * The original's rule is "the row must be `processing`", because a settled
+       * row already has its file and there is nothing for more bytes to become.
+       * A preview or a poster is the opposite case by construction (ADR 0008):
+       * it is sent *after* its original landed, so its row is `pending` or
+       * `approved` every single time, and the original's rule would refuse every
+       * derivative this app has ever produced with "that photo has already been
+       * sent". Nor is `mediaId === null` a failure here — it means the
+       * original's own confirmation is still in flight, which `confirmUpload`
+       * documents as normal for a derivative and which the completion path
+       * reconciles in either order.
+       *
+       * Two things still refuse: a withdrawn capture (withdrawal is permanent
+       * and `media.withdraw` expires every unspent grant precisely so nothing
+       * can attach afterwards), and the size/role binding below, which is where
+       * a preview is held to 2 MiB instead of 20 MB.
+       */
+      const fileRole: MediaFileRole = confirmed.fileRole ?? "original";
+      const derivative = isDerivativeRole(fileRole);
+
+      if (confirmed.state === "deleted") {
         throw new UploadThingError({
           code: "BAD_REQUEST",
-          message: "That upload took too long to start. Try sending it again.",
+          message: "That was withdrawn and cannot be sent again.",
         });
       }
 
-      if (confirmed.state !== "processing") {
-        // A settled row means this capture already has its file (or was
-        // withdrawn, which is permanent). Either way there is nothing for these
-        // bytes to become, and storing them first and deleting them afterwards
-        // is strictly worse than not storing them.
-        throw new UploadThingError({
-          code: "BAD_REQUEST",
-          message:
-            confirmed.state === "deleted"
-              ? "That photo was withdrawn and cannot be sent again."
-              : "That photo has already been sent.",
-        });
+      if (!derivative) {
+        if (confirmed.mediaId === null || confirmed.state === null) {
+          // The grant ran out between being issued and the first byte. Two
+          // minutes is generous for that, so this is a slow phone or a long
+          // re-encode, and the honest fix is a fresh grant — which the client
+          // asks for automatically on retry.
+          throw new UploadThingError({
+            code: "BAD_REQUEST",
+            message: "That upload took too long to start. Try sending it again.",
+          });
+        }
+
+        if (confirmed.state !== "processing") {
+          // A settled row means this capture already has its file. Storing the
+          // bytes first and deleting them afterwards is strictly worse than not
+          // storing them.
+          throw new UploadThingError({
+            code: "BAD_REQUEST",
+            message: "That photo has already been sent.",
+          });
+        }
       }
 
       /*
@@ -249,6 +294,11 @@ export const partyBoothFileRouter = {
 
       const authorised = {
         mediaType: confirmed.mediaType,
+        // The role is part of the binding, not decoration: without it a preview
+        // grant re-labelled `original` at the edge would be measured against
+        // 20 MB instead of 2 MiB, which is the whole reason `confirmUpload`
+        // answers with it.
+        fileRole,
         byteSize: confirmed.byteSize,
         ...(confirmed.mimeType === null ? {} : { mimeType: confirmed.mimeType }),
       };
@@ -269,6 +319,7 @@ export const partyBoothFileRouter = {
       // second opinion.
       const capped = validateMediaFile({
         mediaType: authorised.mediaType,
+        fileRole: authorised.fileRole,
         byteSize: authorised.byteSize,
         mimeType: authorised.mimeType ?? ticket.mimeType,
         durationSeconds: ticket.durationSeconds,
@@ -302,6 +353,25 @@ export const partyBoothFileRouter = {
         checksum: metadata.checksum,
         ...(typeof metadata.width === "number" ? { width: metadata.width } : {}),
         ...(typeof metadata.height === "number" ? { height: metadata.height } : {}),
+        /*
+         * The client's duration, forwarded **as a claim** and not as a check.
+         *
+         * This used to be described as the "landed-object duration" that made
+         * the 60-second cap real a second time, and it never was: it is
+         * `ticket.durationSeconds`, copied out of the client-authored upload
+         * ticket by `callbackMetadataFor` above, so Convex re-reading it was
+         * reading the same claim twice. A modified client could declare eight
+         * seconds and store a ten-minute recording under the 250 MB ceiling.
+         *
+         * It is preserved rather than clamped, because it is what the recorder
+         * believed and a host seeing "8s" on a ten-minute file is a useful
+         * discrepancy. What actually enforces the cap is
+         * `media.verifyVideoDuration`, scheduled by `completeUpload`, which
+         * fetches the stored object's own header and reads the container's
+         * duration — the one number in this path with a server on the other side
+         * of it. It overwrites this value on the row when it agrees, and deletes
+         * the object when it does not.
+         */
         ...(typeof metadata.durationSeconds === "number"
           ? { durationSeconds: metadata.durationSeconds }
           : {}),
@@ -337,6 +407,7 @@ async function confirmGrant(secret: string): Promise<{
   state: string | null;
   /** What the grant authorised. Server-minted — the only trustworthy values here. */
   mediaType: MediaType | null;
+  fileRole: MediaFileRole | null;
   byteSize: number | null;
   mimeType: string | null;
 }> {

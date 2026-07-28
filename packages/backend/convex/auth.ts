@@ -13,11 +13,12 @@ import type { MutationCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { scheduleAccountDeletion } from "./lib/account-deletion";
 import { applyVerifiedEmailMatching } from "./lib/email-matching";
-import { authBaseUrl, isAdminEmail, trustedOrigins } from "./lib/config";
+import { authBaseUrl, isAdminEmail, isDemoAddress, trustedOrigins } from "./lib/config";
 import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
 import { resolveDisplayName } from "./lib/profile";
 import { socialProviderConfig } from "./lib/providers";
+import { isPrivateRelayEmail, mirrorAuthUser, normaliseEmail } from "./lib/user-mirror";
 import { captureError } from "./lib/sentry";
 
 /* -------------------------------------------------------------------------- */
@@ -44,6 +45,7 @@ const otpFunctions = internal.otp as unknown as {
     { email: string; now?: number },
     { allowed: boolean; reason?: OtpSendDenial; retryAfterMs: number }
   >;
+  recordDemoSignIn: FunctionReference<"mutation", "internal", { email: string }, null>;
 };
 
 /**
@@ -66,21 +68,12 @@ export const authComponent = createClient<DataModel>(betterAuthComponent, {
         try {
           const now = Date.now();
           const email = normaliseEmail(doc.email);
-          const userId = await ctx.db.insert("users", {
+          const userId = await mirrorAuthUser(ctx, {
             authId: doc._id,
             email,
             emailVerified: doc.emailVerified ?? false,
-            displayName: doc.name?.trim() || defaultDisplayName(email),
-            isPrivateRelayEmail: isPrivateRelayEmail(email),
-            accountState: "active",
-            // Private beta is invitation-only. Accepting an organiser invitation
-            // flips this; nothing else may.
-            isOrganiser: false,
-            // Cached from the server-side allowlist — `isAdminEmail` stays the
-            // authority on every check.
-            isGlobalAdmin: isAdminEmail(email),
-            createdAt: now,
-            updatedAt: now,
+            providerName: doc.name,
+            now,
           });
 
           // Verified-email matching, run at the earliest possible moment: an
@@ -242,6 +235,26 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
         // `@partybooth/contracts`.
         ...emailOtpPolicyOptions(),
         sendVerificationOTP: async ({ email, otp, type }) => {
+          /*
+           * The reviewer's address, on a deployment that opted in.
+           *
+           * There is no mailbox behind it — App Review is handed the code on the
+           * submission form — so sending would fail and, because `sendEmail`
+           * refusing is how "we couldn't email you" surfaces, would turn the
+           * demo account into a 500 at the door. It also skips the per-address
+           * send throttle, which exists to stop a mailbomb against a real
+           * inbox: there is no inbox, and a reviewer who taps "resend" twice
+           * and is told to wait sixty seconds files a rejection.
+           *
+           * Every other address is untouched — same throttle, same random code,
+           * same email. That is the property worth protecting, and the tests
+           * assert it directly.
+           */
+          if (isDemoAddress(email)) {
+            await recordDemoSignIn(ctx, email);
+            return;
+          }
+
           await assertOtpSendAllowed(ctx, email);
           const purpose = otpPurposeFor(type, email);
           const message = otpEmail({ code: otp, purpose });
@@ -265,10 +278,6 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
-
-function normaliseEmail(email: string | null | undefined): string {
-  return (email ?? "").trim().toLowerCase();
-}
 
 /**
  * Run verified-email matching for a mirrored user, inside the trigger's own
@@ -325,16 +334,19 @@ async function assertOtpSendAllowed(ctx: GenericCtx<DataModel>, email: string): 
 }
 
 /**
- * Apple's private relay. Such an address cannot receive an organiser
- * invitation, which is why PLAN.md gives those users an OTP path to verify a
- * real address instead.
+ * Leave a row saying the demo credential was used.
+ *
+ * Best-effort on purpose: a failure to write the audit row must not stop App
+ * Review signing in, because a reviewer who cannot get past the first screen
+ * rejects the build and the audit row is worth less than the submission. It is
+ * reported rather than swallowed, so a deployment where this is silently failing
+ * is visible in Sentry rather than only in its absence from the log.
  */
-function isPrivateRelayEmail(email: string): boolean {
-  return email.endsWith("@privaterelay.appleid.com");
-}
-
-/** A usable name before the user confirms one, e.g. "corey" from the address. */
-function defaultDisplayName(email: string): string {
-  const [local] = email.split("@");
-  return local && local.length > 0 ? local : "Guest";
+async function recordDemoSignIn(ctx: GenericCtx<DataModel>, email: string): Promise<void> {
+  try {
+    if (!("runMutation" in ctx)) return;
+    await ctx.runMutation(otpFunctions.recordDemoSignIn, { email: normaliseEmail(email) });
+  } catch (error) {
+    captureError({ scope: "auth.demoSignIn", error, level: "warning" });
+  }
 }

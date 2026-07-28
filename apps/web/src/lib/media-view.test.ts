@@ -47,6 +47,7 @@ function uploadItem(overrides: Partial<UploadItem> = {}): UploadItem {
     mimeType: "image/jpeg",
     checksum: "a".repeat(64),
     metadataStripped: true,
+    derivatives: [],
     progress: 0.5,
     retryable: false,
     createdAt: 1_700_000_000_000,
@@ -190,6 +191,13 @@ describe("formatBytes", () => {
     expect(formatBytes(812_345)).toBe("793 KB");
     expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MB");
     expect(formatBytes(20 * 1024 * 1024)).toBe("20 MB");
+  });
+
+  it("switches to GB for a whole party's worth", () => {
+    // No single file can reach this — a video is capped at 250 MB — but the
+    // organiser home adds a party up, and "4096 MB" is a number nobody parses.
+    expect(formatBytes(4 * 1024 * 1024 * 1024)).toBe("4.0 GB");
+    expect(formatBytes(1023 * 1024 * 1024)).toBe("1023 MB");
   });
 
   it("never says 0 KB for a real file, and does for nonsense", () => {

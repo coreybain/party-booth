@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { BackendGate } from "@/components/backend-gate";
 import { CapturePanel } from "@/components/guest/capture-panel";
+import { EventGallery } from "@/components/guest/event-gallery";
 import { MyMedia } from "@/components/guest/my-media";
 import { CheckIcon } from "@/components/icons";
 import { JoinLoading } from "@/components/join/join-states";
@@ -13,7 +14,7 @@ import { Callout } from "@/components/ui/callout";
 import type { EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
-import { EVENT_STATE_COPY, guestsCanUpload } from "@/lib/event-view";
+import { EVENT_STATE_COPY, galleryIsVisible, guestsCanUpload } from "@/lib/event-view";
 import { useCaptureUpload } from "@/lib/use-capture-upload";
 
 /**
@@ -150,6 +151,13 @@ function GuestCapture({
         }}
         onCancel={controller.cancel}
       />
+
+      {/*
+        The approved gallery, below the guest's own uploads on purpose: the
+        question a guest has just after sending something is "did mine work?",
+        not "what else is there?".
+      */}
+      {galleryIsVisible(event.state) ? <EventGallery eventId={event.id} /> : null}
     </div>
   );
 }

@@ -76,7 +76,7 @@ export const serverFeatures = {
   },
   /** Fixed-code reviewer login for App Review. */
   get demoLogin(): boolean {
-    return envHasAll(serverEnv, ["DEMO_LOGIN_EMAIL", "DEMO_LOGIN_OTP"]);
+    return envHasAll(serverEnv, ["DEMO_LOGIN_EMAIL", "DEMO_LOGIN_OTP", "DEMO_LOGIN_EXPIRES_AT"]);
   },
 } as const;
 

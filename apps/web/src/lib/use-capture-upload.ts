@@ -36,12 +36,12 @@ import {
   checkGrantEligibility,
   grantHasExpired,
   isPermanentRejection,
+  MEDIA_LIMITS,
   MEDIA_STATES,
   parseGrantResult,
   type EventState,
   type MediaSource,
   type MediaState,
-  type MediaType,
 } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
 import { newCaptureId } from "@/lib/upload/capture-id";
@@ -51,16 +51,20 @@ import {
   buildPhotoDerivatives,
   derivativeFileName,
   DerivativeError,
+  planDerivatives,
 } from "@/lib/upload/derivative";
 import {
   emptyUploadQueue,
   findItem,
   releasePreview,
   uploadReducer,
+  type CapturedPayload,
+  type PendingDerivative,
   type UploadItem,
   type UploadQueue,
 } from "@/lib/upload/machine";
 import { PARTY_MEDIA_ROUTE, uploadFiles } from "@/lib/upload/uploader";
+import { browserVideoRuntime, buildVideoFacts, posterFileName } from "@/lib/upload/video";
 
 /**
  * A hard ceiling on what will be handed to a canvas.
@@ -71,6 +75,18 @@ import { PARTY_MEDIA_ROUTE, uploadFiles } from "@/lib/upload/uploader";
  * of those get better for being decoded.
  */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * How long to wait before retrying a derivative that arrived before its
+ * original's completion callback did.
+ *
+ * `derivativeWithoutOriginal` is deliberately **not** a permanent rejection: the
+ * two uploads are a few hundred milliseconds apart and the provider's callback
+ * is a separate request that can lose the race. One retry, then let it go — a
+ * capture with no preview is a working capture (ADR 0008), and a client that
+ * keeps retrying for ever on a phone in a pocket is not.
+ */
+const DERIVATIVE_RETRY_DELAY_MS = 2_000;
 
 export interface CaptureEventContext {
   readonly eventId: string;
@@ -123,66 +139,58 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
     async (file: File, source: MediaSource): Promise<void> => {
       setSelectionError(undefined);
 
-      if (!file.type.startsWith("image/")) {
-        // Video capture is Sprint 4. The *pipeline* takes video already — the
-        // route, the grant and the media row are all type-agnostic — but there
-        // is no duration probe on this screen yet, and a video without one is a
-        // grant Convex will refuse.
-        setSelectionError("Photos only for now — video is coming.");
+      const isVideo = file.type.startsWith("video/");
+      if (!isVideo && !file.type.startsWith("image/")) {
+        setSelectionError("That file is not a photo or a video.");
         return;
       }
-      if (file.size > MAX_SOURCE_BYTES) {
+      if (!isVideo && file.size > MAX_SOURCE_BYTES) {
         setSelectionError("That file is too big for this phone to process.");
+        return;
+      }
+      if (isVideo && file.size > MEDIA_LIMITS.video.maxBytes) {
+        // Checked before the file is opened at all: a 400 MB clip that is going
+        // to be refused anyway should cost nothing but a glance at `size`.
+        setSelectionError(
+          `Videos must be ${String(Math.round(MEDIA_LIMITS.video.maxBytes / (1024 * 1024)))} MB or smaller.`,
+        );
         return;
       }
 
       setPreparing(true);
       try {
-        const derivatives = await buildPhotoDerivatives(file, browserDerivativeRuntime);
-        const checksum = await checksumOfBlob(derivatives.upload);
         const captureId = newCaptureId();
-        const mediaType: MediaType = "photo";
+        const capture = isVideo
+          ? await prepareVideo(file, captureId, source)
+          : await preparePhoto(file, captureId, source);
 
         const eligibility = checkGrantEligibility({
           event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
           mediaSource: source,
           file: {
-            mediaType,
-            byteSize: derivatives.upload.size,
-            mimeType: derivatives.upload.type,
+            mediaType: capture.mediaType,
+            byteSize: capture.byteSize,
+            mimeType: capture.mimeType,
+            ...(capture.durationSeconds === undefined
+              ? {}
+              : { durationSeconds: capture.durationSeconds }),
           },
+          sourceMetadataStripped: capture.metadataStripped,
         });
         if (!eligibility.ok) {
           // The same sentence Convex would have returned, one round trip and one
           // re-encode earlier. `MEDIA_LIMITS` is consulted by both.
+          if (capture.previewUrl !== undefined) URL.revokeObjectURL(capture.previewUrl);
           setSelectionError(eligibility.message);
           return;
         }
 
-        dispatch({
-          type: "captured",
-          capture: {
-            captureId,
-            mediaType,
-            mediaSource: source,
-            file: new File([derivatives.upload], derivativeFileName(captureId), {
-              type: derivatives.upload.type,
-            }),
-            byteSize: derivatives.upload.size,
-            mimeType: derivatives.upload.type,
-            checksum,
-            metadataStripped: derivatives.metadataStripped,
-            width: derivatives.dimensions.width,
-            height: derivatives.dimensions.height,
-            previewUrl: URL.createObjectURL(derivatives.preview),
-            createdAt: Date.now(),
-          },
-        });
+        dispatch({ type: "captured", capture });
       } catch (error) {
         setSelectionError(
           error instanceof DerivativeError || error instanceof Error
             ? error.message
-            : "That photo could not be prepared for upload.",
+            : "That file could not be prepared for upload.",
         );
       } finally {
         setPreparing(false);
@@ -194,6 +202,91 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
   /* ---------------------------------------------------------------------- */
   /* Sending it                                                             */
   /* ---------------------------------------------------------------------- */
+
+  /**
+   * Send one derivative for a capture whose original has already landed.
+   *
+   * Its own grant, its own single use, its own much tighter cap — the spine is
+   * the same one the original went through, which is the whole argument of ADR
+   * 0008: derivatives ride the pipeline that is already tested rather than
+   * getting a second, less examined path.
+   *
+   * The return value says only whether one retry is worth making. Everything
+   * else is swallowed on purpose: nothing about a derivative is the guest's
+   * problem, and a failure here costs a fellow guest a thumbnail, not the host
+   * or the submitter the photograph.
+   */
+  const sendDerivative = useCallback(
+    async (item: UploadItem, derivative: PendingDerivative): Promise<{ retry: boolean }> => {
+      const key = `${item.captureId}:${derivative.fileRole}`;
+      const aborter = new AbortController();
+      aborters.current.set(key, aborter);
+
+      try {
+        const checksum = await checksumOfBlob(derivative.file);
+        const grant = parseGrantResult(
+          await requestGrant({
+            eventId: event.eventId,
+            captureId: item.captureId,
+            mediaType: item.mediaType,
+            fileRole: derivative.fileRole,
+            byteSize: derivative.byteSize,
+            mimeType: derivative.mimeType,
+            checksum,
+            mediaSource: item.mediaSource,
+            /*
+             * `true`, and unlike the original this is a precondition rather than
+             * a record: Convex refuses a derivative grant that does not claim
+             * the re-encode, because a derivative is the artefact third parties
+             * are served. It is honest for both of ours — a preview comes out of
+             * the same canvas as the photo, and a poster is a frame drawn onto
+             * one, and a bitmap has nowhere to keep an EXIF block.
+             */
+            sourceMetadataStripped: true,
+            capturedAt: item.createdAt,
+          }),
+        );
+
+        if (aborter.signal.aborted) return { retry: false };
+        if (grant.outcome === "throttled") return { retry: true };
+        if (grant.outcome === "rejected") {
+          // The only refusal worth a second go: the provider's completion
+          // callback for the original has not reached Convex yet.
+          return { retry: grant.reason === "derivativeWithoutOriginal" };
+        }
+        if (grantHasExpired(grant, Date.now())) return { retry: false };
+
+        await uploadFiles(PARTY_MEDIA_ROUTE, {
+          files: [derivative.file],
+          signal: aborter.signal,
+          input: buildUploadTicket(grant, {
+            mimeType: derivative.mimeType,
+            checksum,
+            width: derivative.width,
+            height: derivative.height,
+          }),
+        });
+        return { retry: false };
+      } catch {
+        return { retry: false };
+      } finally {
+        aborters.current.delete(key);
+      }
+    },
+    [event.eventId, requestGrant],
+  );
+
+  const sendDerivatives = useCallback(
+    async (item: UploadItem): Promise<void> => {
+      for (const derivative of item.derivatives) {
+        const first = await sendDerivative(item, derivative);
+        if (!first.retry) continue;
+        await sleep(DERIVATIVE_RETRY_DELAY_MS);
+        await sendDerivative(item, derivative);
+      }
+    },
+    [sendDerivative],
+  );
 
   const send = useCallback(
     async (captureId: string): Promise<void> => {
@@ -228,9 +321,13 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
               checksum: item.checksum,
               mediaSource: item.mediaSource,
               // Recorded, never assumed: this is the value the pipeline actually
-              // produced (ADR 0004 §7), not a literal `true`.
+              // produced (ADR 0004 §7), not a literal `true`. It is `false` for
+              // every video, because a browser cannot re-encode one.
               sourceMetadataStripped: item.metadataStripped,
               capturedAt: item.createdAt,
+              ...(item.durationSeconds === undefined
+                ? {}
+                : { durationSeconds: item.durationSeconds }),
             }),
           );
         } catch (error) {
@@ -306,6 +403,10 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
               checksum: item.checksum,
               width: item.width,
               height: item.height,
+              // Carried through so the middleware's `validateMediaFile` has the
+              // number, and so `completeUpload` can apply the 60-second cap to
+              // the object that actually landed rather than to the estimate.
+              durationSeconds: item.durationSeconds,
             }),
             onUploadProgress: ({ progress }) => {
               // UploadThing reports 0–100; the reducer speaks 0–1.
@@ -319,6 +420,12 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
             captureId,
             ...(isMediaState(state) ? { mediaState: state } : {}),
           });
+
+          // Fire-and-forget, and after the guest has already been told their
+          // photo landed. A derivative is not a submission (ADR 0008): it moves
+          // no state and no counter, so making the guest wait on it — or telling
+          // them it failed — would be reporting an internal detail as an outcome.
+          void sendDerivatives(item);
         } catch (error) {
           if (aborter.signal.aborted) {
             dispatch({ type: "cancelled", captureId });
@@ -335,7 +442,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         aborters.current.delete(captureId);
       }
     },
-    [event.eventId, requestGrant],
+    [event.eventId, requestGrant, sendDerivatives],
   );
 
   /* ---------------------------------------------------------------------- */
@@ -399,8 +506,140 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
 }
 
 /* -------------------------------------------------------------------------- */
+/* Preparing a file                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A photo: re-encode, hash the re-encoded bytes, upload a preview, keep a
+ * thumbnail.
+ *
+ * Three encodes, and the middle one is the point. The **uploaded `preview`
+ * derivative** is the contract's `shared` tier — 1280 px, the same on both
+ * clients — and it is what the moderation grid, the gallery and the slideshow
+ * fetch instead of a 2560 px original, which is the difference between a laptop
+ * scrolling two hundred cards and a laptop stalling on them.
+ *
+ * This used to be the 480 px local thumbnail doing double duty. That was cheap
+ * and it was honest on privacy (it is a canvas re-encode either way, so the
+ * derivative grant's claim held), but it meant a fellow guest on the web path
+ * was served a 480 px image where the app served 1280 px, from the same
+ * contract. The tier exists now, so the drift does not have to.
+ *
+ * Nobody loses resolution by any of this: a web photo's original *is* served, to
+ * everyone, because the re-encode above means `mayServeOriginal` returns true.
+ */
+async function preparePhoto(
+  file: File,
+  captureId: string,
+  source: MediaSource,
+): Promise<CapturedPayload> {
+  const derivatives = await buildPhotoDerivatives(file, browserDerivativeRuntime);
+  const checksum = await checksumOfBlob(derivatives.upload);
+  const sharedSize = planDerivatives(derivatives.sourceDimensions).shared;
+
+  const preview: PendingDerivative = {
+    fileRole: "preview",
+    file: new File([derivatives.shared], derivativeFileName(captureId, "preview"), {
+      type: derivatives.shared.type,
+    }),
+    byteSize: derivatives.shared.size,
+    mimeType: derivatives.shared.type,
+    width: sharedSize.width,
+    height: sharedSize.height,
+  };
+
+  return {
+    captureId,
+    mediaType: "photo",
+    mediaSource: source,
+    file: new File([derivatives.upload], derivativeFileName(captureId, "original"), {
+      type: derivatives.upload.type,
+    }),
+    byteSize: derivatives.upload.size,
+    mimeType: derivatives.upload.type,
+    checksum,
+    metadataStripped: derivatives.metadataStripped,
+    width: derivatives.dimensions.width,
+    height: derivatives.dimensions.height,
+    derivatives: [preview],
+    // The local thumbnail, not the uploaded preview: this one only ever has to
+    // fill a card on the guest's own screen while the bytes are in flight.
+    previewUrl: URL.createObjectURL(derivatives.thumbnail),
+    createdAt: Date.now(),
+  };
+}
+
+/**
+ * A video: read its length, take a poster, send the clip **unchanged**.
+ *
+ * `metadataStripped: false`, truthfully — there is no transcoder in a phone
+ * browser, so the recording that came out of the camera is the recording that
+ * goes to storage, and a client that claimed otherwise would be lying.
+ *
+ * Since Sprint 4 that claim has a second half (`MetadataClaim` in the contract),
+ * and this path answers `false` to that one too. It is the honest answer and it
+ * is where the web and the app genuinely differ: `apps/mobile` records through
+ * its own camera in an app that ships no location permission, so it can promise
+ * "carries no location" without promising a re-encode. A browser cannot. The
+ * `input[capture]` element is a *request*, not a guarantee — every mobile OS
+ * lets the guest pick an existing file from the same sheet — so a clip arriving
+ * here may be one from the camera roll with a full GPS trace in it, and nothing
+ * available in a browser can tell the difference.
+ *
+ * The consequence is exactly the one `mayServeOriginal` describes: the submitter
+ * and the hosts can play the clip, and a fellow guest gets the poster instead.
+ * The poster is the derivative that makes it visible to them at all, and it *is*
+ * a canvas re-encode.
+ *
+ * The checksum is computed over the whole clip, which for a 200 MB recording is
+ * a 200 MB read. Unavoidable: `uploadTicketSchema` requires it and it is what
+ * binds these bytes to this grant. It is also why the size ceiling is checked
+ * before this function is ever called.
+ */
+async function prepareVideo(
+  file: File,
+  captureId: string,
+  source: MediaSource,
+): Promise<CapturedPayload> {
+  const facts = await buildVideoFacts(file, browserVideoRuntime, browserDerivativeRuntime);
+  const checksum = await checksumOfBlob(file);
+
+  const poster: PendingDerivative = {
+    fileRole: "poster",
+    file: new File([facts.poster], posterFileName(captureId), { type: facts.poster.type }),
+    byteSize: facts.poster.size,
+    mimeType: facts.poster.type,
+    width: facts.posterDimensions.width,
+    height: facts.posterDimensions.height,
+  };
+
+  return {
+    captureId,
+    mediaType: "video",
+    mediaSource: source,
+    file,
+    byteSize: file.size,
+    mimeType: file.type,
+    checksum,
+    metadataStripped: false,
+    width: facts.dimensions.width,
+    height: facts.dimensions.height,
+    durationSeconds: facts.durationSeconds,
+    derivatives: [poster],
+    previewUrl: URL.createObjectURL(facts.poster),
+    createdAt: Date.now(),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Small helpers                                                              */
 /* -------------------------------------------------------------------------- */
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function isMediaState(value: unknown): value is MediaState {
   return typeof value === "string" && (MEDIA_STATES as readonly string[]).includes(value);

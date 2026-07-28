@@ -124,43 +124,160 @@ export function LibraryButton({ onPress, disabled }: { onPress: () => void; disa
 }
 
 /**
- * The shutter.
+ * Torch — the video-mode equivalent of the flash.
  *
- * `onLongPress` is wired to a "coming soon" affordance rather than left off, so
- * the gesture a guest will absolutely try — hold for video — answers rather than
- * doing nothing. Video capture is Sprint 4 (PLAN.md → Sprint 4, "hold-to-record
- * (≤60 s)"); the pipeline underneath is already type-agnostic, so what lands
- * then is a recorder, not a second queue.
+ * `flash` on `CameraView` fires the strobe for a *still*; it does nothing at all
+ * during `recordAsync`. A guest who set the flash to "on" and then holds for
+ * video in a dark room would otherwise get a black clip and no explanation, so
+ * this is a separate control with its own state, shown only while video is on
+ * the table. It is never left on: the camera screen clears it when a recording
+ * ends, when the tab loses focus, and when the camera unmounts.
+ */
+export function TorchButton({
+  on,
+  onToggle,
+  disabled,
+}: {
+  on: boolean;
+  onToggle: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <RoundButton
+      icon={on ? "flashlight" : "flashlight-outline"}
+      label={on ? "Turn the light off" : "Turn the light on for video"}
+      active={on}
+      disabled={disabled ?? false}
+      onPress={() => onToggle(!on)}
+    />
+  );
+}
+
+/**
+ * The shutter: tap for a photograph, hold for a video.
+ *
+ * ## Why this is not `onPress` + `onLongPress`
+ *
+ * React Native's `onLongPress` fires once, after `delayLongPress`, and gives you
+ * no signal at all when the finger lifts — which is the one event a
+ * hold-to-record button is entirely about. Worse, `onPress` fires on release
+ * *even after* a long press on some platforms, so a recording would end with a
+ * photograph being taken too.
+ *
+ * So the gesture is driven from `onPressIn` / `onPressOut` and decided by
+ * {@link ShutterState} in `src/lib/shutter.ts`, which is a pure reducer and is
+ * unit-tested in Node. This component draws the result and nothing else: it does
+ * not know what 250 ms means, or what 60 seconds means, or which of the two the
+ * current press is going to turn out to be.
+ *
+ * ## The ring
+ *
+ * A conic gradient would be nicer and needs Skia. What is here is four absolutely
+ * positioned edges whose *opacity* is driven by progress — a sweep that reads
+ * correctly at a glance from across a room, redrawn ~20 times a second, costing
+ * one extra dependency of zero. The precise second count is spoken by the label
+ * next to it, which is what anybody actually reads.
  */
 export function ShutterButton({
-  onPress,
-  onHold,
+  onPressIn,
+  onPressOut,
+  recording = false,
+  progress = 0,
   disabled = false,
   busy = false,
+  videoEnabled = true,
 }: {
-  onPress: () => void;
-  onHold: () => void;
+  onPressIn: () => void;
+  onPressOut: () => void;
+  /** True from the moment the recorder starts until the file is closed. */
+  recording?: boolean;
+  /** 0–1 of the 60-second cap. */
+  progress?: number;
   disabled?: boolean;
   busy?: boolean;
+  /** False when the party is photo-only; the hint and the label drop the hold. */
+  videoEnabled?: boolean;
 }) {
+  const inactive = disabled || busy;
+  const clamped = Math.min(1, Math.max(0, progress));
+
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Take a photo"
-      accessibilityHint="Hold for video — coming soon."
-      accessibilityState={{ disabled: disabled || busy, busy }}
-      disabled={disabled || busy}
-      onPress={onPress}
-      onLongPress={onHold}
-      delayLongPress={350}
+      accessibilityLabel={recording ? "Stop recording" : "Take a photo"}
+      accessibilityHint={
+        videoEnabled ? "Tap for a photo. Hold to record a video, up to 60 seconds." : undefined
+      }
+      accessibilityState={{ disabled: inactive, busy }}
+      // A live progress value on the button itself, so a screen reader user gets
+      // the same "how much is left" a sighted guest gets from the ring.
+      accessibilityValue={
+        recording ? { now: Math.round(clamped * 100), min: 0, max: 100 } : undefined
+      }
+      disabled={inactive}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       style={({ pressed }) => [
         styles.shutter,
-        pressed && styles.shutterPressed,
-        (disabled || busy) && styles.disabled,
+        recording && styles.shutterRecording,
+        pressed && !recording && styles.shutterPressed,
+        inactive && styles.disabled,
       ]}
     >
-      <View style={[styles.shutterCore, busy && styles.shutterCoreBusy]} />
+      {recording ? <RecordingRing progress={clamped} /> : null}
+      <View
+        style={[
+          styles.shutterCore,
+          busy && styles.shutterCoreBusy,
+          // A filled circle becomes a rounded square while recording — the
+          // universal "stop" affordance, and the one shape change that reads at
+          // arm's length in a dark room.
+          recording && styles.shutterCoreRecording,
+        ]}
+      />
     </Pressable>
+  );
+}
+
+/**
+ * The 60-second sweep, as four fading edges.
+ *
+ * Each quarter of the ring lights over its own quarter of the progress, so the
+ * band travels clockwise from the top. Not a true arc — it is four straight
+ * segments — which is invisible at 76 px and is the difference between shipping
+ * this and adding a rendering dependency in launch week.
+ */
+function RecordingRing({ progress }: { progress: number }) {
+  const quarter = (index: number) => Math.min(1, Math.max(0, progress * 4 - index));
+  return (
+    <View style={styles.ring} pointerEvents="none">
+      <View style={[styles.ringEdge, styles.ringTop, { opacity: quarter(0) }]} />
+      <View style={[styles.ringEdge, styles.ringRight, { opacity: quarter(1) }]} />
+      <View style={[styles.ringEdge, styles.ringBottom, { opacity: quarter(2) }]} />
+      <View style={[styles.ringEdge, styles.ringLeft, { opacity: quarter(3) }]} />
+    </View>
+  );
+}
+
+/**
+ * "REC 0:07 · 53s left" — the readout beside the shutter while recording.
+ *
+ * Separate from the ring because it is the precise information and the ring is
+ * the glanceable one, and because `accessibilityLiveRegion` on a component that
+ * re-renders twenty times a second would make a screen reader unusable — this
+ * one changes only when the whole second does.
+ */
+export function RecordingIndicator({ seconds, remaining }: { seconds: number; remaining: number }) {
+  return (
+    <View style={styles.recording} accessibilityRole="text">
+      <View style={styles.recordingDot} />
+      <Text style={styles.recordingLabel}>
+        {`0:${String(seconds).padStart(2, "0")}`}
+        {/* Only once it is worth saying. Counting down from 60 the whole time
+            makes a party feel like an exam. */}
+        {remaining <= 10 ? ` · ${String(remaining)}s left` : ""}
+      </Text>
+    </View>
   );
 }
 
@@ -202,6 +319,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(18, 9, 27, 0.35)",
   },
   shutterPressed: { transform: [{ scale: 0.94 }] },
+  shutterRecording: { borderColor: colors.danger },
   shutterCore: {
     width: 58,
     height: 58,
@@ -209,6 +327,38 @@ const styles = StyleSheet.create({
     backgroundColor: colors.text,
   },
   shutterCoreBusy: { backgroundColor: colors.textFaint },
+  shutterCoreRecording: {
+    width: 30,
+    height: 30,
+    borderRadius: radius.sm,
+    backgroundColor: colors.danger,
+  },
+  ring: {
+    position: "absolute",
+    top: -6,
+    left: -6,
+    right: -6,
+    bottom: -6,
+    borderRadius: radius.pill,
+  },
+  ringEdge: { position: "absolute", backgroundColor: colors.danger },
+  ringTop: { top: 0, left: "25%", right: "25%", height: 3, borderRadius: radius.pill },
+  ringRight: { right: 0, top: "25%", bottom: "25%", width: 3, borderRadius: radius.pill },
+  ringBottom: { bottom: 0, left: "25%", right: "25%", height: 3, borderRadius: radius.pill },
+  ringLeft: { left: 0, top: "25%", bottom: "25%", width: 3, borderRadius: radius.pill },
+  recording: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.75)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.danger,
+  },
+  recordingDot: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: colors.danger },
+  recordingLabel: { ...typography.caption, fontWeight: "700", color: colors.text },
   pending: {
     flexDirection: "row",
     alignItems: "center",

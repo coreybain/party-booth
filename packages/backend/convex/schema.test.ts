@@ -97,6 +97,17 @@ describe("tables", () => {
         // The per-account grant counter. Separate from `joinAttempts` because
         // it throttles successes, not failures — see the schema comment.
         "uploadAttempts",
+
+        /* Sprint 4 ------------------------------------------------------- */
+        // App Review: "report objectionable content". A report is not a
+        // moderation decision — it flags an item for a host, and the host
+        // decides. `moderationDecisions` records the decision, not the
+        // complaint, so it cannot hold this.
+        "mediaReports",
+        // App Review: "block abusive users". Per-account and global, and a
+        // pure view filter — nothing about the blocked person's media changes
+        // for anybody else, which is why it is not a membership status.
+        "userBlocks",
       ].sort(),
     );
   });

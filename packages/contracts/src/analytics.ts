@@ -47,9 +47,12 @@ export const ANALYTICS_EVENTS = {
   // Moderation
   mediaApproved: "media_approved",
   mediaDeclined: "media_declined",
+  mediaApprovalRevoked: "media_approval_revoked",
   mediaBulkModerated: "media_bulk_moderated",
   mediaReported: "media_reported",
+  mediaReportResolved: "media_report_resolved",
   userBlocked: "user_blocked",
+  userUnblocked: "user_unblocked",
 
   // Viewing
   galleryViewed: "gallery_viewed",
@@ -162,7 +165,23 @@ export const AUDIT_ACTIONS = {
    * `media.stuckPurges` can list it and a retry has something to name.
    */
   mediaFilePurgeFailed: "media.file_purge_failed",
+  /**
+   * A derivative — a preview or a video poster — was attached to a capture that
+   * already existed.
+   *
+   * Separate from {@link AUDIT_ACTIONS.uploadCompleted} because that action
+   * means "a guest's submission landed" and drives the counters and the
+   * moderation queue, while this one changes nothing a host sees. Folding them
+   * together would triple the apparent submission count of every party.
+   */
+  derivativeAttached: "media.derivative_attached",
   mediaReported: "media.reported",
+  /** A host looked at a report and either acted on it or dismissed it. */
+  mediaReportResolved: "media.report_resolved",
+
+  /** One guest blocked another. Per-account, event recorded as context. */
+  userBlocked: "user.blocked",
+  userUnblocked: "user.unblocked",
 
   /** An additional address was proven by OTP (Apple private-relay path). */
   accountEmailVerified: "account.email_verified",
@@ -174,6 +193,16 @@ export const AUDIT_ACTIONS = {
 
   adminSignedIn: "admin.signed_in",
   adminSignInRejected: "admin.sign_in_rejected",
+
+  /**
+   * The App Review reviewer signed in with the fixed demo code.
+   *
+   * Audited on **every** use, and deliberately its own action rather than a flag
+   * on a normal sign-in: a credential that skips the live OTP is the one
+   * credential whose every use has to be countable afterwards. If this action
+   * ever appears in a deployment real guests are using, that is the incident.
+   */
+  demoSignIn: "auth.demo_sign_in",
 } as const;
 
 export type AuditActionKey = keyof typeof AUDIT_ACTIONS;

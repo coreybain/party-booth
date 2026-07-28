@@ -23,6 +23,24 @@ function exampleKeys(): string[] {
     .filter((key) => key.length > 0);
 }
 
+/**
+ * Variables `.env.example` documents that this package deliberately does **not**
+ * validate.
+ *
+ * `packages/env` validates what a **running process** reads — the web server,
+ * the Convex deployment, the app bundle. These three are read by `eas submit`
+ * from the operator's shell, via the `$VAR` references in
+ * `apps/mobile/eas.json`, and never by anything that runs. Putting them in the
+ * schema would make every deployment's startup validation care about
+ * credentials it has no use for; leaving them undocumented would leave
+ * `eas.json` referencing variables nothing explains, which is what happened
+ * before Sprint 4's integration pass.
+ *
+ * So they are documented and exempted, and the two tests below keep the
+ * exemption honest in both directions.
+ */
+const BUILD_TOOLING_KEYS = new Set(["APPLE_ID", "ASC_APP_ID", "GOOGLE_SERVICE_ACCOUNT_KEY_PATH"]);
+
 describe(".env.example", () => {
   it("documents every declared variable", () => {
     const documented = new Set(exampleKeys());
@@ -34,8 +52,25 @@ describe(".env.example", () => {
 
   it("does not document variables that no longer exist", () => {
     const declared = new Set(allDeclaredKeys);
-    const orphans = exampleKeys().filter((key) => !declared.has(key));
+    const orphans = exampleKeys().filter(
+      (key) => !declared.has(key) && !BUILD_TOOLING_KEYS.has(key),
+    );
     expect(orphans).toEqual([]);
+  });
+
+  it("keeps every build-tooling exemption genuinely out of the runtime schema", () => {
+    // The exemption must not become a way to smuggle a runtime variable past the
+    // pairing test above: if one of these ever gains a runtime meaning, it
+    // belongs in the schema and the exemption has to go.
+    const declared = new Set(allDeclaredKeys);
+    expect([...BUILD_TOOLING_KEYS].filter((key) => declared.has(key))).toEqual([]);
+  });
+
+  it("documents every build-tooling exemption it claims", () => {
+    // The other direction: an exemption for a variable nobody documents is a
+    // stale entry, and stale entries are how an allowlist stops meaning anything.
+    const documented = new Set(exampleKeys());
+    expect([...BUILD_TOOLING_KEYS].filter((key) => !documented.has(key))).toEqual([]);
   });
 
   it("has a comment line immediately above every variable", () => {

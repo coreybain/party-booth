@@ -31,11 +31,22 @@
  * and an active event exists — the same shape `app/join/[token].tsx` uses.
  */
 
+import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery } from "convex/react";
 import { Image } from "expo-image";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import type { ReportReason } from "@partybooth/contracts/media";
+
+import {
+  DurationBadge,
+  VideoPoster,
+  playableVideoUri,
+  usablePosterUri,
+  useVideoLightbox,
+} from "@/components/media-video";
+import { ItemActionsMenu, ReportSheet, type ReportTarget } from "@/components/report-sheet";
 import {
   Badge,
   Button,
@@ -268,10 +279,21 @@ function TimelineRow({
   const mediaId = entry.media?.id;
   const canWithdraw = entry.canWithdraw && mediaId !== undefined && onWithdraw !== null;
 
+  const isVideo = entry.item?.mediaType === "video" || entry.media?.mediaType === "video";
+  // The local file first, always — it needs no network and no signature. The
+  // server's poster is the fallback for a row whose local copy has been swept.
+  const durationSeconds = entry.item?.durationSeconds ?? entry.media?.durationSeconds;
+
   return (
     <Card>
       <View style={styles.row}>
-        <Thumb uri={entry.thumbnailUri} label="Your photo" size={64} />
+        <View>
+          <Thumb uri={entry.thumbnailUri} label={isVideo ? "Your video" : "Your photo"} size={64} />
+          {/* No play button on this one: "My media" is a status list, and the
+              row's own controls are retry / cancel / withdraw. The badge says
+              what it is; the gallery is where it gets watched. */}
+          {isVideo ? <DurationBadge seconds={durationSeconds} /> : null}
+        </View>
 
         <View style={styles.rowBody}>
           <Badge label={entry.status.label} tone={TONE_COLORS[entry.status.tone]} />
@@ -393,6 +415,51 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
   // every tile agrees about which signed URLs have expired (ADR 0004 §5).
   const now = useNow();
 
+  const video = useVideoLightbox();
+  const report = useMutation(api.moderation.report);
+  const block = useMutation(api.blocks.block);
+
+  /** Which item's menu is open, and which item is being reported. */
+  const [menuTarget, setMenuTarget] = useState<ReportTarget | null>(null);
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const [blockError, setBlockError] = useState<string | null>(null);
+
+  const onReport = useCallback(
+    async (input: { mediaId: string; reason: ReportReason; details?: string }): Promise<void> => {
+      await report(input);
+    },
+    [report],
+  );
+
+  const onBlock = useCallback(
+    async (userId: string): Promise<void> => {
+      await block({ eventId: event.id, userId });
+    },
+    [block, event.id],
+  );
+
+  /**
+   * Block straight from the menu, without a report first.
+   *
+   * Both routes have to exist. App Review looks for blocking as its own control,
+   * and a guest who simply does not want to see somebody's photographs has done
+   * nothing that warrants filing a complaint about them.
+   */
+  const onBlockFromMenu = useCallback(() => {
+    const target = menuTarget;
+    if (target === null) return;
+    setMenuTarget(null);
+    setBlockError(null);
+    void (async () => {
+      try {
+        await onBlock(target.uploaderUserId);
+      } catch (caught) {
+        captureHandledError(caught, { scope: "photos.block" });
+        setBlockError(describeError(caught).message);
+      }
+    })();
+  }, [menuTarget, onBlock]);
+
   if (media === undefined) return <Loading label="Loading the gallery…" />;
 
   if (media.length === 0) {
@@ -406,23 +473,131 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
   }
 
   return (
-    <View style={styles.grid}>
-      {media.map((item) => (
-        <GalleryTile key={item.id} item={item} now={now} />
-      ))}
-    </View>
+    <>
+      {blockError !== null ? (
+        <Notice tone="danger" title="That didn't work">
+          <MutedText>{blockError}</MutedText>
+        </Notice>
+      ) : null}
+
+      <View style={styles.grid}>
+        {media.map((item) => (
+          <GalleryTile
+            key={item.id}
+            item={item}
+            now={now}
+            onPlay={video.open}
+            // Your own item has no menu: reporting yourself to yourself is
+            // noise, and "Take it back" in My media is the real control.
+            onMenu={item.isOwn ? undefined : () => setMenuTarget(targetFor(item))}
+          />
+        ))}
+      </View>
+
+      {video.lightbox}
+
+      <ItemActionsMenu
+        target={menuTarget}
+        onReport={() => {
+          setReportTarget(menuTarget);
+          setMenuTarget(null);
+        }}
+        onBlock={onBlockFromMenu}
+        onClose={() => setMenuTarget(null)}
+      />
+
+      <ReportSheet
+        target={reportTarget}
+        onReport={onReport}
+        onBlock={onBlock}
+        onClose={() => setReportTarget(null)}
+      />
+    </>
   );
 }
 
-function GalleryTile({ item, now }: { item: MediaItem; now: number }) {
+/** The three facts the report and block flows need about an item. */
+function targetFor(item: MediaItem): ReportTarget {
+  return {
+    mediaId: item.id,
+    uploaderUserId: item.uploaderUserId,
+    uploaderDisplayName: item.uploaderDisplayName,
+    isOwn: item.isOwn,
+  };
+}
+
+function GalleryTile({
+  item,
+  now,
+  onPlay,
+  onMenu,
+}: {
+  item: MediaItem;
+  now: number;
+  onPlay: (uri: string) => void;
+  /** `undefined` on your own item — there is nothing to report or block. */
+  onMenu: (() => void) | undefined;
+}) {
+  const label = `${item.mediaType === "video" ? "Video" : "Photo"} from ${item.uploaderDisplayName}`;
+
+  if (item.mediaType === "video") {
+    const playable = playableVideoUri(item, now);
+    return (
+      <Pressable
+        style={styles.tile}
+        onLongPress={onMenu}
+        // Long enough that scrolling a grid does not open menus by accident.
+        delayLongPress={400}
+        accessibilityLabel={label}
+        // The tile is not itself a button — the poster inside it is. This
+        // wrapper exists for the long-press, so it must not claim a role.
+        accessibilityRole={onMenu === undefined ? undefined : "none"}
+      >
+        <VideoPoster
+          posterUri={usablePosterUri(item, now)}
+          durationSeconds={item.durationSeconds}
+          label={label}
+          onPlay={playable === undefined ? undefined : () => onPlay(playable)}
+          fill
+        />
+        {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
+      </Pressable>
+    );
+  }
+
   return (
-    <View style={styles.tile}>
-      <Thumb
-        uri={usableMediaUri(item, now)}
-        label={`Photo from ${item.uploaderDisplayName}`}
-        size="fill"
-      />
-    </View>
+    <Pressable
+      style={styles.tile}
+      onLongPress={onMenu}
+      delayLongPress={400}
+      accessibilityLabel={label}
+      accessibilityRole={onMenu === undefined ? undefined : "none"}
+    >
+      <Thumb uri={usableMediaUri(item, now)} label={label} size="fill" />
+      {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
+    </Pressable>
+  );
+}
+
+/**
+ * The always-visible "…" in the corner of a tile.
+ *
+ * A long-press alone would satisfy the letter of Guideline 1.2 and fail its
+ * spirit twice over: a guest never discovers it, and a reviewer with a checklist
+ * and ninety seconds does not find it either. Small, low-contrast and out of the
+ * way — but present, and reachable by a screen reader by name.
+ */
+function ReportDot({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Report or block — ${label}`}
+      onPress={onPress}
+      hitSlop={10}
+      style={styles.reportDot}
+    >
+      <Ionicons name="ellipsis-horizontal" size={14} color={colors.text} />
+    </Pressable>
   );
 }
 
@@ -512,6 +687,17 @@ const styles = StyleSheet.create({
   track: { height: 4, borderRadius: radius.pill, backgroundColor: colors.surfaceRaised },
   fill: { height: 4, borderRadius: radius.pill, backgroundColor: colors.accent },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  reportDot: {
+    position: "absolute",
+    top: spacing.xs,
+    right: spacing.xs,
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.62)",
+  },
   // Three across on a phone, with the gap taken out of each column. `gap` on a
   // wrapping row does not subtract from a percentage basis, so the width does.
   tile: { width: "31.5%" },

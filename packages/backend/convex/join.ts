@@ -22,7 +22,7 @@ import {
   resolveInviteByToken,
   type ResolvedInvite,
 } from "./lib/events";
-import { requireActiveUser, type ReadCtx } from "./lib/guards";
+import { demoConfinementAllows, requireActiveUser, type ReadCtx } from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
 import { checkJoinThrottle, recordJoinFailure } from "./lib/join-throttle";
@@ -287,6 +287,20 @@ export const join = mutation({
     }
 
     const verdict = await evaluateCredential(ctx, input, user._id, now);
+    // The App Review demo identity may join the demo party and nothing else, and
+    // it is refused with the one sentence every other rejection uses — so a
+    // reviewer's account cannot be used to walk into a real party with a code
+    // taken off a printed sign. See `assertDemoConfinement`.
+    if (verdict.ok && !demoConfinementAllows(user, verdict.invite.event)) {
+      return await reject(ctx, {
+        keys,
+        userId: user._id,
+        reason: "eventNotJoinable",
+        via: input.via,
+        eventId: verdict.invite.event._id,
+        now,
+      });
+    }
     if (!verdict.ok) {
       return await reject(ctx, {
         keys,

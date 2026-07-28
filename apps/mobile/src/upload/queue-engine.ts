@@ -17,8 +17,13 @@ import {
   type IssuedGrant,
 } from "@partybooth/contracts/upload";
 
-import { MAX_AUTO_ATTEMPTS } from "./queue-reducer";
-import { isTerminalCapture, type QueueFailure, type QueueItem } from "./types";
+import { derivativesSettled, MAX_AUTO_ATTEMPTS, nextDerivative } from "./queue-reducer";
+import {
+  isTerminalCapture,
+  type QueueDerivative,
+  type QueueFailure,
+  type QueueItem,
+} from "./types";
 
 /* -------------------------------------------------------------------------- */
 /* What to run next                                                           */
@@ -54,6 +59,51 @@ function isRunnable(item: QueueItem, now: number): boolean {
   return item.attempts < MAX_AUTO_ATTEMPTS;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Tasks — originals and derivatives                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One unit of work. Two kinds, one loop, one concurrency budget of 1.
+ *
+ * A derivative could have been given its own pump, and that would have been
+ * worse: two loops share one saturated access point and one battery, and the
+ * ordering between "the host can see the photograph" and "the thumbnail is a bit
+ * smaller" would then be up to the scheduler rather than to us.
+ */
+export type QueueTask =
+  | { readonly kind: "original"; readonly item: QueueItem }
+  | {
+      readonly kind: "derivative";
+      readonly item: QueueItem;
+      readonly derivative: QueueDerivative;
+    };
+
+/**
+ * What the engine should attempt next, or `undefined` when there is nothing.
+ *
+ * **Originals always win.** Every capture that is still waiting to reach the
+ * party goes before any thumbnail does, however old the thumbnail is. That is
+ * the right priority because a first-party original is served to everybody —
+ * `sourceMetadataStripped` is `true` on every capture this app produces — so a
+ * derivative that has not arrived yet costs a fellow guest a larger image, and a
+ * *capture* that has not arrived yet costs the host the photograph.
+ *
+ * Within each kind it is oldest-first, for the reason `nextRunnable` already
+ * gives: the queue is a queue, and at a party the order is visible.
+ */
+export function nextTask(items: readonly QueueItem[], now: number): QueueTask | undefined {
+  const original = nextRunnable(items, now);
+  if (original !== undefined) return { kind: "original", item: original };
+
+  const ordered = [...items].sort((a, b) => a.capturedAt - b.capturedAt);
+  for (const item of ordered) {
+    const derivative = nextDerivative(item, now);
+    if (derivative !== undefined) return { kind: "derivative", item, derivative };
+  }
+  return undefined;
+}
+
 /**
  * When the engine next has something to do, or `null` if it can go quiet.
  *
@@ -80,12 +130,29 @@ function wakeUpAtFor(item: QueueItem, now: number): number | null {
   if (item.state === "failed" && isRunnable({ ...item, nextAttemptAt: 0 }, now)) {
     return item.nextAttemptAt;
   }
+  // An `uploaded` capture is finished as far as the guest is concerned and still
+  // owes the party its preview. Without this the derivative would sit until some
+  // *other* capture happened to wake the loop — which at the end of a party is
+  // never, and the last few photographs would ship without thumbnails.
+  if (item.state === "uploaded") {
+    const soonest = item.derivatives
+      .filter((derivative) => derivative.state === "pending")
+      .map((derivative) => Math.max(derivative.nextAttemptAt, now));
+    return soonest.length === 0 ? null : Math.min(...soonest);
+  }
   return null;
 }
 
-/** Anything at all that still needs watching, for the tab badge and the ticker. */
+/**
+ * Anything at all that still needs watching, for the tab badge and the ticker.
+ *
+ * Includes an uploaded capture with an unsent derivative: the engine has work,
+ * so the ticker must keep running. It is deliberately **not** what
+ * `pendingCountForEvent` counts — the badge on the camera says "3 sending" about
+ * photographs, and a guest does not think of a thumbnail as a photograph.
+ */
 export function hasPendingWork(items: readonly QueueItem[]): boolean {
-  return items.some((item) => !isTerminalCapture(item.state));
+  return items.some((item) => !isTerminalCapture(item.state) || !derivativesSettled(item));
 }
 
 /* -------------------------------------------------------------------------- */
