@@ -30,6 +30,8 @@ export type {
   EventSummary,
   JoinInvite,
   JoinPreview,
+  MediaId,
+  MediaItem,
   MembershipId,
   RefreshRolesResult,
   UpdateProfileResult,
