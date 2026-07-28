@@ -8,7 +8,7 @@ organiser moderates, and approved media appears live on a slideshow.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — sprint cadence, commit convention, the CI gate.
 - **[docs/](docs/README.md)** — product spec, domain model, glossary, [ADRs](docs/adr/README.md).
 
-Everything below is the platform layer from **Sprint 1**.
+Everything below is the platform layer from **Sprints 1–2**.
 
 ## Quickstart
 
@@ -130,6 +130,13 @@ join-code input is deliberately more lenient than the wire format — but must n
 policy decision of its own. `apps/mobile/src/lib/roles.test.ts` asserts the adapter agrees
 with the contracts capability matrix for every role, so a rule change there fails loudly
 instead of letting a client drift from what Convex enforces.
+
+**The Convex wire contract has one description, and the backend owns it.**
+`convex codegen` can only emit the generic `AnyApi` until a real deployment
+exists to introspect, so `@partybooth/backend/client-api` hand-types the calls
+the clients make and casts once. Both apps re-export from it behind a seam
+(`apps/web/src/lib/convex-api.ts`, `apps/mobile/src/lib/api.ts`). Two copies of
+that description would drift silently, because every mismatch is an `any`.
 
 **Dependency versions** — cross-cutting libraries live in the `catalog:` block of
 `pnpm-workspace.yaml`. Write `"zod": "catalog:"` instead of pinning a version, so every package

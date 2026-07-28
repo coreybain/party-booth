@@ -94,6 +94,21 @@ described above and should be deleted the moment `npx convex dev` has run: until
 then it is the difference between tests that check their own argument types and
 tests full of hand-written casts.
 
+### `src/client-api.ts` — the clients' view of the same API
+
+The suites can rebuild a precise `api` from the modules; a client bundle cannot,
+because it has no access to the handlers. So `src/client-api.ts` declares the
+shape of the calls `apps/web` and `apps/mobile` make and casts the generated
+object to it **once**, exported as `@partybooth/backend/client-api`.
+
+It is here rather than in each app because both need it and two hand-written
+copies of one wire contract drift silently — under `AnyApi` every mismatch is an
+`any`, not an error. They had already disagreed about `storageRegion`. Payload
+types are assembled from `@partybooth/contracts` wherever a definition exists,
+so a contract change breaks this file; only the field lists, which the `v.object`
+validators here own, are restated. It collapses to a re-export of
+`_generated/api` once codegen is precise, and no call site changes.
+
 ### Failure is a value, not an exception, on the counting paths
 
 A Convex mutation that throws **rolls its own writes back**. Any handler that

@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./api": "./convex/_generated/api.js",
+    "./client-api": "./src/client-api.ts",
     "./dataModel": {
       "types": "./convex/_generated/dataModel.d.ts"
     },

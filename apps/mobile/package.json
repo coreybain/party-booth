@@ -24,6 +24,7 @@
     "@better-auth/expo": "1.6.25",
     "@convex-dev/better-auth": "0.12.5",
     "@expo/vector-icons": "^15.1.1",
+    "@partybooth/backend": "workspace:*",
     "@partybooth/contracts": "workspace:*",
     "@partybooth/env": "workspace:*",
     "@sentry/react-native": "~7.11.0",
