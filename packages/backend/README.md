@@ -48,18 +48,30 @@ Once there is a real project, just `pnpm --filter @partybooth/backend dev`.
 
 ```
 convex/
-  schema.ts            schema v1 — every Sprint 1 table
+  schema.ts            the tables
   convex.config.ts     registers the Better Auth component
   auth.config.ts       tells Convex to trust Better Auth's JWTs
   auth.ts              component client, user-mirroring triggers, createAuth
   http.ts              mounts Better Auth at /api/auth/*
-  users.ts             currentUser query
+  users.ts             currentUser, updateProfile, refreshRoles
   otp.ts               registerSend — the transactional OTP send throttle
+  events.ts            event CRUD, the state machine, myEvents / activeEvent / home
+  invites.ts           rotate, and the current code + QR token (host-only)
+  join.ts              the join mutation and the two previews
+  emails.ts            proving a second address by OTP (Apple private relay)
+  testing.helpers.ts   convex-test fixtures and a locally-typed `api`
   lib/
     validators.ts      Convex validators derived from @partybooth/contracts
     guards.ts          requireUser / requireEventActor / requirePermission
     audit.ts           the append-only audit writer
     account-deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
+    events.ts          code allocation, invite versions, joinability
+    join-throttle.ts   the joinAttempts rows behind the contract's join policy
+    email-matching.ts  verified addresses → organiser / co-host roles
+    otp-throttle.ts    the shared per-address OTP send counter
+    input.ts           parseInput — contract zod schemas at the mutation edge
+    profile.ts         who gets to name a user: choice beats provider default
+    hash.ts            SHA-256 hex, via Web Crypto
     errors.ts          ConvexError payloads with machine-readable codes
     config.ts          base URLs, admin allowlist, demo login
     otp.ts             OTP policy → Better Auth options
@@ -68,12 +80,36 @@ convex/
     email/             EmailSender interface, Resend + console implementations
 ```
 
-Files with two dots in the name (`*.test.ts`, `auth.config.ts`) are skipped by
-the Convex bundler's entry-point scan, so tests sit next to the code without
-being deployed. The convex-test suites (`convex/guards.test.ts`,
-`convex/audit.test.ts`) live at the root of `convex/` because convex-test finds
-the module map relative to `_generated`, and pnpm's hoisted `node_modules`
-defeats its automatic discovery — they pass `import.meta.glob` explicitly.
+Files with more than one dot in the name (`*.test.ts`, `auth.config.ts`,
+`testing.helpers.ts`) are skipped by the Convex bundler's entry-point scan — it
+logs "Skipping … that contains multiple dots" — so tests and their fixtures sit
+next to the code without being deployed. The convex-test suites live at the root
+of `convex/` because convex-test finds the module map relative to `_generated`,
+and pnpm's hoisted `node_modules` defeats its automatic discovery;
+`testing.helpers.ts` passes `import.meta.glob` explicitly on their behalf.
+
+`testing.helpers.ts` also rebuilds the **typed** `api` from `ApiFromModules`,
+the way real codegen would. That is a stand-in for the generic `api.d.ts`
+described above and should be deleted the moment `npx convex dev` has run: until
+then it is the difference between tests that check their own argument types and
+tests full of hand-written casts.
+
+### Failure is a value, not an exception, on the counting paths
+
+A Convex mutation that throws **rolls its own writes back**. Any handler that
+increments a counter and then rejects the request has to return, not throw, or
+the counter never commits and the budget it was protecting is infinite. That is
+why `join.join` answers with `{ outcome: "rejected" }` and
+`emails.confirmVerification` with `{ ok: false }` instead of raising. It is also
+the second reason the join failure path is a value: one code path, one shape,
+one timing, nothing for an attacker to distinguish.
+
+### Deployment cost of the Sprint 2 tables
+
+`joinAttempts` and `userEmails` accumulate rows that nothing prunes yet. Both are
+small and bounded in practice (one row per throttle key, one per claimed
+address), but the P1 purge worker should sweep expired `userEmails` challenges
+and idle `joinAttempts` rows alongside its other work.
 
 ## Auth
 

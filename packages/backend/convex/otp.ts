@@ -1,7 +1,7 @@
-import { canSendOtp, registerOtpSend, type OtpSendState } from "@partybooth/contracts";
 import { v } from "convex/values";
 
 import { internalMutation } from "./_generated/server";
+import { registerOtpSendFor } from "./lib/otp-throttle";
 
 /**
  * The per-address OTP send throttle.
@@ -37,36 +37,9 @@ export const registerSend = internalMutation({
     retryAfterMs: v.number(),
   }),
   handler: async (ctx, args) => {
-    const email = args.email.trim().toLowerCase();
-    const now = args.now ?? Date.now();
-
-    const existing = await ctx.db
-      .query("otpChallenges")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .unique();
-
-    const state: OtpSendState | undefined = existing
-      ? {
-          lastSentAt: existing.lastSentAt,
-          sendCount: existing.sendCount,
-          windowStartedAt: existing.windowStartedAt,
-        }
-      : undefined;
-
-    const decision = canSendOtp(state, now);
-    if (!decision.allowed) {
-      // Deliberately no write: a refused send must not extend the cooldown, or
-      // a client that retries in a loop would never be let through again.
-      return { allowed: false, reason: decision.reason, retryAfterMs: decision.retryAfterMs };
-    }
-
-    const next = registerOtpSend(state, now);
-    if (existing) {
-      await ctx.db.patch(existing._id, { ...next, updatedAt: now });
-    } else {
-      await ctx.db.insert("otpChallenges", { email, ...next, updatedAt: now });
-    }
-
-    return { allowed: true, retryAfterMs: 0 };
+    const decision = await registerOtpSendFor(ctx, args.email, args.now ?? Date.now());
+    return decision.allowed
+      ? { allowed: true, retryAfterMs: 0 }
+      : { allowed: false, reason: decision.reason, retryAfterMs: decision.retryAfterMs };
   },
 });

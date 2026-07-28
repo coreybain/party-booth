@@ -19,15 +19,19 @@ export { ERROR_CODES, isAppError, type AppErrorData, type ErrorCode } from "../c
 
 export {
   AUDIT_SUBJECTS,
+  COHOST_INVITATION_STATUSES,
   DELETION_JOB_STATES,
   DELETION_SUBJECTS,
   INVITE_VERSION_STATUSES,
   MEMBERSHIP_STATUSES,
   ORGANISER_INVITATION_STATUSES,
+  USER_EMAIL_STATUSES,
   type AuditSubject,
+  type CohostInvitationStatus,
   type DeletionJobState,
   type DeletionSubject,
   type InviteVersionStatus,
   type MembershipStatus,
   type OrganiserInvitationStatus,
+  type UserEmailStatus,
 } from "../convex/lib/validators";

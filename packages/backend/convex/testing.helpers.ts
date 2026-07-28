@@ -1,0 +1,262 @@
+import type { RandomBytes } from "@partybooth/contracts";
+import { resetEnvCache } from "@partybooth/env";
+import { serverEnv } from "@partybooth/env/server";
+import { convexTest, type TestConvex } from "convex-test";
+import {
+  anyApi,
+  type ApiFromModules,
+  type FilterApi,
+  type FunctionReference,
+  type FunctionType,
+  type SchemaDefinition,
+} from "convex/server";
+
+import type { Doc, Id } from "./_generated/dataModel";
+import type * as emails from "./emails";
+import type * as events from "./events";
+import type * as invites from "./invites";
+import type * as join from "./join";
+import type * as otp from "./otp";
+import schema from "./schema";
+import type * as users from "./users";
+
+/**
+ * Shared fixtures for the convex-test suites.
+ *
+ * Two dots in the filename on purpose: the Convex bundler skips those when it
+ * scans for function entry points, so this sits next to the code it seeds
+ * without being deployed — the same trick `*.test.ts` and `auth.config.ts` use.
+ * Vitest does not pick it up as a suite either, since it does not end `.test.ts`.
+ */
+
+export type T = TestConvex<SchemaDefinition<typeof schema.tables, true>>;
+
+/**
+ * convex-test finds function modules by looking for a `_generated` directory.
+ * pnpm's hoisted node_modules defeats its "sibling to node_modules" heuristic,
+ * so every suite passes the module map explicitly. `import.meta.glob` is
+ * resolved relative to *this* file, which is why it lives at the root of
+ * `convex/` alongside the suites.
+ */
+export const modules = import.meta.glob("./**/*.*s");
+
+export function makeTest(): T {
+  return convexTest(schema, modules);
+}
+
+/* -------------------------------------------------------------------------- */
+/* A typed `api`, until codegen can produce one                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `_generated/api.d.ts` is the **generic** fallback (`AnyApi`) because
+ * `convex codegen` cannot reach a deployment — see the package README. Indexing
+ * it gives `AnyModuleDirOrFunc | undefined`, which `t.mutation` will not accept,
+ * so every existing suite has had to hand-cast each function reference it calls.
+ *
+ * This builds the precise api from the modules instead, exactly the way real
+ * codegen does (`ApiFromModules` → `FilterApi`). Two consequences worth having:
+ * argument and return types in the tests come from the handlers themselves
+ * rather than from a hand-written table that can drift, and calling a function
+ * that does not exist is a compile error.
+ *
+ * **Delete this block** once `npx convex dev` has run against a real project:
+ * `_generated/api.d.ts` will then say the same thing, and the tests can import
+ * from there like production code does.
+ */
+type FullApi = ApiFromModules<{
+  emails: typeof emails;
+  events: typeof events;
+  invites: typeof invites;
+  join: typeof join;
+  otp: typeof otp;
+  users: typeof users;
+}>;
+
+export const api = anyApi as unknown as FilterApi<
+  FullApi,
+  FunctionReference<FunctionType, "public">
+>;
+
+export const internal = anyApi as unknown as FilterApi<
+  FullApi,
+  FunctionReference<FunctionType, "internal">
+>;
+
+export const ADMIN_EMAIL = "admin@partybooth.test";
+
+/**
+ * The admin allowlist comes from the environment, and `@partybooth/env`
+ * memoises each variable the first time it is read — so the cache has to be
+ * dropped alongside the value.
+ */
+export function setAllowlist(value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env["ADMIN_EMAIL_ALLOWLIST"];
+  } else {
+    process.env["ADMIN_EMAIL_ALLOWLIST"] = value;
+  }
+  resetEnvCache(serverEnv);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seeds                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface SeedUserOptions {
+  authId: string;
+  email: string;
+  emailVerified?: boolean;
+  displayName?: string;
+  accountState?: Doc<"users">["accountState"];
+  isOrganiser?: boolean;
+  isGlobalAdmin?: boolean;
+  isPrivateRelayEmail?: boolean;
+}
+
+export async function seedUser(t: T, over: SeedUserOptions): Promise<Id<"users">> {
+  const now = Date.now();
+  return await t.run(async (ctx) =>
+    ctx.db.insert("users", {
+      authId: over.authId,
+      email: over.email,
+      emailVerified: over.emailVerified ?? true,
+      displayName: over.displayName ?? "Test User",
+      accountState: over.accountState ?? "active",
+      // Every event-creating fixture is an invited organiser unless it is
+      // testing the gate itself.
+      isOrganiser: over.isOrganiser ?? true,
+      isGlobalAdmin: over.isGlobalAdmin ?? false,
+      ...(over.isPrivateRelayEmail === undefined
+        ? {}
+        : { isPrivateRelayEmail: over.isPrivateRelayEmail }),
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
+}
+
+export interface SeedEventOptions {
+  name?: string;
+  state?: Doc<"events">["state"];
+  moderationMode?: Doc<"events">["moderationMode"];
+  startsAt?: number;
+  endsAt?: number;
+  allowLibraryImport?: boolean;
+}
+
+/**
+ * An event with an owner membership, as `events.create` would leave it — but
+ * with no invite version, so a suite can mint one deliberately.
+ */
+export async function seedEvent(
+  t: T,
+  ownerUserId: Id<"users">,
+  over: SeedEventOptions = {},
+): Promise<Id<"events">> {
+  const now = Date.now();
+  const eventId = await t.run(async (ctx) =>
+    ctx.db.insert("events", {
+      ownerUserId,
+      name: over.name ?? "Test party",
+      state: over.state ?? "live",
+      moderationMode: over.moderationMode ?? "manual",
+      storageRegion: "pdx1",
+      startsAt: over.startsAt ?? now,
+      ...(over.endsAt === undefined ? {} : { endsAt: over.endsAt }),
+      timeZone: "Europe/London",
+      allowLibraryImport: over.allowLibraryImport ?? true,
+      counts: { pending: 0, approved: 0, declined: 0, total: 0 },
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
+  await seedMembership(t, eventId, ownerUserId, "owner");
+  return eventId;
+}
+
+export async function seedMembership(
+  t: T,
+  eventId: Id<"events">,
+  userId: Id<"users">,
+  role: Doc<"memberships">["role"],
+  status: Doc<"memberships">["status"] = "active",
+): Promise<Id<"memberships">> {
+  return await t.run(async (ctx) =>
+    ctx.db.insert("memberships", { eventId, userId, role, status, joinedAt: Date.now() }),
+  );
+}
+
+export interface SeedInviteOptions {
+  code?: string;
+  token?: string;
+  status?: Doc<"inviteVersions">["status"];
+  version?: number;
+  makeActive?: boolean;
+}
+
+export async function seedInviteVersion(
+  t: T,
+  eventId: Id<"events">,
+  createdByUserId: Id<"users">,
+  over: SeedInviteOptions = {},
+): Promise<{ inviteVersionId: Id<"inviteVersions">; code: string; token: string }> {
+  const code = over.code ?? "482913";
+  const token = over.token ?? "ABCDEFGHJKMNPQRSTVWXYZ0123456789".slice(0, 32);
+  const status = over.status ?? "active";
+
+  const inviteVersionId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("inviteVersions", {
+      eventId,
+      version: over.version ?? 1,
+      code,
+      token,
+      status,
+      createdByUserId,
+      createdAt: Date.now(),
+    });
+    if ((over.makeActive ?? status === "active") === true) {
+      await ctx.db.patch(eventId, { activeInviteVersionId: id });
+    }
+    return id;
+  });
+
+  return { inviteVersionId, code, token };
+}
+
+/** Every audit row, newest last. */
+export async function auditRows(t: T): Promise<Doc<"auditEvents">[]> {
+  return await t.run(async (ctx) => ctx.db.query("auditEvents").collect());
+}
+
+export async function auditActions(t: T): Promise<string[]> {
+  return (await auditRows(t)).map((row) => row.action);
+}
+
+/**
+ * A deterministic byte source, so a suite can force the code that comes out of
+ * an allocation.
+ *
+ * `generateEventCode` draws one byte per digit through rejection sampling, so
+ * feeding it the digit values directly (all well under the 250 rejection
+ * threshold) produces exactly that code — and cycling the queue means a
+ * collision-retry loop draws the same code again, which is what makes
+ * "collision then success" testable at all.
+ *
+ * Longer draws are invite tokens. They get a counter-derived sequence so two
+ * tokens minted in one test are never identical.
+ */
+export function bytesFor(digits: string): RandomBytes {
+  const queue = [...digits].map((digit) => Number(digit));
+  let digitIndex = 0;
+  let tokenSeed = 0;
+  return (length: number) => {
+    if (length === 1) {
+      const value = queue[digitIndex % queue.length] ?? 0;
+      digitIndex += 1;
+      return new Uint8Array([value]);
+    }
+    tokenSeed += 1;
+    return new Uint8Array(Array.from({ length }, (_, index) => (tokenSeed * 31 + index * 7) % 256));
+  };
+}

@@ -1,0 +1,584 @@
+import {
+  AUDIT_ACTIONS,
+  createEventInputSchema,
+  DENIAL_MESSAGES,
+  eventStateMachine,
+  explainCan,
+  InvalidTransitionError,
+  isHostSettableEventState,
+  isJoinableEventState,
+  setActiveEventInputSchema,
+  setEventStateInputSchema,
+  updateEventInputSchema,
+  type EventState,
+  type Role,
+} from "@partybooth/contracts";
+import { serverEnv } from "@partybooth/env/server";
+import { v } from "convex/values";
+
+import type { Doc, Id } from "./_generated/dataModel";
+import { mutation, query } from "./_generated/server";
+import { writeEventAudit } from "./lib/audit";
+import { forbidden, invalidState, notFound } from "./lib/errors";
+import { ensureCodeIsFree, getActiveInviteVersion, mintInviteVersion } from "./lib/events";
+import {
+  getActiveMembership,
+  requireActiveUser,
+  requireEventActor,
+  requirePermission,
+  requireUser,
+  toPermissionActor,
+} from "./lib/guards";
+import { parseInput } from "./lib/input";
+import { eventState, moderationMode, storageRegion } from "./lib/validators";
+
+/**
+ * Event CRUD and the event state machine.
+ *
+ * Three rules hold across every mutation in this file:
+ *
+ * 1. **Permission first, then state.** `requireEventActor` resolves the role
+ *    (and hides the event behind `notFound` from anyone with no relationship to
+ *    it), then `requirePermission` asks `@partybooth/contracts`. No policy is
+ *    decided here — this file only picks which question to ask.
+ * 2. **The state machine is the contract's.** `eventStateMachine.assertTransition`
+ *    is the only thing that decides whether a move is legal, so the console, the
+ *    app and the backend cannot disagree about whether `archived → live` is a
+ *    thing (it is: the after-party).
+ * 3. **Every state change is audited.** Not analytics — audit. Who re-opened
+ *    the party at 2am is a question that gets asked afterwards.
+ */
+
+/* -------------------------------------------------------------------------- */
+/* Shapes returned to clients                                                 */
+/* -------------------------------------------------------------------------- */
+
+const eventSummaryFields = {
+  id: v.id("events"),
+  name: v.string(),
+  state: eventState,
+  moderationMode,
+  startsAt: v.number(),
+  endsAt: v.optional(v.number()),
+  timeZone: v.string(),
+  accentColor: v.optional(v.string()),
+  coverKey: v.optional(v.string()),
+  allowLibraryImport: v.boolean(),
+  storageRegion,
+  /** The caller's role for this event, so a client can pick its shell. */
+  role: v.union(v.literal("owner"), v.literal("cohost"), v.literal("guest")),
+  counts: v.object({
+    pending: v.number(),
+    approved: v.number(),
+    declined: v.number(),
+    total: v.number(),
+  }),
+};
+
+const eventSummaryValidator = v.object(eventSummaryFields);
+
+type EventSummary = {
+  id: Id<"events">;
+  name: string;
+  state: EventState;
+  moderationMode: Doc<"events">["moderationMode"];
+  startsAt: number;
+  endsAt?: number;
+  timeZone: string;
+  accentColor?: string;
+  coverKey?: string;
+  allowLibraryImport: boolean;
+  storageRegion: Doc<"events">["storageRegion"];
+  role: "owner" | "cohost" | "guest";
+  counts: Doc<"events">["counts"];
+};
+
+function toSummary(event: Doc<"events">, role: "owner" | "cohost" | "guest"): EventSummary {
+  return {
+    id: event._id,
+    name: event.name,
+    state: event.state,
+    moderationMode: event.moderationMode,
+    startsAt: event.startsAt,
+    ...(event.endsAt === undefined ? {} : { endsAt: event.endsAt }),
+    timeZone: event.timeZone,
+    ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
+    ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
+    allowLibraryImport: event.allowLibraryImport,
+    storageRegion: event.storageRegion,
+    role,
+    counts: event.counts,
+  };
+}
+
+/**
+ * The role to use for a permission check that has no event in it.
+ *
+ * `platform.createEvent` is granted to `owner`, `cohost` and `guest` and gated
+ * on `isOrganiser` — every signed-in human, in other words — and deliberately
+ * **not** to `globalAdmin`, whose powers are a separate axis. So the platform
+ * role of a user outside any event is `guest`, including for an admin who also
+ * happens to have an organiser invitation.
+ */
+const PLATFORM_ROLE: Role = "guest";
+
+/* -------------------------------------------------------------------------- */
+/* Create                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export const create = mutation({
+  args: {
+    name: v.string(),
+    schedule: v.object({
+      startsAt: v.number(),
+      endsAt: v.optional(v.number()),
+      timeZone: v.string(),
+    }),
+    moderationMode: v.optional(v.union(v.literal("manual"), v.literal("automatic"))),
+    accentColor: v.optional(v.string()),
+    coverKey: v.optional(v.string()),
+    storageRegion: v.optional(storageRegion),
+    allowLibraryImport: v.optional(v.boolean()),
+    initialState: v.optional(v.union(v.literal("draft"), v.literal("scheduled"))),
+  },
+  returns: v.object({
+    eventId: v.id("events"),
+    inviteVersionId: v.id("inviteVersions"),
+    code: v.string(),
+    token: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const user = await requireActiveUser(ctx);
+
+    // Private beta is invitation-only: the gate is the organiser flag, not the
+    // role. `isOrganiser` is set by verified-email matching against an accepted
+    // organiser invitation, and nothing else may set it.
+    //
+    // `explainCan` rather than `requirePermission` for one reason: the contract
+    // is still the only thing deciding, but "not available right now" is the
+    // wrong sentence for "you have not been invited to the beta", and that is
+    // the single most likely refusal an early user will see.
+    const decision = explainCan(toPermissionActor(user, PLATFORM_ROLE), "platform.createEvent", {
+      kind: "platform",
+      isOrganiser: user.isOrganiser,
+    });
+    if (!decision.allowed) {
+      throw forbidden(
+        decision.reason === "resourceState"
+          ? "PartyBooth is invitation-only during the beta. Ask the person who invited you for an organiser invitation."
+          : DENIAL_MESSAGES[decision.reason],
+      );
+    }
+
+    const input = parseInput(createEventInputSchema, args);
+    const now = Date.now();
+
+    const eventId = await ctx.db.insert("events", {
+      ownerUserId: user._id,
+      name: input.name,
+      state: input.initialState,
+      moderationMode: input.moderationMode,
+      // No picker UI at launch; the column exists so P5 is a config change.
+      storageRegion: input.storageRegion ?? serverEnv.STORAGE_DEFAULT_REGION,
+      startsAt: input.schedule.startsAt,
+      ...(input.schedule.endsAt === undefined ? {} : { endsAt: input.schedule.endsAt }),
+      timeZone: input.schedule.timeZone,
+      ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
+      ...(input.coverKey === undefined ? {} : { coverKey: input.coverKey }),
+      allowLibraryImport: input.allowLibraryImport,
+      counts: { pending: 0, approved: 0, declined: 0, total: 0 },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const event = await ctx.db.get(eventId);
+    if (!event) throw notFound("That event");
+
+    // The owner gets a membership row like everyone else, so every permission
+    // check, every member list and every revocation has exactly one shape.
+    await ctx.db.insert("memberships", {
+      eventId,
+      userId: user._id,
+      role: "owner",
+      status: "active",
+      joinedAt: now,
+    });
+
+    // The code and QR exist from the moment the event does. A host who creates
+    // an event and immediately shows the QR is the common case, not an edge.
+    const invite = await mintInviteVersion(ctx, {
+      event,
+      createdByUserId: user._id,
+      keepExistingMemberships: true,
+      now,
+    });
+
+    if (user.activeEventId === undefined) {
+      await ctx.db.patch(user._id, { activeEventId: eventId, updatedAt: now });
+    }
+
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventCreated,
+      event,
+      actor: { user, role: "owner" },
+      metadata: { state: input.initialState, moderationMode: input.moderationMode },
+      now,
+    });
+
+    return {
+      eventId,
+      inviteVersionId: invite.inviteVersionId,
+      code: invite.code,
+      token: invite.token,
+    };
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* Update                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export const update = mutation({
+  args: {
+    eventId: v.id("events"),
+    name: v.optional(v.string()),
+    schedule: v.optional(
+      v.object({
+        startsAt: v.number(),
+        endsAt: v.optional(v.number()),
+        timeZone: v.string(),
+      }),
+    ),
+    moderationMode: v.optional(v.union(v.literal("manual"), v.literal("automatic"))),
+    accentColor: v.optional(v.string()),
+    coverKey: v.optional(v.string()),
+    allowLibraryImport: v.optional(v.boolean()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+    const input = parseInput(updateEventInputSchema, args);
+    const permissionActor = toPermissionActor(actor.user, actor.role);
+    const resource = { kind: "event", state: actor.event.state } as const;
+
+    // Three separate capabilities, because a co-host may move the schedule but
+    // may not rename the party or change how it is moderated. Each is only
+    // demanded when that group of fields is actually being touched, so a
+    // schedule-only edit from a co-host is not refused for the settings it did
+    // not send.
+    const touchesSettings =
+      input.name !== undefined ||
+      input.accentColor !== undefined ||
+      input.coverKey !== undefined ||
+      input.allowLibraryImport !== undefined;
+
+    if (touchesSettings) requirePermission(permissionActor, "event.update", resource);
+    if (input.schedule !== undefined) {
+      requirePermission(permissionActor, "event.updateSchedule", resource);
+    }
+    if (input.moderationMode !== undefined) {
+      requirePermission(permissionActor, "event.changeModerationMode", resource);
+    }
+
+    const now = Date.now();
+    const changed: string[] = [];
+
+    const patch: Partial<Doc<"events">> = { updatedAt: now };
+    if (input.name !== undefined) {
+      patch.name = input.name;
+      changed.push("name");
+    }
+    if (input.schedule !== undefined) {
+      patch.startsAt = input.schedule.startsAt;
+      patch.endsAt = input.schedule.endsAt;
+      patch.timeZone = input.schedule.timeZone;
+      changed.push("schedule");
+    }
+    if (input.moderationMode !== undefined) {
+      patch.moderationMode = input.moderationMode;
+      changed.push("moderationMode");
+    }
+    if (input.accentColor !== undefined) {
+      patch.accentColor = input.accentColor;
+      changed.push("accentColor");
+    }
+    if (input.coverKey !== undefined) {
+      patch.coverKey = input.coverKey;
+      changed.push("coverKey");
+    }
+    if (input.allowLibraryImport !== undefined) {
+      patch.allowLibraryImport = input.allowLibraryImport;
+      changed.push("allowLibraryImport");
+    }
+
+    if (changed.length === 0) return null;
+
+    await ctx.db.patch(actor.event._id, patch);
+
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventUpdated,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      // Field *names* only. The values are the party's business.
+      metadata: { fields: changed },
+      now,
+    });
+
+    return null;
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* State machine                                                              */
+/* -------------------------------------------------------------------------- */
+
+export const setState = mutation({
+  args: {
+    eventId: v.id("events"),
+    state: v.union(
+      v.literal("draft"),
+      v.literal("scheduled"),
+      v.literal("live"),
+      v.literal("paused"),
+      v.literal("archived"),
+    ),
+    reason: v.optional(v.string()),
+  },
+  returns: v.object({
+    state: eventState,
+    /** Set when re-opening forced a fresh code — the printed one is dead. */
+    reissuedCode: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+    const input = parseInput(setEventStateInputSchema, args);
+
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.changeState", {
+      kind: "event",
+      state: actor.event.state,
+    });
+
+    // Belt and braces: the argument validator already excludes it, and the
+    // contract's `HOST_SETTABLE_EVENT_STATES` is the reason why. Reaching
+    // `deletionScheduled` has to go through the deletion path so a
+    // `deletionJobs` row and its restore window come with it.
+    if (!isHostSettableEventState(input.state)) {
+      throw forbidden("Deleting an event is done from the deletion flow, not the state switch.");
+    }
+
+    const from = actor.event.state;
+    const to = input.state;
+
+    if (from === to) return { state: to };
+
+    try {
+      eventStateMachine.assertTransition(from, to);
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) throw invalidState(error.message);
+      throw error;
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(actor.event._id, {
+      state: to,
+      ...(to === "archived" ? { archivedAt: now } : {}),
+      updatedAt: now,
+    });
+
+    // Codes are unique among *joinable* events, so archiving frees one
+    // implicitly. Coming back the other way is therefore the one transition
+    // that can find its own code already taken.
+    let reissuedCode: string | undefined;
+    if (!isJoinableEventState(from) && isJoinableEventState(to)) {
+      const fresh = await ctx.db.get(actor.event._id);
+      if (fresh) reissuedCode = (await ensureCodeIsFree(ctx, fresh, { now }))?.reissuedCode;
+    }
+
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventStateChanged,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      reason: input.reason,
+      metadata: {
+        from,
+        to,
+        ...(reissuedCode === undefined ? {} : { codeReissued: true }),
+      },
+      now,
+    });
+
+    return { state: to, ...(reissuedCode === undefined ? {} : { reissuedCode }) };
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* Active event                                                               */
+/* -------------------------------------------------------------------------- */
+
+export const setActiveEvent = mutation({
+  args: { eventId: v.union(v.id("events"), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await requireActiveUser(ctx);
+    parseInput(setActiveEventInputSchema, args);
+
+    if (args.eventId === null) {
+      await ctx.db.patch(user._id, { activeEventId: undefined, updatedAt: Date.now() });
+      return null;
+    }
+
+    // `requireEventActor` throws `notFound` for a stranger, which is also the
+    // right answer here: you cannot point your camera at a party you are not at.
+    await requireEventActor(ctx, args.eventId);
+    await ctx.db.patch(user._id, { activeEventId: args.eventId, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* Queries                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every event the signed-in user can walk into, newest first.
+ *
+ * Built from `memberships` rather than from `events`, because the owner has a
+ * membership too — so one index scan covers hosting and attending alike, and
+ * there is no second code path to forget about.
+ */
+export const myEvents = query({
+  args: {},
+  returns: v.array(eventSummaryValidator),
+  handler: async (ctx) => {
+    const user = await requireUser(ctx);
+
+    const memberships = await ctx.db
+      .query("memberships")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", user._id).eq("status", "active"))
+      .collect();
+
+    const summaries: EventSummary[] = [];
+    for (const membership of memberships) {
+      const event = await ctx.db.get(membership.eventId);
+      if (!event) continue;
+      // An event on its way out is not on anybody's list.
+      if (event.state === "deletionScheduled") continue;
+      summaries.push(toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role));
+    }
+
+    return summaries.sort((a, b) => b.startsAt - a.startsAt);
+  },
+});
+
+/**
+ * The event this user's camera is pointed at.
+ *
+ * Falls back to the most recent membership when nothing is selected, and
+ * self-heals when the stored selection has gone stale — an event that was
+ * archived, or a membership that was revoked by a rotation, must not leave the
+ * app stuck on a party it cannot use. A query cannot write, so the stale value
+ * is ignored rather than cleared; `setActiveEvent` does the tidying.
+ */
+export const activeEvent = query({
+  args: {},
+  returns: v.union(v.null(), eventSummaryValidator),
+  handler: async (ctx) => {
+    const user = await requireUser(ctx);
+
+    if (user.activeEventId) {
+      const event = await ctx.db.get(user.activeEventId);
+      if (event && event.state !== "deletionScheduled") {
+        const membership = await getActiveMembership(ctx, event._id, user._id);
+        if (membership) {
+          return toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role);
+        }
+      }
+    }
+
+    const memberships = await ctx.db
+      .query("memberships")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", user._id).eq("status", "active"))
+      .collect();
+
+    let best: EventSummary | null = null;
+    for (const membership of memberships) {
+      const event = await ctx.db.get(membership.eventId);
+      if (!event || event.state === "deletionScheduled") continue;
+      const summary = toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role);
+      if (best === null || summary.startsAt > best.startsAt) best = summary;
+    }
+    return best;
+  },
+});
+
+/**
+ * The event home screen.
+ *
+ * The join code and QR token are **host-only**. A guest holding them could
+ * re-share the party to anyone, which is exactly what invite rotation exists to
+ * undo — so they are omitted from the payload rather than hidden in the UI.
+ */
+export const home = query({
+  args: { eventId: v.id("events") },
+  returns: v.object({
+    event: eventSummaryValidator,
+    isHost: v.boolean(),
+    memberCount: v.number(),
+    invite: v.optional(
+      v.object({
+        version: v.number(),
+        code: v.string(),
+        token: v.string(),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.view", {
+      kind: "event",
+      state: actor.event.state,
+    });
+
+    const role: "owner" | "cohost" | "guest" = actor.role === "globalAdmin" ? "guest" : actor.role;
+    const isHost = actor.role === "owner" || actor.role === "cohost";
+
+    const members = await ctx.db
+      .query("memberships")
+      .withIndex("by_event_and_status", (q) =>
+        q.eq("eventId", actor.event._id).eq("status", "active"),
+      )
+      .collect();
+
+    // Admins get the code because `event.viewInviteCode` is in their capability
+    // set — rotating a code from the admin console needs to show which one it
+    // is replacing — but they are not `isHost`, so they get no host UI.
+    const maySeeCode = canSeeInviteCode(actor.role, actor.event.state, actor.user.accountState);
+    const invite = maySeeCode ? await getActiveInviteVersion(ctx, actor.event) : null;
+
+    return {
+      event: toSummary(actor.event, role),
+      isHost,
+      memberCount: members.length,
+      ...(invite === null
+        ? {}
+        : { invite: { version: invite.version, code: invite.code, token: invite.token } }),
+    };
+  },
+});
+
+function canSeeInviteCode(
+  role: Role,
+  state: EventState,
+  accountState: Doc<"users">["accountState"],
+): boolean {
+  // Reuse the contract rather than re-deriving it: `event.viewInviteCode` is
+  // granted to owner, cohost and globalAdmin, and gated on an editable state.
+  const actor = { role, accountState };
+  try {
+    requirePermission(actor, "event.viewInviteCode", { kind: "event", state });
+    return true;
+  } catch {
+    return false;
+  }
+}

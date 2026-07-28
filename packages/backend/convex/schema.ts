@@ -5,6 +5,7 @@ import {
   accountState,
   auditAction,
   auditSubject,
+  cohostInvitationStatus,
   deletionJobState,
   deletionSubject,
   eventRole,
@@ -19,6 +20,7 @@ import {
   organiserInvitationStatus,
   pushPlatform,
   storageRegion,
+  userEmailStatus,
 } from "./lib/validators";
 
 /**
@@ -56,6 +58,19 @@ export default defineSchema({
     displayName: v.string(),
     /** UploadThing key for the confirmed avatar. */
     avatarKey: v.optional(v.string()),
+    /**
+     * When this human confirmed their own name (and photo) — PLAN.md's "then
+     * name + photo confirmation".
+     *
+     * It exists because `displayName` cannot answer the question: it is never
+     * empty (it falls back to the local part of the address), so "Sam chose
+     * this" and "we guessed this" are indistinguishable from it. Two things
+     * read the distinction: the clients decide whether to show the onboarding
+     * screen, and `auth.ts`'s `onUpdate` trigger stops overwriting the name
+     * with the identity provider's once it is set — a provider name is a
+     * default, and a default must never clobber a choice.
+     */
+    onboardedAt: v.optional(v.number()),
     /** Apple private relay addresses cannot receive organiser invites. */
     isPrivateRelayEmail: v.optional(v.boolean()),
 
@@ -74,6 +89,14 @@ export default defineSchema({
     deletionScheduledAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
 
+    /**
+     * Which event this user's Camera / Host tabs are pointed at. A per-user
+     * setting rather than client state, because the phone in your pocket and
+     * the laptop on the table should agree about which party you are at.
+     * Cleared when the membership behind it goes away.
+     */
+    activeEventId: v.optional(v.id("events")),
+
     lastSeenAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -81,6 +104,37 @@ export default defineSchema({
     .index("by_authId", ["authId"])
     .index("by_email", ["email"])
     .index("by_accountState", ["accountState"]),
+
+  /**
+   * Additional email addresses a user has proven with a six-digit code.
+   *
+   * Exists for one case from PLAN.md: a guest who signs in with Apple gets a
+   * `@privaterelay.appleid.com` address, which cannot receive an organiser or
+   * co-host invitation. They add a real address here, verify it with the same
+   * OTP infrastructure, and verified-email matching then runs against it.
+   *
+   * A `pending` row holds a **hashed** code — a leak of this table must not be
+   * a leak of a usable credential — plus the attempt counter, exactly like the
+   * budget Better Auth enforces for sign-in codes.
+   */
+  userEmails: defineTable({
+    userId: v.id("users"),
+    /** Trimmed, lower-cased. */
+    email: v.string(),
+    status: userEmailStatus,
+    /** Lower-case hex SHA-256 of the code. Absent once verified. */
+    codeHash: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    /** Wrong guesses so far against the current code. */
+    attempts: v.number(),
+    verifiedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_email", ["email"])
+    .index("by_user_and_email", ["userId", "email"])
+    .index("by_email_and_status", ["email", "status"]),
 
   /**
    * Organiser invitations. Private beta is invitation-only: an account cannot
@@ -126,6 +180,31 @@ export default defineSchema({
     windowStartedAt: v.number(),
     updatedAt: v.number(),
   }).index("by_email", ["email"]),
+
+  /**
+   * Per-key join throttle — the same pattern as `otpChallenges`, and for the
+   * same reason.
+   *
+   * A six-digit code is a million values. Without a shared counter, "rate
+   * limits + enumeration protection on join" (PLAN.md) is unenforceable: Convex
+   * parallelises and recycles isolates, so anything in memory is not a limit.
+   * Doing the read-decide-write inside a mutation makes it transactional, so
+   * two simultaneous guesses cannot both spend the same budget slot.
+   *
+   * `key` is namespaced (`user:<id>`, `net:<hash>`) so an account key and a
+   * network key can share the table without colliding. It holds **no code and
+   * no event id** — a throttle row must not become a second record of which
+   * codes were tried.
+   */
+  joinAttempts: defineTable({
+    key: v.string(),
+    failureCount: v.number(),
+    windowStartedAt: v.number(),
+    lastAttemptAt: v.number(),
+    /** Set when the failure ceiling is hit; cleared by a success. */
+    lockedUntil: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   /* ------------------------------------------------------------------ */
   /* Events                                                              */
@@ -235,6 +314,36 @@ export default defineSchema({
     .index("by_event_and_status", ["eventId", "status"])
     .index("by_event_and_role", ["eventId", "role"])
     .index("by_user_and_status", ["userId", "status"]),
+
+  /**
+   * A co-host invited by email who does not have an account yet — or has one
+   * under a different address.
+   *
+   * `memberships` cannot hold this: its `userId` is required, and the whole
+   * point is that the person may not exist in `users` at all. When they sign in
+   * and a **verified** address matches, `lib/email-matching.ts` turns the row
+   * into a `cohost` membership. Until then it is a promise, not a permission.
+   *
+   * The invite-sending UI is Sprint 5; the model and the matching land now so
+   * that an address invited today is honoured the moment its owner appears.
+   */
+  cohostInvitations: defineTable({
+    eventId: v.id("events"),
+    /** Trimmed, lower-cased. */
+    email: v.string(),
+    status: cohostInvitationStatus,
+    invitedByUserId: v.id("users"),
+    expiresAt: v.number(),
+    acceptedAt: v.optional(v.number()),
+    acceptedByUserId: v.optional(v.id("users")),
+    revokedAt: v.optional(v.number()),
+    revokedByUserId: v.optional(v.id("users")),
+    createdAt: v.number(),
+  })
+    .index("by_email", ["email"])
+    .index("by_event", ["eventId"])
+    .index("by_event_and_email", ["eventId", "email"])
+    .index("by_email_and_status", ["email", "status"]),
 
   /* ------------------------------------------------------------------ */
   /* Media                                                               */

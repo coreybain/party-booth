@@ -1,6 +1,7 @@
 import {
   ACCOUNT_STATES,
   AUDIT_ACTION_NAMES,
+  MEMBERSHIP_STATUSES,
   CAPTURE_STATES,
   EVENT_ROLES,
   EVENT_STATES,
@@ -61,8 +62,14 @@ export const auditAction = literalUnion(AUDIT_ACTION_NAMES);
 /* Schema-local enums (no cross-client meaning, so not in contracts)           */
 /* -------------------------------------------------------------------------- */
 
-/** Lifecycle of a row in `memberships`. */
-export const MEMBERSHIP_STATUSES = ["active", "revoked", "left"] as const;
+/**
+ * Lifecycle of a row in `memberships`.
+ *
+ * Defined in `@partybooth/contracts` rather than here because it crosses the
+ * wire on `membershipSchema`; re-exported so `@partybooth/backend`'s public
+ * entry point keeps the same surface.
+ */
+export { MEMBERSHIP_STATUSES, type MembershipStatus } from "@partybooth/contracts";
 export const membershipStatus = literalUnion(MEMBERSHIP_STATUSES);
 
 /** Lifecycle of a row in `inviteVersions`. Exactly one is `active` per event. */
@@ -72,6 +79,20 @@ export const inviteVersionStatus = literalUnion(INVITE_VERSION_STATUSES);
 /** Lifecycle of a row in `organiserInvitations`. */
 export const ORGANISER_INVITATION_STATUSES = ["pending", "accepted", "revoked", "expired"] as const;
 export const organiserInvitationStatus = literalUnion(ORGANISER_INVITATION_STATUSES);
+
+/**
+ * Lifecycle of a row in `cohostInvitations`. Same shape as the organiser one —
+ * an invitation addressed to an email that may not have an account yet.
+ */
+export const COHOST_INVITATION_STATUSES = ["pending", "accepted", "revoked", "expired"] as const;
+export const cohostInvitationStatus = literalUnion(COHOST_INVITATION_STATUSES);
+
+/**
+ * Lifecycle of a row in `userEmails` — an address a user has claimed, and then
+ * proven with a six-digit code.
+ */
+export const USER_EMAIL_STATUSES = ["pending", "verified"] as const;
+export const userEmailStatus = literalUnion(USER_EMAIL_STATUSES);
 
 /** What a `deletionJobs` row is about. */
 export const DELETION_SUBJECTS = ["user", "event"] as const;
@@ -102,9 +123,10 @@ export const AUDIT_SUBJECTS = [
 ] as const;
 export const auditSubject = literalUnion(AUDIT_SUBJECTS);
 
-export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 export type InviteVersionStatus = (typeof INVITE_VERSION_STATUSES)[number];
 export type OrganiserInvitationStatus = (typeof ORGANISER_INVITATION_STATUSES)[number];
+export type CohostInvitationStatus = (typeof COHOST_INVITATION_STATUSES)[number];
+export type UserEmailStatus = (typeof USER_EMAIL_STATUSES)[number];
 export type DeletionSubject = (typeof DELETION_SUBJECTS)[number];
 export type DeletionJobState = (typeof DELETION_JOB_STATES)[number];
 export type AuditSubject = (typeof AUDIT_SUBJECTS)[number];

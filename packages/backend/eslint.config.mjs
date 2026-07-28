@@ -6,8 +6,10 @@ export default defineConfig([
   ...config,
   {
     // Product code reads configuration through `@partybooth/env`. Tests are the
-    // one place that has to write it, so they can set process.env directly.
-    files: ["**/*.{test,spec}.ts"],
+    // one place that has to write it, so they can set process.env directly —
+    // including the fixtures module the suites share, which is named with two
+    // dots so the Convex bundler skips it.
+    files: ["**/*.{test,spec}.ts", "**/testing.helpers.ts"],
     rules: { "no-restricted-syntax": "off" },
   },
 ]);

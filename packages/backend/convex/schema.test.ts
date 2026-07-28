@@ -57,7 +57,7 @@ function unionValues(table: string, field: string): string[] {
 /* -------------------------------------------------------------------------- */
 
 describe("tables", () => {
-  it("declares exactly the Sprint 1 table set", () => {
+  it("declares exactly the tables the product has", () => {
     // TODO.md, Sprint 1: "Convex schema v1 — users, organiserInvitations,
     // events (incl. storageRegion), memberships, inviteVersions, media,
     // moderationDecisions, pushDevices, deletionJobs, auditEvents".
@@ -77,6 +77,17 @@ describe("tables", () => {
         // enumeration protection on ... OTP" cannot be enforced without a
         // shared counter, and Better Auth's default one is per-isolate.
         "otpChallenges",
+
+        /* Sprint 2 ------------------------------------------------------- */
+        // The join half of the same sentence. A six-digit code is a million
+        // values; without a shared counter there is no throttle at all.
+        "joinAttempts",
+        // A co-host invited by email who has no account yet. `memberships`
+        // cannot express it — its `userId` is required.
+        "cohostInvitations",
+        // Additional addresses proven by OTP, so an Apple private-relay user
+        // has something for verified-email matching to match.
+        "userEmails",
       ].sort(),
     );
   });
@@ -118,18 +129,29 @@ describe("indexes", () => {
    */
   it.each([
     ["users", ["by_authId", "by_email", "by_accountState"]],
-    ["organiserInvitations", ["by_email", "by_token", "by_status"]],
+    ["organiserInvitations", ["by_email", "by_token", "by_status", "by_email_and_status"]],
     ["events", ["by_owner", "by_state", "by_owner_and_state"]],
     ["inviteVersions", ["by_event", "by_code", "by_token", "by_event_and_status"]],
     [
       "memberships",
-      ["by_event", "by_user", "by_event_and_user", "by_event_and_status", "by_event_and_role"],
+      [
+        "by_event",
+        "by_user",
+        "by_event_and_user",
+        "by_event_and_status",
+        "by_event_and_role",
+        // `events.myEvents` — every event one person can walk into.
+        "by_user_and_status",
+      ],
     ],
     ["media", ["by_event", "by_event_and_state", "by_event_and_capture", "by_uploader"]],
     ["moderationDecisions", ["by_media", "by_event"]],
     ["pushDevices", ["by_user", "by_token"]],
     ["deletionJobs", ["by_state", "by_subject"]],
     ["auditEvents", ["by_action", "by_actor", "by_event", "by_subject"]],
+    ["joinAttempts", ["by_key"]],
+    ["cohostInvitations", ["by_email", "by_event", "by_event_and_email", "by_email_and_status"]],
+    ["userEmails", ["by_user", "by_email", "by_user_and_email", "by_email_and_status"]],
   ])("%s has the indexes its access paths need", (table, required) => {
     const names = indexNames(table);
     for (const index of required) {

@@ -8,12 +8,15 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import type { FunctionReference } from "convex/server";
 
 import { components, internal } from "./_generated/api";
-import type { DataModel } from "./_generated/dataModel";
+import type { DataModel, Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { scheduleAccountDeletion } from "./lib/account-deletion";
+import { applyVerifiedEmailMatching } from "./lib/email-matching";
 import { authBaseUrl, isAdminEmail, trustedOrigins } from "./lib/config";
 import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
+import { resolveDisplayName } from "./lib/profile";
 import { socialProviderConfig } from "./lib/providers";
 import { captureError } from "./lib/sentry";
 
@@ -63,7 +66,7 @@ export const authComponent = createClient<DataModel>(betterAuthComponent, {
         try {
           const now = Date.now();
           const email = normaliseEmail(doc.email);
-          await ctx.db.insert("users", {
+          const userId = await ctx.db.insert("users", {
             authId: doc._id,
             email,
             emailVerified: doc.emailVerified ?? false,
@@ -79,6 +82,11 @@ export const authComponent = createClient<DataModel>(betterAuthComponent, {
             createdAt: now,
             updatedAt: now,
           });
+
+          // Verified-email matching, run at the earliest possible moment: an
+          // organiser invited last week signs in and is already an organiser on
+          // the first screen, rather than after a refresh nobody thinks to do.
+          await runEmailMatching(ctx, userId, now);
         } catch (error) {
           // A failed mirror leaves a Better Auth user with no application row,
           // so every guard treats them as signed out. That is a silent, total
@@ -96,15 +104,27 @@ export const authComponent = createClient<DataModel>(betterAuthComponent, {
             .unique();
           if (!user) return;
 
+          const now = Date.now();
           const email = normaliseEmail(newDoc.email);
           await ctx.db.patch(user._id, {
             email,
             emailVerified: newDoc.emailVerified ?? user.emailVerified,
-            displayName: newDoc.name?.trim() || user.displayName,
+            // A name the human confirmed themselves outranks the provider's —
+            // see `lib/profile.ts`, which is where that rule is stated and
+            // tested.
+            displayName: resolveDisplayName({
+              current: user.displayName,
+              providerName: newDoc.name,
+              onboardedAt: user.onboardedAt,
+            }),
             isPrivateRelayEmail: isPrivateRelayEmail(email),
             isGlobalAdmin: isAdminEmail(email),
-            updatedAt: Date.now(),
+            updatedAt: now,
           });
+
+          // An address that has just become verified — or has just changed —
+          // may match an invitation that could not be matched before.
+          await runEmailMatching(ctx, user._id, now);
         } catch (error) {
           captureError({ scope: "auth.trigger.onUpdate", error });
           throw error;
@@ -248,6 +268,26 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
 
 function normaliseEmail(email: string | null | undefined): string {
   return (email ?? "").trim().toLowerCase();
+}
+
+/**
+ * Run verified-email matching for a mirrored user, inside the trigger's own
+ * transaction.
+ *
+ * Failure is reported but **not** rethrown, which is the opposite of the
+ * mirroring above it. The distinction is what the failure costs: a user row
+ * that does not exist means the account is invisible to every guard, so that
+ * has to abort the sign-up. A missed invitation match only means the person
+ * signs in as a guest — recoverable in one tap through `users.refreshRoles`,
+ * and not worth failing an authentication over on party night.
+ */
+async function runEmailMatching(ctx: MutationCtx, userId: Id<"users">, now: number): Promise<void> {
+  try {
+    const user = await ctx.db.get(userId);
+    if (user) await applyVerifiedEmailMatching(ctx, user, { now });
+  } catch (error) {
+    captureError({ scope: "auth.trigger.emailMatching", error, level: "warning" });
+  }
 }
 
 /**
