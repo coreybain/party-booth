@@ -297,9 +297,21 @@ export function envOptional<TEnv extends object, K extends keyof TEnv & string>(
 /**
  * True when the variable is present and valid. Never throws — use this to gate
  * optional providers (Sentry, Resend, push) so the app degrades to a no-op.
+ *
+ * **`.ok` is not enough, and that was a real bug.** A spec declared
+ * `schema.optional()` — which is every variable a feature flag would ever gate —
+ * parses an *absent* value successfully, to `undefined`. So `resolve(…).ok` was
+ * `true` for a variable nobody had set, and every `serverFeatures` flag reading
+ * an optional variable was permanently on: `sentry` with no DSN, `expoPush` with
+ * no Expo project. The gate has to ask about the **value**, which is what the
+ * sentence above always claimed it did.
+ *
+ * A variable whose schema has a `.default()` is genuinely present — the default
+ * is the value — and still answers `true`, which is right.
  */
 export function envHas<TEnv extends object>(env: TEnv, key: keyof TEnv & string): boolean {
-  return resolve(stateOf(env), key).ok;
+  const resolution = resolve(stateOf(env), key);
+  return resolution.ok && resolution.value !== undefined;
 }
 
 /** True when every listed variable is present and valid. Never throws. */
