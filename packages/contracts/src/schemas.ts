@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-import { eventCodeSchema, inviteTokenSchema } from "./codes";
-import { launchModerationModeSchema } from "./events";
+import { eventCodeSchema } from "./codes";
+import { hostSettableEventStateSchema, launchModerationModeSchema } from "./events";
+import { joinInputSchema } from "./join";
 import {
   mediaTypeSchema,
   moderationDecisionSchema,
@@ -119,6 +120,15 @@ export const createEventInputSchema = z.object({
   storageRegion: storageRegionSchema.optional(),
   /** Whether guests may pick existing photos from their library. */
   allowLibraryImport: z.boolean().default(true),
+  /**
+   * `scheduled` by default, not `draft`.
+   *
+   * A schedule is mandatory at creation, so the event *is* scheduled the moment
+   * it exists, and `scheduled` is joinable — which is what makes printed
+   * signage work before the doors open. `draft` stays available for a host who
+   * wants to set up without the code going live yet.
+   */
+  initialState: z.enum(["draft", "scheduled"]).default("scheduled"),
 });
 export type CreateEventInput = z.infer<typeof createEventInputSchema>;
 
@@ -132,6 +142,26 @@ export const updateEventInputSchema = z.object({
   allowLibraryImport: z.boolean().optional(),
 });
 export type UpdateEventInput = z.infer<typeof updateEventInputSchema>;
+
+/**
+ * Move an event through its lifecycle. `deletionScheduled` is not offered —
+ * see `HOST_SETTABLE_EVENT_STATES`.
+ */
+export const setEventStateInputSchema = z.object({
+  eventId: idSchema,
+  state: hostSettableEventStateSchema,
+  reason: z.string().trim().max(280).optional(),
+});
+export type SetEventStateInput = z.infer<typeof setEventStateInputSchema>;
+
+/**
+ * Which event the app's Camera and Host tabs are pointed at. `null` clears the
+ * selection — a guest who has left every event is not "in" one.
+ */
+export const setActiveEventInputSchema = z.object({
+  eventId: idSchema.nullable(),
+});
+export type SetActiveEventInput = z.infer<typeof setActiveEventInputSchema>;
 
 export const rotateInviteInputSchema = z.object({
   eventId: idSchema,
@@ -150,12 +180,22 @@ export type RotateInviteInput = z.infer<typeof rotateInviteInputSchema>;
 /**
  * A guest arrives either from a QR/universal link (token) or by typing the
  * six-digit code. Both land in the same audited, rate-limited mutation.
+ *
+ * The definition lives in `join.ts` alongside the throttle policy and the
+ * result shape; this alias is what the apps already import.
  */
-export const joinEventInputSchema = z.discriminatedUnion("via", [
-  z.object({ via: z.literal("token"), token: inviteTokenSchema }),
-  z.object({ via: z.literal("code"), code: eventCodeSchema }),
-]);
+export const joinEventInputSchema = joinInputSchema;
 export type JoinEventInput = z.infer<typeof joinEventInputSchema>;
+
+/**
+ * The pre-join preview: "is this really the party I think it is?".
+ *
+ * Answering it for a typed code is enumeration-sensitive, so the backend serves
+ * this one from a **mutation** (throttled and audited exactly like a join) and
+ * only the token form — 160 bits, unguessable — from a query.
+ */
+export const previewByCodeInputSchema = z.object({ code: eventCodeSchema });
+export type PreviewByCodeInput = z.infer<typeof previewByCodeInputSchema>;
 
 export const inviteCohostInputSchema = z.object({
   eventId: idSchema,
@@ -170,6 +210,49 @@ export const revokeMembershipInputSchema = z.object({
 export type RevokeMembershipInput = z.infer<typeof revokeMembershipInputSchema>;
 
 export const membershipRoleSchema = eventRoleSchema;
+
+export const MEMBERSHIP_STATUSES = ["active", "revoked", "left"] as const;
+export const membershipStatusSchema = z.enum(MEMBERSHIP_STATUSES);
+export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
+
+/**
+ * A membership as a client sees it. No `invitedEmail` — who else was invited by
+ * address is host information, not guest information.
+ */
+export const membershipSchema = z.object({
+  id: idSchema,
+  eventId: idSchema,
+  userId: idSchema,
+  role: membershipRoleSchema,
+  status: membershipStatusSchema,
+  /** The invite version that admitted them — what rotation revokes against. */
+  inviteVersionId: idSchema.optional(),
+  joinedAt: timestampSchema,
+});
+export type Membership = z.infer<typeof membershipSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Verified-email matching                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Apple private-relay users cannot receive an organiser or co-host invitation
+ * at the address their account carries, so they prove a second one with the
+ * same six-digit OTP infrastructure and matching then runs against both.
+ */
+export const requestEmailVerificationInputSchema = z.object({ email: emailSchema });
+export type RequestEmailVerificationInput = z.infer<typeof requestEmailVerificationInputSchema>;
+
+export const confirmEmailVerificationInputSchema = z.object({
+  email: emailSchema,
+  code: z
+    .string()
+    .transform((value) => value.replace(/[\s-]/g, ""))
+    .refine((value) => /^\d{6}$/.test(value), {
+      error: "Enter the six-digit code we emailed you.",
+    }),
+});
+export type ConfirmEmailVerificationInput = z.infer<typeof confirmEmailVerificationInputSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* Uploads                                                                    */

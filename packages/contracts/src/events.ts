@@ -85,6 +85,91 @@ export function isEditableEventState(state: EventState): boolean {
   return (EDITABLE_EVENT_STATES as readonly EventState[]).includes(state);
 }
 
+/**
+ * States a **host** may move an event into from the console.
+ *
+ * `deletionScheduled` is deliberately absent: it is reserved for the deletion
+ * lifecycle (admin console, Sprint 5) and reaching it must go through the code
+ * that also writes a `deletionJobs` row, not through a generic state setter.
+ */
+export const HOST_SETTABLE_EVENT_STATES = [
+  "draft",
+  "scheduled",
+  "live",
+  "paused",
+  "archived",
+] as const satisfies readonly EventState[];
+
+export type HostSettableEventState = (typeof HOST_SETTABLE_EVENT_STATES)[number];
+
+export const hostSettableEventStateSchema = z.enum(HOST_SETTABLE_EVENT_STATES);
+
+export function isHostSettableEventState(state: EventState): state is HostSettableEventState {
+  return (HOST_SETTABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Join window                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The schedule half of "is this event joinable?". The state machine is the
+ * other half, and both have to pass.
+ *
+ * The bounds are wide on purpose. A join window that is too tight is a support
+ * call at the door; one that is unbounded means a QR photographed at a party
+ * still works two years later.
+ */
+export const JOIN_WINDOW = {
+  /**
+   * How far ahead of `startsAt` the code starts working. PLAN.md wants printed
+   * signage usable before the doors open, and hosts set up days in advance;
+   * thirty days covers that without leaving next year's party open today.
+   */
+  opensBeforeStartMs: 30 * 24 * 60 * 60 * 1000,
+  /**
+   * Grace after `endsAt`. The last guest through the door is always after the
+   * official end time, and a host who forgets to archive should not lock people
+   * out mid-party — twelve hours covers a night that runs long.
+   */
+  closesAfterEndMs: 12 * 60 * 60 * 1000,
+} as const;
+
+export interface EventScheduleWindow {
+  startsAt: number;
+  /** Open-ended when absent: only the host archiving the event closes it. */
+  endsAt?: number | undefined;
+}
+
+export type JoinWindowStatus = "open" | "tooEarly" | "closed";
+
+export function joinWindowStatus(schedule: EventScheduleWindow, now: number): JoinWindowStatus {
+  if (now < schedule.startsAt - JOIN_WINDOW.opensBeforeStartMs) return "tooEarly";
+  if (schedule.endsAt !== undefined && now > schedule.endsAt + JOIN_WINDOW.closesAfterEndMs) {
+    return "closed";
+  }
+  return "open";
+}
+
+export function isWithinJoinWindow(schedule: EventScheduleWindow, now: number): boolean {
+  return joinWindowStatus(schedule, now) === "open";
+}
+
+/**
+ * The whole joinability question in one call: state **and** schedule.
+ *
+ * Returns a reason so the caller can put it in the audit log. It must not put
+ * it in the response — see `JOIN_REJECTED_MESSAGE` in `join.ts`.
+ */
+export function eventJoinability(
+  event: { state: EventState } & EventScheduleWindow,
+  now: number,
+): { joinable: true } | { joinable: false; reason: "eventNotJoinable" | "outsideWindow" } {
+  if (!isJoinableEventState(event.state)) return { joinable: false, reason: "eventNotJoinable" };
+  if (!isWithinJoinWindow(event, now)) return { joinable: false, reason: "outsideWindow" };
+  return { joinable: true };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Moderation mode                                                            */
 /* -------------------------------------------------------------------------- */

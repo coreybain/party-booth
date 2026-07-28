@@ -234,12 +234,59 @@ export function generateInviteToken(randomBytes: RandomBytes = defaultRandomByte
   return encodeCrockford(randomBytes(INVITE_TOKEN_BYTES));
 }
 
+/* -------------------------------------------------------------------------- */
+/* Join links                                                                 */
+/* -------------------------------------------------------------------------- */
+
 /**
- * The URL a QR code encodes. Kept here so the web join route, the app's
- * universal-link handler and the printed signage cannot disagree.
+ * The route that serves an invite, and the route that asks for a code.
+ *
+ * Five things have to agree on these two strings and they are maintained by
+ * four different people: `apps/web`'s `/join/[token]` and `/join` routes, the
+ * iOS associated-domains / Android App Links claim in `apps/mobile`, the QR
+ * matrix the console renders, and the printed signage. So they are defined once
+ * here and nothing builds a join link by concatenation.
+ */
+export const JOIN_PATH_SEGMENT = "join";
+
+/** `/join/<TOKEN>` — the universal-link target behind the QR. */
+export function joinPath(token: string): string {
+  return `/${JOIN_PATH_SEGMENT}/${normalizeInviteToken(token)}`;
+}
+
+/** `/join` — the code-entry fallback, which carries no credential. */
+export const JOIN_FALLBACK_PATH = `/${JOIN_PATH_SEGMENT}`;
+
+/**
+ * The absolute URL a QR code encodes.
+ *
+ * The token is normalised first, so the string in the QR is byte-identical to
+ * what the backend looks up. A lower-case token still resolves — that is what
+ * `normalizeInviteToken` is for — but it would make two spellings of one invite
+ * and only one of them would match the sign.
  */
 export function inviteUrl(siteUrl: string, token: string): string {
-  return new URL(`/join/${normalizeInviteToken(token)}`, siteUrl).toString();
+  return new URL(joinPath(token), siteUrl).toString();
+}
+
+/**
+ * What to print *under* the QR: the origin and `/join`, no token.
+ *
+ * An invite token is a bearer credential and signage gets photographed. The
+ * code-entry fallback is what a human types, and it is throttled and audited
+ * server-side — see `join.ts`.
+ */
+export function joinFallbackUrl(siteUrl: string): string {
+  return new URL(JOIN_FALLBACK_PATH, siteUrl).toString();
+}
+
+/**
+ * A URL as it should appear to a human: no scheme, no trailing slash.
+ * `partybooth.example/join` is what fits on a phone screen and on a sign.
+ */
+export function displayUrl(url: string): string {
+  const withoutScheme = url.replace(/^https?:\/\//, "");
+  return withoutScheme.endsWith("/") ? withoutScheme.slice(0, -1) : withoutScheme;
 }
 
 /* -------------------------------------------------------------------------- */

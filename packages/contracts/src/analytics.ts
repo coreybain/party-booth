@@ -96,6 +96,8 @@ export function isAnalyticsEventName(value: unknown): value is AnalyticsEventNam
 export const AUDIT_ACTIONS = {
   organiserInvited: "organiser.invited",
   organiserInviteRevoked: "organiser.invite_revoked",
+  /** A verified email matched a pending invitation and unlocked event creation. */
+  organiserInviteAccepted: "organiser.invite_accepted",
 
   eventCreated: "event.created",
   eventUpdated: "event.updated",
@@ -108,12 +110,17 @@ export const AUDIT_ACTIONS = {
   membershipRevoked: "membership.revoked",
   membershipLeft: "membership.left",
   joinRejected: "membership.join_rejected",
+  cohostInvited: "membership.cohost_invited",
+  /** A verified email matched a pending co-host invite and was elevated. */
+  cohostInviteAccepted: "membership.cohost_invite_accepted",
 
   mediaModerated: "media.moderated",
   mediaWithdrawn: "media.withdrawn",
   mediaDeleted: "media.deleted",
   mediaReported: "media.reported",
 
+  /** An additional address was proven by OTP (Apple private-relay path). */
+  accountEmailVerified: "account.email_verified",
   accountLocked: "account.locked",
   accountUnlocked: "account.unlocked",
   accountDeletionScheduled: "account.deletion_scheduled",

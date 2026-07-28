@@ -68,6 +68,11 @@ is updated.
 `state-machine.test.ts` asserts structural invariants for all four (every state
 reachable, no self-loops, exactly the intended terminals).
 
+`HOST_SETTABLE_EVENT_STATES` is every event state **except**
+`deletionScheduled`. Reaching that one has to go through the deletion flow,
+which also writes the `deletionJobs` row that makes the 30-day restore window
+real — so a generic "set the state" mutation must not offer it.
+
 ## Codes and tokens
 
 - **Event code** — six digits. Uniform via rejection sampling (`byte % 10` would
@@ -82,6 +87,65 @@ reachable, no self-loops, exactly the intended terminals).
 Generation needs `globalThis.crypto` and is **server-side only**; clients call
 the `normalize*` / `isValid*` halves. Both generators take an injectable
 `randomBytes` so tests are deterministic.
+
+The **join link** is here too — `joinPath`, `inviteUrl`, `joinFallbackUrl`,
+`displayUrl`. That string has to agree in five places maintained by different
+people: `apps/web`'s `/join/[token]` and `/join` routes, the iOS
+associated-domains and Android App Links claims in `apps/mobile`, the QR matrix
+the console renders, and the printed signage. Nothing builds one by
+concatenation. What each app still decides for itself is the _origin_, which is
+environment-dependent (`apps/web/src/lib/join-url.ts`).
+
+## QR
+
+`qr.ts` is a QR encoder: byte mode, error-correction level M, versions 1–10, in
+and out as pure data (`encodeQr` → a boolean matrix; `qrPath` → an SVG path `d`).
+
+It is in contracts rather than in an app because the same symbol comes out of two
+front doors — the organiser console renders inline SVG today, and the app's host
+tab renders the same matrix through `react-native-svg` in Sprint 5. Two encoders
+would be two chances to print a code that scans on a laptop and not on a phone.
+Rendering stays each app's business; only the bits are shared.
+
+Why not a library: every QR package on npm is either an image encoder (canvas +
+PNG, which we do not want) or drags in a byte-polyfill chain, and PLAN.md wants
+the code generated client-side so no third-party image endpoint ever sees an
+invite token. The golden matrix in `qr.test.ts` was cross-checked during
+development against an independent encoder and round-tripped through a real
+scanner; neither cross-check is committed, because both would be phantom
+dependencies.
+
+## Joining
+
+`join.ts` holds the whole joining vocabulary: the input schema, the throttle
+policy, the rejection reasons and the result shape.
+
+The throttle is the same pure-function shape as the OTP one — `now` and a state
+object in, the next state out — so the numbers are testable without a
+deployment and identical on every client that displays them. Ten failures per
+key in fifteen minutes starts a fifteen-minute lockout; a success hands the
+budget back, so a guest mistyping in a dark hallway never accumulates one.
+Keys are namespaced (`user:<id>`, `net:<hash>`) so an account key and a network
+key can share one table.
+
+`JOIN_REJECTION_REASONS` is **audit-only**. Every rejection returns
+`joinRejected()` — one fixed sentence, no other fields — because a six-digit
+code is a million values and two distinguishable answers is a working oracle.
+`join.test.ts` asserts that property directly rather than trusting it.
+
+Failures are values, not exceptions, for the same reason: a thrown error is a
+different code path with different timing and a different shape on the wire.
+`parseJoinResult` is where both clients turn a wire payload into one of those
+values, and it **fails closed**: anything unparseable becomes the same rejection,
+so "the backend said something I do not understand" never becomes a third,
+distinguishable outcome.
+
+`events.ts` owns the other half of joinability — `JOIN_WINDOW`,
+`joinWindowStatus` and `eventJoinability`, which combine the state machine with
+the schedule. The window opens thirty days before `startsAt` (printed signage
+has to work early) and closes twelve hours after `endsAt` (the last guest is
+always after the official end); an event with no `endsAt` never closes on time
+alone.
 
 ## OTP policy
 

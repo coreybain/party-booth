@@ -12,7 +12,10 @@ import {
   generateUniqueEventCode,
   INVITE_TOKEN_LENGTH,
   inviteTokenSchema,
+  displayUrl,
   inviteUrl,
+  joinFallbackUrl,
+  joinPath,
   isValidEventCode,
   isValidInviteToken,
   normalizeEventCode,
@@ -189,6 +192,47 @@ describe("invite tokens", () => {
     expect(inviteUrl("https://partybooth.example/", token)).toBe(
       `https://partybooth.example/join/${token}`,
     );
+  });
+});
+
+/**
+ * The join link is the one string that has to agree in five places: the QR
+ * matrix, the printed sign, `apps/web`'s `/join/[token]` route, `apps/mobile`'s
+ * universal-link claim, and whatever a guest types. Both apps build it from the
+ * functions below and neither concatenates its own.
+ */
+describe("join links", () => {
+  const TOKEN = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+
+  it("builds the route the web app serves", () => {
+    expect(joinPath(TOKEN)).toBe(`/join/${TOKEN}`);
+  });
+
+  it("normalises whatever spelling of the token it is handed", () => {
+    // Crockford base32 exists so these are all the same token: case folds, I/L
+    // become 1, O becomes 0, separators vanish.
+    expect(joinPath("abcdefghjkmnpqrstvwxyz0123456789")).toBe(`/join/${TOKEN}`);
+    expect(joinPath("ABCDEFGH-JKMN PQRS TVWX YZ01 2345 6789")).toBe(`/join/${TOKEN}`);
+    expect(joinPath("IBCDEFGHJKMNPQRSTVWXYZO123456789")).toBe(
+      "/join/1BCDEFGHJKMNPQRSTVWXYZ0123456789",
+    );
+  });
+
+  it("gives the same URL for a token typed either way", () => {
+    expect(inviteUrl("https://partybooth.example", "abcdefghjkmnpqrstvwxyz0123456789")).toBe(
+      inviteUrl("https://partybooth.example", TOKEN),
+    );
+  });
+
+  it("prints a fallback URL that carries no credential", () => {
+    expect(joinFallbackUrl("https://partybooth.example")).toBe("https://partybooth.example/join");
+    expect(joinFallbackUrl("https://partybooth.example/")).toBe("https://partybooth.example/join");
+    expect(joinFallbackUrl("https://partybooth.example")).not.toContain(TOKEN);
+  });
+
+  it("strips the scheme and any trailing slash for signage", () => {
+    expect(displayUrl("https://partybooth.example/join")).toBe("partybooth.example/join");
+    expect(displayUrl("http://partybooth.example/")).toBe("partybooth.example");
   });
 });
 
