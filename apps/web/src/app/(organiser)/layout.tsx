@@ -8,27 +8,33 @@ import { EventSwitcher } from "@/components/layout/event-switcher";
 import { OrganiserNav } from "@/components/layout/organiser-nav";
 import { PartyBoothWordmark } from "@/components/layout/centred-pane";
 import { SignOutButton } from "@/components/sign-out-button";
-import {
-  isAuthenticated,
-  isOrganiserAuthorised,
-  isServerBackendConfigured,
-} from "@/lib/auth-server";
+import { getOrganiserAccess, isServerBackendConfigured } from "@/lib/auth-server";
 
 /**
  * The authenticated organiser shell.
  *
- * Two gates, not one. Signed out → back to `/`. Signed in but **not an
- * organiser** → also back to `/`: PLAN.md makes the private beta
- * invitation-only, so a valid Better Auth session is authentication, and
- * `users.isOrganiser` (set only by accepting an organiser invitation) or
- * membership of `ADMIN_EMAIL_ALLOWLIST` is authorisation. Checking only the
- * former would let any address that can receive an OTP into the console.
+ * One gate with four answers rather than two booleans, because "not allowed in"
+ * has four different causes and each of them needs a different destination —
+ * `getOrganiserAccess` in `src/lib/auth-server.ts` explains why, and
+ * `organiserAccess` in `src/lib/lock-view.ts` is the tested decision behind it.
+ * In short:
+ *
+ * - **signed out** → `/`, the sign-in page.
+ * - **locked / being deleted** → `/account/blocked`, which says so. This used to
+ *   land on `/?needs=invitation`, which was both untrue and — since `/` bounces
+ *   a signed-in visitor to `/dashboard` — an infinite redirect.
+ * - **no invitation** → `/?needs=invitation`. PLAN.md makes the private beta
+ *   invitation-only, so a valid Better Auth session is authentication and
+ *   `users.isOrganiser` or the admin allowlist is authorisation.
+ * - **hosts something** → in. A co-host is not an organiser (accepting a
+ *   co-host invitation deliberately does not set `isOrganiser`) and must still
+ *   be able to reach `/media` — that is the whole of RC5.
  *
  * The one exception is **preview mode** — when no Convex deployment is
  * configured there is no session to check and no data to protect, so the shell
  * renders with a banner instead of bouncing to a login page that also cannot
- * work. As soon as `CONVEX_URL` is set both gates are live and fail closed
- * (every helper returns `false` on any error).
+ * work. As soon as `CONVEX_URL` is set the gate is live and fails closed (every
+ * helper returns the refusing answer on any error).
  */
 
 /**
@@ -41,8 +47,10 @@ export default async function OrganiserLayout({ children }: { readonly children:
   const previewMode = !isServerBackendConfigured;
 
   if (!previewMode) {
-    if (!(await isAuthenticated())) redirect("/");
-    if (!(await isOrganiserAuthorised())) redirect("/?needs=invitation");
+    const access = await getOrganiserAccess();
+    if (access === "signedOut") redirect("/");
+    if (access === "needsInvitation") redirect("/?needs=invitation");
+    if (access !== "ok") redirect("/account/blocked");
   }
 
   return (

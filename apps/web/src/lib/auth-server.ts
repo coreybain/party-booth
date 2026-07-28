@@ -6,6 +6,9 @@ import { envOptional, serverEnv } from "@partybooth/env/server";
 import type { FunctionReference } from "convex/server";
 
 import { AUTH_BASE_PATH } from "./backend";
+import { isHostRole, type AccountState } from "./contracts";
+import { backendApi } from "./convex-api";
+import { organiserAccess, type OrganiserAccess } from "./lock-view";
 
 /**
  * Server-side half of the Better Auth ↔ Convex integration.
@@ -149,17 +152,69 @@ export async function getAppUser(): Promise<AppUser | null> {
 }
 
 /**
- * May this request use the organiser console?
+ * May this request use the organiser console, and if not, **why not**?
  *
- * Private beta is invitation-only (PLAN.md), so a valid session is not enough:
- * the account must have accepted an organiser invitation (`isOrganiser`, which
- * only the Sprint 5 invitation flow may set) or be a global admin. Locked and
- * deletion-scheduled accounts are refused here as well as in Convex.
+ * The "why" is the point. Private beta is invitation-only (PLAN.md), so a valid
+ * session is not enough — but "not enough" has four different causes with four
+ * different next steps, and collapsing them into a boolean produced two real
+ * bugs:
+ *
+ * 1. A **locked** organiser was told to go and get an invitation, which is
+ *    untrue and unactionable. Worse, `/` bounces a signed-in user to
+ *    `/dashboard` and `/dashboard` bounced them back to `/`, so the locked
+ *    account met an infinite redirect instead of a screen. Account state is now
+ *    checked first, and `/account/locked` is a real destination.
+ * 2. A **co-host** was refused outright. Accepting a co-host invitation grants a
+ *    membership and deliberately does *not* set `isOrganiser` — that flag gates
+ *    creating events and the beta is invitation-only — but a co-host who cannot
+ *    open `/media` cannot moderate, which is the whole of RC5. Hosting something
+ *    is now its own way in.
+ *
+ * The decision itself is the pure `organiserAccess` in `src/lib/lock-view.ts`,
+ * where it is unit tested; this only gathers the facts. The second query runs
+ * only when the cheap answer was "no", so an ordinary organiser still costs one
+ * round trip.
  */
-export async function isOrganiserAuthorised(): Promise<boolean> {
+export async function getOrganiserAccess(): Promise<OrganiserAccess> {
   const user = await getAppUser();
-  if (!user || user.accountState !== "active") return false;
-  return user.isOrganiser || user.isGlobalAdmin;
+  if (!user) return "signedOut";
+
+  const shortcut = organiserAccess({
+    accountState: user.accountState as AccountState,
+    isOrganiser: user.isOrganiser,
+    isGlobalAdmin: user.isGlobalAdmin,
+    hostsAnEvent: false,
+  });
+  if (shortcut !== "needsInvitation") return shortcut;
+
+  return organiserAccess({
+    accountState: user.accountState as AccountState,
+    isOrganiser: user.isOrganiser,
+    isGlobalAdmin: user.isGlobalAdmin,
+    hostsAnEvent: await hostsAnEvent(),
+  });
+}
+
+/**
+ * Does this account own or co-host at least one party?
+ *
+ * `events.myEvents` is built from memberships and already excludes events whose
+ * owner is locked, so a co-host whose host has been suspended does not get in on
+ * the strength of a party that answers "unavailable" to everything.
+ */
+async function hostsAnEvent(): Promise<boolean> {
+  if (!fetchAuthQuery) return false;
+  try {
+    const events = await fetchAuthQuery(backendApi.events.myEvents, {});
+    return (events ?? []).some((event) => isHostRole(event.role));
+  } catch {
+    return false;
+  }
+}
+
+/** The boolean form, for callers that only need "may they in or not". */
+export async function isOrganiserAuthorised(): Promise<boolean> {
+  return (await getOrganiserAccess()) === "ok";
 }
 
 /**
@@ -171,7 +226,31 @@ export async function isOrganiserAuthorised(): Promise<boolean> {
  * layout check protects the page and nothing else.
  */
 export async function isGlobalAdminAuthorised(): Promise<boolean> {
+  return (await getAdminAccess()) === "ok";
+}
+
+/**
+ * The same question with its reason attached, for the same reason
+ * {@link getOrganiserAccess} has one: a staff account that has been locked
+ * should be told so rather than shown a 404 about a console it built.
+ *
+ * `needsInvitation` here means "signed in, not on the allowlist" — the console
+ * answers that with `notFound()`, never a redirect, because a bounce to
+ * `/admin/login` from a page you are already signed in for confirms that the
+ * console exists and that you are simply not on the list.
+ */
+export async function getAdminAccess(): Promise<OrganiserAccess> {
   const user = await getAppUser();
-  if (!user || user.accountState !== "active") return false;
-  return user.isGlobalAdmin;
+  if (!user) return "signedOut";
+
+  const state = user.accountState as AccountState;
+  if (state !== "active") {
+    return organiserAccess({
+      accountState: state,
+      isOrganiser: false,
+      isGlobalAdmin: false,
+      hostsAnEvent: false,
+    });
+  }
+  return user.isGlobalAdmin ? "ok" : "needsInvitation";
 }
