@@ -5,12 +5,15 @@ import { hostSettableEventStateSchema, launchModerationModeSchema } from "./even
 import { joinInputSchema } from "./join";
 import {
   fromLibraryOf,
+  mediaFileRoleSchema,
   mediaSourceOf,
   mediaSourceSchema,
   mediaStateSchema,
   mediaTypeSchema,
+  moderationActionSchema,
   moderationDecisionSchema,
   reportReasonSchema,
+  reportStatusSchema,
   VIDEO_MAX_DURATION_SECONDS,
 } from "./media";
 import { otpPurposeSchema } from "./otp";
@@ -287,6 +290,13 @@ export const uploadGrantRequestSchema = z
     /** Client-generated, stable across retries — this is what makes uploads idempotent. */
     captureId: captureIdSchema,
     mediaType: mediaTypeSchema,
+    /**
+     * Which artefact of the capture this grant is for — the submitted frame, or
+     * one of the derivatives the clients produce alongside it (ADR 0008).
+     *
+     * Defaulted, so every Sprint-3 call site keeps meaning exactly what it meant.
+     */
+    fileRole: mediaFileRoleSchema.default("original"),
     byteSize: z.number().int().positive(),
     mimeType: z.string().min(1).max(128),
     /**
@@ -311,12 +321,24 @@ export const uploadGrantRequestSchema = z
     mediaSource: mediaSourceSchema.optional(),
     fromLibrary: z.boolean().optional(),
     /**
-     * The client's claim that it re-encoded the frame and dropped the EXIF/GPS
-     * block before uploading — the chosen metadata-stripping strategy (ADR
-     * 0004). Recorded rather than trusted: a `false` here means the original is
-     * never served as a derivative.
+     * The client's claim that it **re-encoded** the frame, dropping whatever
+     * container the camera wrote — the chosen metadata-stripping strategy (ADR
+     * 0004). Required to be `true` for a derivative; recorded for an original.
      */
     sourceMetadataStripped: z.boolean().optional(),
+    /**
+     * The client's separate claim that the file **carries no location fix**.
+     *
+     * Implied by the re-encode for a photograph and *not* implied for a video,
+     * which no client can transcode — see `MetadataClaim` in `./media`. Absent
+     * means "same as the re-encode claim", which is what every pre-Sprint-4
+     * caller meant, so this is additive and no stored row changes meaning.
+     *
+     * This is the half the read path consults: an original that cannot promise
+     * it is location-free is served to its submitter and the hosts and to nobody
+     * else.
+     */
+    sourceCarriesNoLocation: z.boolean().optional(),
   })
   .refine(
     (value) =>
@@ -332,10 +354,18 @@ export const uploadGrantRequestSchema = z
         : fromLibraryOf(value.mediaSource);
     return { ...value, fromLibrary, mediaSource: mediaSourceOf(fromLibrary) };
   })
-  .refine((value) => value.mediaType !== "video" || value.durationSeconds !== undefined, {
-    error: "durationSeconds is required for videos.",
-    path: ["durationSeconds"],
-  });
+  .refine(
+    (value) =>
+      value.mediaType !== "video" ||
+      // A poster is a still frame lifted out of the video; it has no duration of
+      // its own, and demanding one would refuse every legitimate thumbnail.
+      value.fileRole === "poster" ||
+      value.durationSeconds !== undefined,
+    {
+      error: "durationSeconds is required for videos.",
+      path: ["durationSeconds"],
+    },
+  );
 export type UploadGrantRequest = z.infer<typeof uploadGrantRequestSchema>;
 
 /*
@@ -403,6 +433,25 @@ export const moderateMediaInputSchema = z.object({
 });
 export type ModerateMediaInput = z.infer<typeof moderateMediaInputSchema>;
 
+/**
+ * One moderation button press, or a bulk selection of them.
+ *
+ * `mediaIds` rather than `mediaId` even for a single item, because the grid's
+ * single-tap and its "select all 40 and approve" are the same operation with a
+ * different array length — and writing them as two mutations is how the two
+ * paths end up disagreeing about idempotence at 1am.
+ *
+ * The ceiling is 200: past that a host is not moderating, they are choosing
+ * `automatic` mode, and an unbounded batch is an unbounded transaction.
+ */
+export const moderationActionInputSchema = z.object({
+  eventId: idSchema,
+  mediaIds: z.array(idSchema).min(1).max(200),
+  action: moderationActionSchema,
+  reason: z.string().trim().max(280).optional(),
+});
+export type ModerationActionInput = z.infer<typeof moderationActionInputSchema>;
+
 export const reportMediaInputSchema = z.object({
   mediaId: idSchema,
   reason: reportReasonSchema,
@@ -410,11 +459,72 @@ export const reportMediaInputSchema = z.object({
 });
 export type ReportMediaInput = z.infer<typeof reportMediaInputSchema>;
 
+export const resolveReportInputSchema = z.object({
+  reportId: idSchema,
+  status: reportStatusSchema.exclude(["open"]),
+  reason: z.string().trim().max(280).optional(),
+});
+export type ResolveReportInput = z.infer<typeof resolveReportInputSchema>;
+
+/**
+ * Block another guest.
+ *
+ * `eventId` is where the block was made, not what it is scoped to: a block is
+ * per-account and applies everywhere, which is what App Review's "block abusive
+ * users" means. The event is recorded so an audit row can say where it happened.
+ */
 export const blockUserInputSchema = z.object({
   eventId: idSchema,
   userId: idSchema,
 });
 export type BlockUserInput = z.infer<typeof blockUserInputSchema>;
+
+export const unblockUserInputSchema = z.object({
+  userId: idSchema,
+});
+export type UnblockUserInput = z.infer<typeof unblockUserInputSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Organiser home and slideshow                                               */
+/* -------------------------------------------------------------------------- */
+
+export const eventStatsInputSchema = z.object({
+  eventId: idSchema,
+  /** How many recent submissions to include. */
+  recentLimit: z.number().int().positive().max(50).optional(),
+  /** How many contributors to rank. */
+  contributorLimit: z.number().int().positive().max(50).optional(),
+});
+export type EventStatsInput = z.infer<typeof eventStatsInputSchema>;
+
+/**
+ * A page of the slideshow.
+ *
+ * `after` is a {@link encodeMediaCursor} string. A slideshow left running all
+ * night re-runs its subscription every time a photo is approved, so the client
+ * asks for "everything after the last one I have" and appends, rather than
+ * re-reading the whole party and re-minting a signed URL per item per approval.
+ */
+export const slideshowInputSchema = z.object({
+  eventId: idSchema,
+  after: z.string().max(96).optional(),
+  limit: z.number().int().positive().max(200).optional(),
+});
+export type SlideshowInput = z.infer<typeof slideshowInputSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Account deletion (App Review)                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Apple requires account deletion to be reachable from inside the app. The
+ * account moves to `deletionScheduled` immediately and loses access; the 30-day
+ * purge worker is post-launch (PLAN.md).
+ */
+export const requestAccountDeletionInputSchema = z.object({
+  reason: z.string().trim().max(280).optional(),
+});
+export type RequestAccountDeletionInput = z.infer<typeof requestAccountDeletionInputSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* Push                                                                       */

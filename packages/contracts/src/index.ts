@@ -14,6 +14,7 @@ export * from "./accounts";
 export * from "./analytics";
 export * from "./capture";
 export * from "./codes";
+export * from "./copy";
 export * from "./events";
 export * from "./join";
 export * from "./media";

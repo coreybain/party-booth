@@ -392,6 +392,7 @@ const ISSUED = {
   eventId: "event_1",
   captureId: "wdeadbeefdeadbeefdeadbeefdeadbeef",
   mediaType: "photo",
+  fileRole: "original",
   mediaSource: "capture",
   storageRegion: "pdx1",
   byteSize: 1_000,

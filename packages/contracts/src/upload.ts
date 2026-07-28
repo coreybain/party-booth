@@ -2,11 +2,15 @@ import { z } from "zod";
 
 import { acceptsUploads, type EventState } from "./events";
 import {
-  maxBytesFor,
+  isDerivativeRole,
+  maxBytesForRole,
+  mediaFileRoleSchema,
   mediaTypeSchema,
   MEDIA_SOURCES,
+  metadataClaimOf,
   validateMediaFile,
   type MediaFileCandidate,
+  type MediaFileRole,
   type MediaRejectionReason,
   type MediaSource,
   type MediaType,
@@ -58,12 +62,23 @@ export const GRANT_POLICY = {
   /**
    * Grants one account may be issued per window before it is made to wait.
    *
-   * Sized for the worst honest case rather than the average one: auto-send fires
-   * one grant per capture, and somebody photographing a dance floor in burst
-   * mode is a guest, not an attacker. Sixty in five minutes is well past any
-   * human rate and still cheap to enforce.
+   * Sized for the worst honest case rather than the average one: somebody
+   * photographing a dance floor in burst mode is a guest, not an attacker.
+   *
+   * **Counted in grants, spent in captures, and the ratio changed in Sprint 4.**
+   * A capture used to cost exactly one grant. Derivatives (ADR 0008) made it two
+   * for a photo and up to three for a video, because each artefact is its own
+   * bound single-use grant — which is the property that makes the spine safe and
+   * is not worth giving up to save a counter. At the old ceiling of 60 that
+   * quietly turned "60 captures per five minutes" into about 20, and the first
+   * symptom would have been auto-send throttling at a real party.
+   *
+   * 180 restores the original intent: ~60 photos or ~60 clips in five minutes,
+   * which is still far past any human rate and still one indexed read and one
+   * patch to enforce. Both client agents flagged the arithmetic independently;
+   * this is the number that makes their reports stop being true.
    */
-  maxPerWindow: 60,
+  maxPerWindow: 180,
   windowMs: 5 * 60 * 1000,
   /** How long the account waits once it hits the ceiling. */
   cooldownMs: 60 * 1000,
@@ -172,9 +187,23 @@ export interface GrantRecord {
   eventId: string;
   captureId: string;
   mediaType: MediaType;
+  /** Which artefact of the capture. Absent on rows minted before Sprint 4. */
+  fileRole?: MediaFileRole | undefined;
   byteSize: number;
   checksum: string;
   storageRegion: StorageRegion;
+}
+
+/**
+ * The role a grant or media-file record names, defaulting to `original`.
+ *
+ * Every pre-Sprint-4 row is an original and carries no `fileRole` column, so
+ * this is the one place that "absent means original" is written down. Reading
+ * the field directly anywhere else is how a migration-less schema change turns
+ * into a preview being mistaken for a missing original.
+ */
+export function fileRoleOf(record: { fileRole?: MediaFileRole | undefined }): MediaFileRole {
+  return record.fileRole ?? "original";
 }
 
 export type GrantUsability =
@@ -261,10 +290,29 @@ export const UPLOAD_REJECTION_REASONS = [
   "unsupportedMimeType",
   "missingDuration",
   "tooLong",
+  /** A poster for a photo, or any other role that media type does not have. */
+  "unsupportedFileRole",
   /** This capture already has a media row. Retrying is fine; re-uploading is not. */
   "duplicateCapture",
   /** This capture was withdrawn. Withdrawal is permanent — see `media.withdraw`. */
   "captureWithdrawn",
+  /**
+   * A derivative was asked for against a capture whose original has never been
+   * granted to this account. Not permanent: a client that fires all its grant
+   * requests at once can legitimately arrive here a few milliseconds early.
+   */
+  "derivativeWithoutOriginal",
+  /**
+   * A derivative that does not claim to have been re-encoded.
+   *
+   * Mandatory here and merely recorded on the original, because this is the
+   * artefact a **third party** is served: a false claim on the original costs
+   * the guest visibility (`mayServeOriginal` refuses it), while a false claim on
+   * the preview would be the bypass that check exists to close.
+   */
+  "derivativeMetadataNotStripped",
+  /** That role already has a different file. One capture, one object per role. */
+  "duplicateDerivative",
 ] as const;
 
 export type UploadRejectionReason = (typeof UPLOAD_REJECTION_REASONS)[number];
@@ -277,8 +325,12 @@ export const UPLOAD_REJECTION_MESSAGES: Record<UploadRejectionReason, string> = 
   unsupportedMimeType: "That file format is not supported.",
   missingDuration: "Video duration is required.",
   tooLong: "That video is too long.",
+  unsupportedFileRole: "That is not a file this capture needs.",
   duplicateCapture: "That capture has already been uploaded.",
   captureWithdrawn: "That capture was withdrawn and cannot be uploaded again.",
+  derivativeWithoutOriginal: "Send the original first.",
+  derivativeMetadataNotStripped: "A preview has to be re-encoded before it is sent.",
+  duplicateDerivative: "That preview has already been uploaded.",
 };
 
 export const UPLOAD_THROTTLED_MESSAGE = "Slow down a moment — too many uploads at once.";
@@ -306,8 +358,11 @@ export const PERMANENT_UPLOAD_REJECTIONS = [
   "unsupportedMimeType",
   "missingDuration",
   "tooLong",
+  "unsupportedFileRole",
   "duplicateCapture",
   "captureWithdrawn",
+  "derivativeMetadataNotStripped",
+  "duplicateDerivative",
 ] as const satisfies readonly UploadRejectionReason[];
 
 export function isPermanentRejection(reason: UploadRejectionReason): boolean {
@@ -318,6 +373,19 @@ export interface GrantEligibilityInput {
   event: { state: EventState; allowLibraryImport: boolean };
   mediaSource: MediaSource;
   file: MediaFileCandidate;
+  /**
+   * The client's claim that this exact file was **re-encoded** before it left the
+   * device. Optional for an original, **required and required to be `true`** for
+   * a derivative — see `derivativeMetadataNotStripped`.
+   */
+  sourceMetadataStripped?: boolean | undefined;
+  /**
+   * The client's separate claim that the file **carries no location**, which for
+   * a photograph is implied by the re-encode and for a video is not. Recorded
+   * rather than checked here — the read path is what consults it. See
+   * `MetadataClaim` in `./media`.
+   */
+  sourceCarriesNoLocation?: boolean | undefined;
 }
 
 export type GrantEligibility =
@@ -382,12 +450,41 @@ export function checkGrantEligibility(input: GrantEligibilityInput): GrantEligib
     };
   }
 
+  /*
+   * The one place a metadata claim is enforced rather than recorded.
+   *
+   * ADR 0004 §7 records the claim on the original and lets the read path decide
+   * what to do with a `false` — which works precisely because a `false` original
+   * is served to nobody but its submitter and the hosts. A derivative has no such
+   * fallback: it *is* the artefact the gallery and the slideshow hand to
+   * everybody else, so a derivative that does not claim to have been re-encoded
+   * is refused before a grant exists rather than stored and then withheld.
+   *
+   * It is the **re-encode** half of the claim that is checked, deliberately (see
+   * `MetadataClaim`): "I decoded and re-encoded these pixels" is a statement
+   * about a process, and a derivative that is not a re-encode is not a derivative
+   * we produced. The location half is the read path's question, not this one's.
+   */
+  if (isDerivativeRole(input.file.fileRole ?? "original") && !metadataClaimOf(input).reEncoded) {
+    return {
+      ok: false,
+      reason: "derivativeMetadataNotStripped",
+      message: UPLOAD_REJECTION_MESSAGES.derivativeMetadataNotStripped,
+    };
+  }
+
   return { ok: true };
 }
 
-/** The per-type ceiling this request will be held to. Handy for error copy. */
-export function grantSizeCap(mediaType: MediaType): number {
-  return maxBytesFor(mediaType);
+/**
+ * The ceiling this request will be held to. Handy for error copy.
+ *
+ * Role-aware since Sprint 4: the caps for a preview and for the original it was
+ * made from differ by an order of magnitude, and showing a guest the wrong one
+ * is how "why was my photo refused at 3 MB?" happens.
+ */
+export function grantSizeCap(mediaType: MediaType, fileRole: MediaFileRole = "original"): number {
+  return maxBytesForRole(mediaType, fileRole);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -412,10 +509,21 @@ export interface IssuedGrant<TGrantId extends string = string, TEventId extends 
   eventId: TEventId;
   captureId: string;
   mediaType: MediaType;
+  /**
+   * Which artefact of the capture this grant authorises.
+   *
+   * **Optional on the type, always present on the wire.** Convex fills it on
+   * every grant it issues, and `grantResultSchema` defaults it, so a parsed
+   * grant always has one. It is optional here so that a client which has not
+   * shipped derivatives yet — and whose fixtures describe a grant without it —
+   * keeps compiling against the same contract. Read it through
+   * {@link fileRoleOf}, never directly.
+   */
+  fileRole?: MediaFileRole | undefined;
   mediaSource: MediaSource;
   storageRegion: StorageRegion;
   byteSize: number;
-  /** The cap this type is held to, so the client can show it in an error. */
+  /** The cap this type and role are held to, so a client can show it. */
   maxBytes: number;
   expiresAt: number;
 }
@@ -473,6 +581,10 @@ const issuedGrantSchema = z.object({
   eventId: z.string().min(1),
   captureId: z.string().min(1),
   mediaType: mediaTypeSchema,
+  // Defaulted rather than required so a client build that predates derivatives
+  // keeps parsing its own grants: the server has always meant `original` when it
+  // said nothing.
+  fileRole: mediaFileRoleSchema.default("original"),
   mediaSource: z.enum(MEDIA_SOURCES),
   storageRegion: storageRegionSchema,
   byteSize: z.number().int().positive(),
@@ -588,6 +700,15 @@ export const uploadTicketSchema = z.object({
   eventId: z.string().min(1).max(64),
   captureId: captureIdSchema,
   mediaType: mediaTypeSchema,
+  /**
+   * Which artefact of the capture these bytes are.
+   *
+   * Defaulted to `original`, so a ticket built by a client that has not shipped
+   * derivatives yet still parses. It is a *claim* like everything else here —
+   * the binding is `checkTicketAgainstGrant`, where the role comes back from
+   * `media.confirmUpload` having been minted by the server.
+   */
+  fileRole: mediaFileRoleSchema.default("original"),
   /** Byte length of the exact body being sent. Cross-checked against the file. */
   byteSize: z.number().int().positive(),
   mimeType: z.string().min(1).max(128),
@@ -631,6 +752,7 @@ export function buildUploadTicket(grant: IssuedGrant, file: UploadTicketFile): U
     eventId: grant.eventId,
     captureId: grant.captureId,
     mediaType: grant.mediaType,
+    fileRole: fileRoleOf(grant),
     byteSize: grant.byteSize,
     mimeType: file.mimeType,
     checksum: file.checksum,
@@ -653,7 +775,7 @@ export interface OfferedFile {
 export type TicketMismatch = "fileCount" | "byteSize" | "mimeType";
 
 export const TICKET_MISMATCH_MESSAGES: Record<TicketMismatch, string> = {
-  fileCount: "Send one photo at a time.",
+  fileCount: "Send one file at a time.",
   byteSize: "That file is not the one this upload was authorised for.",
   mimeType: "That file is not the type this upload was authorised for.",
 };
@@ -706,11 +828,13 @@ function ticketFail(reason: TicketMismatch): TicketCheck {
  */
 export interface AuthorisedUpload {
   readonly mediaType: MediaType;
+  /** Absent from a pre-Sprint-4 answer, which always meant `original`. */
+  readonly fileRole?: MediaFileRole | undefined;
   readonly byteSize: number;
   readonly mimeType?: string | undefined;
 }
 
-export type GrantTicketMismatch = "mediaType" | "byteSize" | "mimeType";
+export type GrantTicketMismatch = "mediaType" | "fileRole" | "byteSize" | "mimeType";
 
 export type GrantTicketCheck =
   { ok: true } | { ok: false; reason: GrantTicketMismatch; message: string };
@@ -735,7 +859,9 @@ export type GrantTicketCheck =
  * remedy — or one probing for which field it got wrong.
  */
 export function checkTicketAgainstGrant(
-  ticket: Pick<UploadTicket, "mediaType" | "byteSize" | "mimeType">,
+  ticket: Pick<UploadTicket, "mediaType" | "byteSize" | "mimeType"> & {
+    fileRole?: MediaFileRole | undefined;
+  },
   authorised: AuthorisedUpload,
 ): GrantTicketCheck {
   const fail = (reason: GrantTicketMismatch): GrantTicketCheck => ({
@@ -745,6 +871,10 @@ export function checkTicketAgainstGrant(
   });
 
   if (ticket.mediaType !== authorised.mediaType) return fail("mediaType");
+  // The role decides which cap the middleware applies and which column the
+  // completion writes, so a ticket that renames a 20 MB original as a "preview"
+  // has to be refused here rather than discovered at completion.
+  if (fileRoleOf(ticket) !== fileRoleOf(authorised)) return fail("fileRole");
   if (ticket.byteSize !== authorised.byteSize) return fail("byteSize");
   if (
     authorised.mimeType !== undefined &&

@@ -11,6 +11,7 @@
     "./roles": "./src/roles.ts",
     "./accounts": "./src/accounts.ts",
     "./capture": "./src/capture.ts",
+    "./copy": "./src/copy.ts",
     "./events": "./src/events.ts",
     "./join": "./src/join.ts",
     "./media": "./src/media.ts",
