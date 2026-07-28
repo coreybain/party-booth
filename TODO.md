@@ -393,18 +393,52 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 
 ---
 
-## 📋 Notes for Corey — manual account setup (outside the build)
+## 📋 Notes for Corey — everything between this codebase and a tested party
 
-Not part of any sprint; these are third-party clocks and dashboard logins only you can do. **Do these tonight (Mon 28 Jul)** — none can be compressed later, and Sprint 1 assumes the credentials exist.
+*(Consolidated at end of 28 Jul from all five sprint gates. Sprints 1–5 are code-complete, audited and merged on `main` — 2,071 tests, every gate green with an empty environment. Nothing below is code; it is accounts, keys, deploys and holding real phones. `.env.example` is the authoritative variable list with per-variable comments — this section is the order to do things in.)*
 
-- [ ] Create **Play Console** account — starts the 14-day production-access clock (internal testing works immediately)
-- [ ] Verify **Apple Developer** membership is active; create App ID / bundle `com.partybooth.app`
-- [ ] Create **UploadThing** app: paid plan, region **pdx1**, default ACL **Private**
-- [ ] Create **Convex** project in **US East (N. Virginia)** (dev + prod deployments)
-- [ ] Add **Resend** domain + DNS records (SPF/DKIM need propagation time)
-- [ ] Create **Vercel** project, **Sentry** project, **Google OAuth** client, **Apple Sign-In** service config
-- [ ] Buy/confirm the **domain** used for QR universal links
-- [ ] Fill in `APPLE_TEAM_ID`, `APPLE_APP_BUNDLE_IDENTIFIER` and `ANDROID_CERT_FINGERPRINTS` (Play Console → Setup → App signing → SHA-256). Without them, `apps/web` serves 404 at `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json`, and a scanned QR opens the browser instead of the app. After deploying, run `pnpm verify:app-links https://<your-domain>` — do this **before** printing signage; both platforms cache what they fetch at install time.
-- [ ] Drop all resulting API keys/secrets into the env files (Claude will scaffold `.env.example` in Sprint 1 so you know exactly what goes where)
+### Phase A — accounts (third-party clocks; do first)
 
-Done when: every provider dashboard is reachable and DNS records are submitted.
+- [ ] **Play Console** account — starts the 14-day production-access clock (internal testing works immediately)
+- [ ] **Apple Developer** membership active; App ID / bundle `com.partybooth.app`; a **Services ID** for Sign in with Apple
+- [ ] **UploadThing** app: paid plan, region **pdx1**, default ACL **Private**, and **per-request ACL override enabled** (the route handler declares `acl: "private"` in code)
+- [ ] **Convex** project, **US East (N. Virginia)** — dev + prod deployments
+- [ ] **Resend** domain + DNS records (SPF/DKIM propagation takes hours — early is cheap)
+- [ ] **Vercel** project (Root Directory `apps/web`, "Include source files outside of the Root Directory" ON), **Sentry** project, **Google OAuth** client
+- [ ] Buy/confirm the **domain** for QR universal links (feeds `SITE_URL` and the printed signage)
+- [ ] **GitHub repo** + `git remote add` + push `main` — CI is authored but has never run
+
+### Phase B — wire and deploy the web/backend half
+
+- [ ] `npx convex dev` once from `packages/backend` — pushes the schema and replaces the generic `_generated` fallback with real types
+- [ ] Set env vars per `.env.example`. The ones with sharp edges:
+  - `BETTER_AUTH_SECRET` — **identical** in Convex and Vercel, ≥32 chars
+  - `BETTER_AUTH_URL` = the **`.convex.site`** origin, *not* your Vercel domain
+  - `APPLE_CLIENT_ID` = the **Services ID**; `APPLE_APP_BUNDLE_IDENTIFIER` = `com.partybooth.app` — do not swap
+  - `UPLOADTHING_TOKEN` in **both** Vercel and Convex; `UPLOAD_CALLBACK_SECRET` **same value both sides**
+  - `SITE_URL` / `NEXT_PUBLIC_SITE_URL` / `EXPO_PUBLIC_SITE_URL` = the canonical domain (the QR encodes it — a preview hostname loses the app hand-off)
+  - `ADMIN_EMAIL_ALLOWLIST` must contain **your** address — organiser access is invitation-gated, and without this RC1 sign-in shows you nothing
+  - `DEPLOYMENT_ENVIRONMENT=production` + `NODE_ENV=production` on prod Convex — otherwise the console email sender and auth guards stay in dev mode
+- [ ] `vercel link` + deploy; confirm **`/privacy`, `/terms`, `/account/deletion` resolve on the live domain** (App Review auto-rejects a dead privacy URL; Play's data-safety form needs the deletion URL)
+- [ ] `APPLE_TEAM_ID` + `ANDROID_CERT_FINGERPRINTS` (Play Console → Setup → App signing → **SHA-256 of the Play-signed key, not the upload key**) so `/.well-known/` association routes go live, then `pnpm verify:app-links https://<domain>` — **before printing signage**; phones cache what they fetch at install time
+
+### Phase C — the mobile half
+
+- [ ] `eas init` → sets `EAS_PROJECT_ID`; put it on **Convex** AND `EXPO_PUBLIC_EAS_PROJECT_ID` in the **app build env** — setting only one half silently breaks push delivery. Optional: `EXPO_ACCESS_TOKEN`
+- [ ] `npx expo prebuild --clean` once (materialises the expo-notifications Android metadata)
+- [ ] EAS **development build** → install on your phone (this is the RC1 app half)
+
+### Phase D — verify the RCs (the actual testing, in order)
+
+- [ ] **RC1:** live Vercel URL → request OTP → real email arrives → sign in → organiser shell. App build opens on your phone.
+- [ ] **RC2:** create event on desktop → scan QR with phone → join as guest (Google) → second phone joins by typed code.
+- [ ] **RC3:** photo via **app** and via **web capture** both land `pending` on the organiser's media page in seconds; withdraw removes it; second guest can't fetch it.
+- [ ] **RC4:** solo mini-party — phone uploads photo + video → approve on laptop → both appear on the TV slideshow live.
+- [ ] **RC5:** two accounts, two phones — co-host moderates from their phone; rotate the code mid-event and confirm the old QR is dead; lock the organiser from `/admin` and watch everything freeze (including in-flight uploads).
+
+### Phase E — store submissions (owner-only; each has a full walkthrough)
+
+- [ ] iOS: set `DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP` + `DEMO_LOGIN_EXPIRES_AT` on **prod** Convex, `pnpm seed:demo` with 2–3 uploaded asset keys, then follow [`docs/store/ios-submission.md`](docs/store/ios-submission.md) end to end (`APPLE_ID`, `ASC_APP_ID` for `eas submit`). Unset all three demo vars after approval.
+- [ ] Android: [`docs/store/android-internal.md`](docs/store/android-internal.md) → internal-testing track → grab the opt-in link.
+
+Done when: all five RC boxes above are ticked — then Sprint 6 (hardening + dress rehearsal) starts.

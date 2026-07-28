@@ -1,5 +1,7 @@
 # PartyBooth — Refined Plan (Launch: 5 August 2026)
 
+> **Status — end of Mon 28 Jul.** Sprints 1–5 (D1–D5 in the schedule below) are **code-complete, audited and merged on `main`** — built in one day by multi-agent workflows (Opus builders, GPT‑5.6 cross-audit, Fable final gate per sprint), five days ahead of the calendar. 2,071 tests; typecheck/lint/build/export all green with an empty environment; 45 commits. **No releasable checkpoint is verified yet** — RC1–RC5 are blocked solely on owner setup (accounts, env vars, deploys, devices), consolidated as the phased checklist at the bottom of `TODO.md`. Remaining build work: Sprint 6 (Playwright + security spot-checks + polish + dress rehearsal) and Sprint 7 (freeze & stage). Notable scope deltas vs this plan, all recorded in TODO.md/ADRs: derivatives are client-produced (ADR 0008), demo-login env vars are `DEMO_LOGIN_*` (three, incl. a required expiry), and the admin console shipped with nothing cut.
+
 ## The one constraint that shapes everything
 
 A real party with 10–50 guests happens on **Tuesday 5 August 2026 — 8 days from 28 July**. Every decision below is sequenced against that date. The original five-milestone plan is re-cut into **Launch scope** (must work at the party) and **Post-launch scope** (everything else, unchanged in intent).
