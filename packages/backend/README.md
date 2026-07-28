@@ -59,6 +59,11 @@ convex/
   invites.ts           rotate, and the current code + QR token (host-only)
   join.ts              the join mutation and the two previews
   media.ts             the upload spine: grants, completion, withdrawal, reads
+  moderation.ts        approve / decline / revoke, bulk; reports and the queues
+  blocks.ts            per-account blocking (App Review)
+  slideshow.ts         the cursored, live, chronological approved feed
+  stats.ts             the organiser home: counts, contributors, storage, recents
+  demo.ts              seedDemoEvent — the App Review demo party (internal only)
   emails.ts            proving a second address by OTP (Apple private relay)
   testing.helpers.ts   convex-test fixtures and a locally-typed `api`
   lib/
@@ -68,6 +73,8 @@ convex/
     account-deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
     events.ts          code allocation, invite versions, joinability
     media.ts           media rows: create, reconcile, count, project for a client
+    moderation.ts      applyModeration — the one writer of state on that path
+    blocks.ts          loading and applying a viewer's blocklist
     upload-grants.ts   minting, finding and atomically spending a grant
     upload-throttle.ts the uploadAttempts rows behind the grant ceiling
     storage/           the provider seam — adapter, fake, UploadThing, resolver
@@ -152,10 +159,67 @@ signed URLs and **never** a file key, and both are permission-checked —
 fresh URLs. `media.stuckPurges` is host-only and lists withdrawn rows whose bytes
 a purge never removed.
 
-An item whose `sourceMetadataStripped` is not `true` is served to its submitter
-and the hosts and to nobody else. Sprint 3 writes no derivative, so the URL a
-read mints _is_ the uploaded original; without that check a client that skipped
-the re-encode could put a GPS-bearing JPEG in front of the whole gallery.
+An item that cannot promise it **carries no location** has its **original**
+withheld from everyone but its submitter and the hosts — without that check a
+client that skipped the re-encode could put a GPS-bearing JPEG in front of the
+whole gallery. Since Sprint 4 that is "serve the derivative instead" rather than
+"serve nothing", because there is now a derivative to serve.
+
+The claim is two booleans, and `mayServeOriginal` reads the **location** one
+(`sourceCarriesNoLocation`), not the re-encode one (`sourceMetadataStripped`).
+They are the same fact for a photograph and not for a clip, which no client can
+transcode; reading the re-encode flag here would withhold every mobile clip from
+every fellow guest on the strength of a flag that answers a different question.
+The derivative grant asks the other half, as a precondition. An absent location
+claim inherits the re-encode claim, so no row written before the split changed
+visibility — see `metadataClaimOf` in `@partybooth/contracts/media`.
+
+### Derivatives (Sprint 4)
+
+The same four functions carry them. A preview or a video poster is a **separate
+grant** for the **same `captureId`** with a different `fileRole`, and:
+
+- it is held to its own cap (2 MiB for an image derivative, 25 MiB for a video
+  preview clip) rather than the original's;
+- its grant is **refused** unless it claims the re-encode
+  (`derivativeMetadataNotStripped`) — the original's claim is recorded and read
+  on the read path, a derivative's is a precondition, because the derivative is
+  what third parties are served;
+- `registerDerivative` writes one column and stops: no state change, no counter,
+  no `uploadCompleted` audit row. One capture is one submission however many
+  objects it is made of;
+- a derivative that arrives before its original is **deleted**, not orphaned, and
+  a capture with no derivative is never stranded — it settles on the original
+  alone.
+
+Video duration is capped twice: at the grant, against the client's estimate, and
+at completion, against the duration reported for the object that actually landed.
+`byteSize` never needed that — `matchesGrant` binds it — but duration was
+unbound, so the 250 MB ceiling was otherwise the only real limit on a video.
+
+Full argument: [ADR 0008](../../docs/adr/0008-client-produced-derivatives.md).
+
+### Moderation, reports and blocks (Sprint 4)
+
+| Function                   | Who            | What                                                            |
+| -------------------------- | -------------- | --------------------------------------------------------------- |
+| `moderation.moderate`      | owner / cohost | approve · decline · revoke, one item or 200, partial success    |
+| `moderation.pending`       | owner / cohost | the queue: flagged first, then oldest first                     |
+| `moderation.report`        | any member     | flags an item for a host; does **not** moderate it              |
+| `moderation.resolveReport` | owner / cohost | actioned or dismissed; clears the flag when the last one closes |
+| `moderation.flagged`       | owner / cohost | reported items with reasons, never with reporter identities     |
+| `blocks.block` / `unblock` | any member     | per-account, global, silent, a view filter and nothing more     |
+| `slideshow.feed`           | owner / cohost | approved, chronological, resumable from a cursor                |
+| `stats.overview`           | host or admin  | counts, contributors, approximate storage — **numbers only**    |
+| `stats.recentSubmissions`  | owner / cohost | thumbnails, so an admin cannot reach it                         |
+
+`applyModeration` in `lib/moderation.ts` is the only writer of `media.state` on
+that path, and it always does five things at once: the state (through the
+machine), the counters, an appended `moderationDecisions` row with the prior
+state, the `moderatedAt` stamps, and an audit row. Bulk is the same function per
+item, sequentially, because they all patch the same `events.counts`.
+
+Full argument: [ADR 0005](../../docs/adr/0005-moderation-model.md).
 
 Three rules hold across the file, each because breaking it is expensive:
 
@@ -283,6 +347,44 @@ account to **`deletionScheduled`**, records a `deletionJobs` row due in 30 days
 and writes an audit row. Nothing in the codebase sets `deleted` — that belongs
 to the P1 purge worker, and reserving it is what keeps the restore window real
 (`deleted` is terminal in the account state machine).
+
+`users.requestAccountDeletion` is the first-party door to the same function, for
+both populations — a guest who signed in with Apple at somebody else's party and
+an organiser who runs three of them press the same button. It uses `requireUser`
+rather than `requireActiveUser` on purpose: a **locked** account must still be
+able to delete itself (`NON_ACTIVE_ACCOUNT_ACTIONS` says so), and refusing here
+would leave a suspended user with no way out — which is the complaint App Review
+is guarding against. `account.requestDeletion` is what draws the line, and it
+refuses an account already scheduled or already purged.
+
+Submissions are **retained and anonymised**, not removed: the photographs belong
+to the party as much as to the person who took them, and a host who wakes up to a
+gallery with holes in it has been failed. `projectMedia` and `stats` show
+"Former guest" from the moment the state changes, so the attribution goes even
+though the picture does not — done on the read path rather than by rewriting
+`users.displayName`, because the row still has to be recognisable to an admin
+resolving an abuse report.
+
+### The App Review demo login
+
+`DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP`, **both or neither**. Set, they make
+`emailOtpPolicyOptions().generateOTP` return the fixed code for that one address;
+unset, `demoOtpFor` returns `undefined` and there is no path from an environment
+variable to a fixed code at all. Nothing anywhere compares a submitted code
+against an env var — the code still goes through Better Auth's own verification,
+hashed at rest, ten-minute expiry, five attempts — so there is no second way to
+be signed in, only a parameter to the first one.
+
+The reviewer's address also skips the per-address send throttle and the email
+itself, because there is no mailbox behind it and `sendEmail` refusing is how
+"we couldn't email you" surfaces. **No other address is affected in any way.**
+Every use writes an `auth.demo_sign_in` audit row; if that action appears in a
+deployment real guests are using, that is the incident.
+
+`pnpm seed:demo` creates the demo party (`demo.seedDemoEvent`, an internal
+mutation, refuses to run unless both variables are set). Pass UploadThing keys to
+give the seeded rows thumbnails: `pnpm seed:demo key_one key_two key_three`.
+**Unset both variables once the build is approved.**
 
 ### Sentry
 

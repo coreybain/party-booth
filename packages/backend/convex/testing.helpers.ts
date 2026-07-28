@@ -18,13 +18,18 @@ import {
   type FakeStorageAdapter,
   type FakeStorageOptions,
 } from "./lib/storage/fake";
+import type * as blocks from "./blocks";
+import type * as demo from "./demo";
 import type * as emails from "./emails";
 import type * as events from "./events";
 import type * as invites from "./invites";
 import type * as join from "./join";
 import type * as media from "./media";
+import type * as moderation from "./moderation";
 import type * as otp from "./otp";
 import schema from "./schema";
+import type * as slideshow from "./slideshow";
+import type * as stats from "./stats";
 import type * as users from "./users";
 
 /**
@@ -72,12 +77,17 @@ export function makeTest(): T {
  * from there like production code does.
  */
 type FullApi = ApiFromModules<{
+  blocks: typeof blocks;
+  demo: typeof demo;
   emails: typeof emails;
   events: typeof events;
   invites: typeof invites;
   join: typeof join;
   media: typeof media;
+  moderation: typeof moderation;
   otp: typeof otp;
+  slideshow: typeof slideshow;
+  stats: typeof stats;
   users: typeof users;
 }>;
 
@@ -313,8 +323,18 @@ export interface SeedMediaOptions {
   captureId?: string;
   mediaType?: Doc<"media">["mediaType"];
   storageKey?: string;
+  /** A derivative, as a completed preview upload would have left it. */
+  previewKey?: string;
+  posterKey?: string;
   byteSize?: number;
+  previewByteSize?: number;
+  posterByteSize?: number;
   fromLibrary?: boolean;
+  /**
+   * Left **absent** unless a suite says otherwise, which is what a Sprint-3 row
+   * looks like and what the `mayServeOriginal` suite depends on.
+   */
+  sourceMetadataStripped?: boolean;
   createdAt?: number;
 }
 
@@ -341,6 +361,9 @@ export async function seedMedia(
   if (state !== "processing" || over.storageKey !== undefined) {
     installedFake?.put(storageKey, over.byteSize ?? 1024);
   }
+  if (over.previewKey !== undefined)
+    installedFake?.put(over.previewKey, over.previewByteSize ?? 64);
+  if (over.posterKey !== undefined) installedFake?.put(over.posterKey, over.posterByteSize ?? 64);
 
   return await t.run(async (ctx) => {
     const mediaId = await ctx.db.insert("media", {
@@ -350,11 +373,18 @@ export async function seedMedia(
       state,
       mediaType: over.mediaType ?? "photo",
       ...(state === "processing" && over.storageKey === undefined ? {} : { storageKey }),
+      ...(over.previewKey === undefined ? {} : { previewKey: over.previewKey }),
+      ...(over.previewByteSize === undefined ? {} : { previewByteSize: over.previewByteSize }),
+      ...(over.posterKey === undefined ? {} : { posterKey: over.posterKey }),
+      ...(over.posterByteSize === undefined ? {} : { posterByteSize: over.posterByteSize }),
       storageRegion: "pdx1",
       byteSize: over.byteSize ?? 1024,
       mimeType: "image/jpeg",
       checksum: "a".repeat(64),
       fromLibrary: over.fromLibrary ?? false,
+      ...(over.sourceMetadataStripped === undefined
+        ? {}
+        : { sourceMetadataStripped: over.sourceMetadataStripped }),
       uploadedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -369,6 +399,35 @@ export async function seedMedia(
     }
     return mediaId;
   });
+}
+
+/**
+ * The App Review demo login, on and off.
+ *
+ * Both variables together or neither: that pairing *is* the gate, so a helper
+ * that could set one without the other would let a suite assert a state the
+ * product cannot be in.
+ */
+export const DEMO_EMAIL = "review@partybooth.test";
+export const DEMO_OTP = "424242";
+
+export function setDemoLogin(enabled: boolean): void {
+  if (enabled) {
+    process.env["DEMO_LOGIN_EMAIL"] = DEMO_EMAIL;
+    process.env["DEMO_LOGIN_OTP"] = DEMO_OTP;
+  } else {
+    delete process.env["DEMO_LOGIN_EMAIL"];
+    delete process.env["DEMO_LOGIN_OTP"];
+  }
+  resetEnvCache(serverEnv);
+}
+
+/** Only one half set — the misconfiguration that must fail closed. */
+export function setPartialDemoLogin(half: "email" | "otp"): void {
+  setDemoLogin(false);
+  if (half === "email") process.env["DEMO_LOGIN_EMAIL"] = DEMO_EMAIL;
+  else process.env["DEMO_LOGIN_OTP"] = DEMO_OTP;
+  resetEnvCache(serverEnv);
 }
 
 /** Every audit row, newest last. */

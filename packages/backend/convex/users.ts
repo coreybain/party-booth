@@ -1,10 +1,13 @@
-import { updateProfileInputSchema } from "@partybooth/contracts";
+import { requestAccountDeletionInputSchema, updateProfileInputSchema } from "@partybooth/contracts";
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
+import { scheduleAccountDeletion } from "./lib/account-deletion";
 import { isAdminEmail } from "./lib/config";
 import { applyVerifiedEmailMatching } from "./lib/email-matching";
-import { getCurrentUser, requireActiveUser } from "./lib/guards";
+import { forbidden } from "./lib/errors";
+import { getCurrentUser, requirePermission, requireUser, toPermissionActor } from "./lib/guards";
+import { requireActiveUser } from "./lib/guards";
 import { parseInput } from "./lib/input";
 
 /**
@@ -141,6 +144,69 @@ export const refreshRoles = mutation({
       isOrganiser: fresh?.isOrganiser ?? user.isOrganiser,
       organiserUnlocked: matched.organiserUnlocked,
       cohostEventIds: matched.cohostEventIds,
+    };
+  },
+});
+
+/**
+ * Delete this account, from inside the app.
+ *
+ * Apple requires it (guideline 5.1.1(v)) and it has to work for **both**
+ * populations, which is why it is here and not behind an organiser-only route:
+ * a guest who signed in with Apple at somebody else's party and an organiser who
+ * runs three of them press the same button and get the same outcome.
+ *
+ * What that outcome is, precisely — PLAN.md, and it is not what "delete" usually
+ * means:
+ *
+ * - the account moves to `deletionScheduled` **immediately** and loses access
+ *   there and then, because `accountStateAllows` lets a deletion-scheduled
+ *   account do nothing but view itself;
+ * - a `deletionJobs` row records the intent and a due date thirty days out;
+ * - submissions are **retained and anonymised**. The photographs belong to the
+ *   party as much as to the person who took them, and a host who wakes up to a
+ *   gallery with holes in it has been failed. `projectMedia` and `stats` show
+ *   "Former guest" from the moment the state changes, so the attribution goes
+ *   even though the picture does not.
+ *
+ * Nothing here moves an account to `deleted`. That is the P1 purge worker's
+ * state, and keeping it out of reach is what makes the thirty-day restore window
+ * real rather than nominal.
+ *
+ * `requireUser`, not `requireActiveUser`: a **locked** account must still be able
+ * to delete itself — `NON_ACTIVE_ACCOUNT_ACTIONS` says so — and refusing here
+ * would mean a suspended user has no way out, which is exactly the complaint
+ * App Review is guarding against. `account.requestDeletion` is what draws the
+ * line, and it refuses an account that is already scheduled or already purged.
+ */
+export const requestAccountDeletion = mutation({
+  args: { reason: v.optional(v.string()) },
+  returns: v.object({
+    accountState: v.string(),
+    scheduledAt: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+    const input = parseInput(requestAccountDeletionInputSchema, args);
+
+    requirePermission(toPermissionActor(user, "guest"), "account.requestDeletion", {
+      kind: "account",
+      state: user.accountState,
+      isSelf: true,
+    });
+
+    // Belt and braces against a future capability change: this mutation must
+    // never be reachable for anybody else's account.
+    if (user.accountState === "deleted") throw forbidden("This account no longer exists.");
+
+    const result = await scheduleAccountDeletion(ctx, user, {
+      requestedByUserId: user._id,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    });
+
+    return {
+      accountState: "deletionScheduled",
+      scheduledAt: result.scheduledAt ?? null,
     };
   },
 });

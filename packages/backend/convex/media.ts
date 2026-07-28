@@ -1,9 +1,13 @@
 import { constantTimeEqual } from "@partybooth/contracts/codes";
 import {
-  allowedMimeTypes,
+  allowedMimeTypesForRole,
   canSeeMedia,
+  isDerivativeRole,
+  isFileRoleAllowed,
   MEDIA_STATES,
   mediaStateMachine,
+  VIDEO_MAX_DURATION_SECONDS,
+  type DerivativeFileRole,
   type MediaState,
 } from "@partybooth/contracts/media";
 import { DENIAL_MESSAGES, explainCan } from "@partybooth/contracts/permissions";
@@ -12,6 +16,7 @@ import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
 import {
   accountGrantKey,
   checkGrantEligibility,
+  fileRoleOf,
   grantRejected,
   grantSizeCap,
   grantThrottled,
@@ -42,6 +47,7 @@ import {
   type MutationCtx,
 } from "./_generated/server";
 import { writeAuditEvent } from "./lib/audit";
+import { isHiddenByBlock, loadBlockedUserIds } from "./lib/blocks";
 import { forbidden, notFound, unauthenticated } from "./lib/errors";
 import {
   requireActiveUser,
@@ -53,10 +59,13 @@ import {
 import { parseInput } from "./lib/input";
 import {
   applyCountChange,
+  attachDerivative,
   ensureMediaRow,
   findMediaByCapture,
+  mediaViewValidator,
   projectMedia,
   settleAfterProcessing,
+  storageKeysOf,
   type MediaView,
 } from "./lib/media";
 import { reportError } from "./lib/sentry";
@@ -69,7 +78,7 @@ import {
   linkGrantToMedia,
 } from "./lib/upload-grants";
 import { checkUploadThrottle, recordGrantIssued } from "./lib/upload-throttle";
-import { mediaState, mediaType, storageRegion } from "./lib/validators";
+import { mediaFileRole, mediaState, mediaType, storageRegion } from "./lib/validators";
 
 /**
  * The upload spine.
@@ -155,6 +164,13 @@ const grantResultValidator = v.union(
     eventId: v.id("events"),
     captureId: v.string(),
     mediaType,
+    /**
+     * Always sent, declared optional — the same shape `IssuedGrant` has, for the
+     * same reason: a client build that predates derivatives parses grants with
+     * `mediaFileRoleSchema.default("original")` and must not start failing
+     * because a field it ignores became mandatory.
+     */
+    fileRole: v.optional(mediaFileRole),
     mediaSource: v.union(v.literal("capture"), v.literal("library")),
     storageRegion,
     byteSize: v.number(),
@@ -169,31 +185,6 @@ const grantResultValidator = v.union(
   }),
 );
 
-const mediaViewValidator = v.object({
-  id: v.id("media"),
-  eventId: v.id("events"),
-  captureId: v.string(),
-  state: mediaState,
-  mediaType,
-  fromLibrary: v.boolean(),
-  byteSize: v.number(),
-  mimeType: v.string(),
-  durationSeconds: v.optional(v.number()),
-  width: v.optional(v.number()),
-  height: v.optional(v.number()),
-  uploaderUserId: v.id("users"),
-  uploaderDisplayName: v.string(),
-  isOwn: v.boolean(),
-  createdAt: v.number(),
-  capturedAt: v.optional(v.number()),
-  uploadedAt: v.optional(v.number()),
-  moderatedAt: v.optional(v.number()),
-  url: v.optional(v.string()),
-  urlExpiresAt: v.optional(v.number()),
-  previewUrl: v.optional(v.string()),
-  previewUrlExpiresAt: v.optional(v.number()),
-});
-
 /* -------------------------------------------------------------------------- */
 /* 1. Grants                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -203,6 +194,11 @@ export const requestUploadGrant = mutation({
     eventId: v.id("events"),
     captureId: v.string(),
     mediaType,
+    /**
+     * Which artefact of the capture. Absent means `original`, which is what
+     * every Sprint-3 client sends and means.
+     */
+    fileRole: v.optional(mediaFileRole),
     byteSize: v.number(),
     mimeType: v.string(),
     checksum: v.string(),
@@ -210,8 +206,16 @@ export const requestUploadGrant = mutation({
     capturedAt: v.optional(v.number()),
     mediaSource: v.optional(v.union(v.literal("capture"), v.literal("library"))),
     fromLibrary: v.optional(v.boolean()),
-    /** The client's claim that it re-encoded away EXIF/GPS before uploading. */
+    /** The client's claim that it **re-encoded** the bytes before uploading. */
     sourceMetadataStripped: v.optional(v.boolean()),
+    /**
+     * The client's separate claim that the file **carries no location**.
+     *
+     * Absent means "same as the re-encode claim", so a client that has not
+     * shipped the split sends exactly what it sent before and means exactly what
+     * it meant. See `MetadataClaim` in `@partybooth/contracts/media`.
+     */
+    sourceCarriesNoLocation: v.optional(v.boolean()),
   },
   returns: grantResultValidator,
   handler: async (ctx, args): Promise<GrantResult<Id<"uploadGrants">, Id<"events">>> => {
@@ -252,10 +256,15 @@ export const requestUploadGrant = mutation({
       mediaSource: input.mediaSource,
       file: {
         mediaType: input.mediaType,
+        // The role selects the cap and the accepted formats: a preview is held
+        // to two megabytes where its original gets twenty.
+        fileRole: input.fileRole,
         byteSize: input.byteSize,
         mimeType: input.mimeType,
         durationSeconds: input.durationSeconds,
       },
+      sourceMetadataStripped: input.sourceMetadataStripped,
+      sourceCarriesNoLocation: input.sourceCarriesNoLocation,
     });
     if (!eligibility.ok) {
       return await rejectGrant(ctx, {
@@ -266,36 +275,24 @@ export const requestUploadGrant = mutation({
       });
     }
 
-    // A capture is uploaded once. A *retry* re-uses the captureId and is the
-    // whole point of it; a second file under the same id is not a retry.
     const existing = await findMediaByCapture(ctx, actor.event._id, input.captureId);
-    if (existing !== null) {
-      // `captureId` is generated by the client and the index is scoped to the
-      // event, not to the person — so two guests at one party *can* propose the
-      // same id, by accident or on purpose. Whoever got there first keeps it.
-      //
-      // Without this the resume path below is a hijack: guest B asks for a grant
-      // naming guest A's stranded `processing` capture, and `ensureMediaRow`
-      // hands B's completion A's row — B's photo, filed under A's name, in A's
-      // "my media" list, withdrawable only by A.
-      const isOwn = existing.uploaderUserId === actor.user._id;
-      const duplicate =
-        isOwn && existing.state === "deleted" ? "captureWithdrawn" : "duplicateCapture";
-
-      // The one exception, and only for the person it belongs to: a grant that
-      // expired mid-upload leaves a `processing` row with no file, and refusing
-      // the retry would strand the guest's photo on their phone for ever.
-      const isResumable =
-        isOwn && existing.state === "processing" && existing.storageKey === undefined;
-
-      if (!isResumable) {
-        return await rejectGrant(ctx, {
-          actor,
+    const refusal = isDerivativeRole(input.fileRole)
+      ? await checkDerivativeGrant(ctx, {
+          userId: actor.user._id,
+          eventId: actor.event._id,
           captureId: input.captureId,
-          reason: duplicate,
-          now,
-        });
-      }
+          role: input.fileRole,
+          existing,
+        })
+      : checkOriginalGrant(actor.user._id, existing);
+
+    if (refusal !== undefined) {
+      return await rejectGrant(ctx, {
+        actor,
+        captureId: input.captureId,
+        reason: refusal,
+        now,
+      });
     }
 
     const throttleKey = accountGrantKey(actor.user._id);
@@ -312,6 +309,7 @@ export const requestUploadGrant = mutation({
       userId: actor.user._id,
       captureId: input.captureId,
       mediaType: input.mediaType,
+      fileRole: input.fileRole,
       fromLibrary: input.fromLibrary,
       // From the **event row**, never from the environment: files never migrate,
       // so the region an event was created in is the region it keeps (ADR 0002).
@@ -322,6 +320,7 @@ export const requestUploadGrant = mutation({
       durationSeconds: input.durationSeconds,
       capturedAt: input.capturedAt,
       sourceMetadataStripped: input.sourceMetadataStripped,
+      sourceCarriesNoLocation: input.sourceCarriesNoLocation,
       now,
     });
 
@@ -339,6 +338,7 @@ export const requestUploadGrant = mutation({
       metadata: {
         captureId: input.captureId,
         mediaType: input.mediaType,
+        fileRole: input.fileRole,
         mediaSource: input.mediaSource,
         byteSize: input.byteSize,
         storageRegion: actor.event.storageRegion,
@@ -353,14 +353,113 @@ export const requestUploadGrant = mutation({
       eventId: actor.event._id,
       captureId: input.captureId,
       mediaType: input.mediaType,
+      fileRole: input.fileRole,
       mediaSource: input.mediaSource,
       storageRegion: actor.event.storageRegion,
       byteSize: input.byteSize,
-      maxBytes: grantSizeCap(input.mediaType),
+      maxBytes: grantSizeCap(input.mediaType, input.fileRole),
       expiresAt: issued.expiresAt,
     };
   },
 });
+
+/**
+ * May this account be granted an **original** for this capture?
+ *
+ * A capture is uploaded once. A *retry* re-uses the `captureId` and is the whole
+ * point of it; a second file under the same id is not a retry.
+ *
+ * `captureId` is generated by the client and the index is scoped to the event,
+ * not to the person — so two guests at one party *can* propose the same id, by
+ * accident or on purpose. Whoever got there first keeps it. Without that the
+ * resume path below is a hijack: guest B asks for a grant naming guest A's
+ * stranded `processing` capture and `ensureMediaRow` hands B's completion A's
+ * row — B's photo, filed under A's name, in A's "my media" list, withdrawable
+ * only by A.
+ */
+function checkOriginalGrant(
+  userId: Id<"users">,
+  existing: Doc<"media"> | null,
+): UploadRejectionReason | undefined {
+  if (existing === null) return undefined;
+
+  const isOwn = existing.uploaderUserId === userId;
+
+  // The one exception, and only for the person it belongs to: a grant that
+  // expired mid-upload leaves a `processing` row with no file, and refusing the
+  // retry would strand the guest's photo on their phone for ever.
+  const isResumable = isOwn && existing.state === "processing" && existing.storageKey === undefined;
+  if (isResumable) return undefined;
+
+  return isOwn && existing.state === "deleted" ? "captureWithdrawn" : "duplicateCapture";
+}
+
+/**
+ * May this account be granted a **derivative** for this capture?
+ *
+ * Three things have to be true, and each of them is a door that would otherwise
+ * be open:
+ *
+ * 1. **The capture is theirs.** A derivative grant names an existing capture by
+ *    id, so without an ownership check any member could attach a "preview" to
+ *    anybody's photo — and the preview is the artefact the whole gallery is
+ *    served. This is the most dangerous of the three and the reason a derivative
+ *    grant is not simply an original grant with a different column.
+ * 2. **The original was asked for.** Not that it has *landed* — clients fire the
+ *    original and the preview off together, and demanding the completion first
+ *    would serialise every upload behind a US-East round trip. A grant for the
+ *    original having been issued to this account is enough, and it is checked
+ *    against the grants table rather than the media row for exactly that reason.
+ * 3. **That role is still empty.** One capture has one preview and one poster.
+ *
+ * A withdrawn capture is refused outright: `media.withdraw` expires every
+ * unspent grant precisely so nothing can attach afterwards, and a derivative is
+ * something attaching afterwards.
+ */
+async function checkDerivativeGrant(
+  ctx: MutationCtx,
+  params: {
+    userId: Id<"users">;
+    eventId: Id<"events">;
+    captureId: string;
+    role: DerivativeFileRole;
+    existing: Doc<"media"> | null;
+  },
+): Promise<UploadRejectionReason | undefined> {
+  const { existing } = params;
+
+  if (existing !== null) {
+    if (existing.uploaderUserId !== params.userId) return "duplicateCapture";
+    if (existing.state === "deleted") return "captureWithdrawn";
+    const filled = params.role === "preview" ? existing.previewKey : existing.posterKey;
+    if (filled !== undefined) return "duplicateDerivative";
+    // The row is the authority on what this capture *is*: a client asking for a
+    // poster against a capture that landed as a photo has drifted, whatever its
+    // own request said the media type was.
+    if (!isFileRoleAllowed(existing.mediaType, params.role)) return "unsupportedFileRole";
+    return undefined;
+  }
+
+  // No media row yet, so the original's own completion has not arrived. Accept
+  // only if this account has already been issued a grant for the original —
+  // otherwise a member could mint previews for captures that will never exist.
+  const grants = await ctx.db
+    .query("uploadGrants")
+    .withIndex("by_event_and_capture", (q) =>
+      q.eq("eventId", params.eventId).eq("captureId", params.captureId),
+    )
+    .collect();
+
+  const ownOriginal = grants.find(
+    (grant) => grant.userId === params.userId && fileRoleOf(grant) === "original",
+  );
+  if (ownOriginal === undefined) return "derivativeWithoutOriginal";
+
+  const foreign = grants.some((grant) => grant.userId !== params.userId);
+  if (foreign) return "duplicateCapture";
+
+  return isFileRoleAllowed(ownOriginal.mediaType, params.role) ? undefined : "unsupportedFileRole";
+}
 
 /**
  * Refuse a grant, and leave a row saying why.
@@ -431,6 +530,7 @@ export const confirmUpload = mutation({
     state: v.union(mediaState, v.null()),
     /** What the grant authorised. `null` only when the grant is unknown. */
     mediaType: v.union(mediaType, v.null()),
+    fileRole: v.union(mediaFileRole, v.null()),
     byteSize: v.union(v.number(), v.null()),
     mimeType: v.union(v.string(), v.null()),
   }),
@@ -445,8 +545,12 @@ export const confirmUpload = mutation({
 
     // Attached to every answer below, including the ones that refuse: the caller
     // that needs them most is the middleware deciding whether to let bytes move.
+    // `fileRole` joins them in Sprint 4 because it is what selects the size cap
+    // the edge applies — a preview grant re-labelled as an original at the edge
+    // would be measured against 20 MB instead of 2.
     const authorised = {
       mediaType: grant.mediaType,
+      fileRole: fileRoleOf(grant),
       byteSize: grant.byteSize,
       mimeType: grant.mimeType,
     };
@@ -456,6 +560,15 @@ export const confirmUpload = mutation({
       // Never regress a row the callback has already settled, and never revive a
       // withdrawn one.
       return { mediaId: existing._id, state: existing.state, ...authorised };
+    }
+
+    // A derivative never creates the row. It describes a file *about* a capture,
+    // and everything on a media row — byte size, checksum, mime type — has to
+    // come from the original's grant or the row would describe the thumbnail.
+    // Arriving here means the original's own confirmation is still in flight,
+    // which is normal and is not an error.
+    if (isDerivativeRole(fileRoleOf(grant))) {
+      return { mediaId: null, state: null, ...authorised };
     }
 
     // A grant whose time ran out with nothing stored creates nothing: the client
@@ -572,6 +685,31 @@ export const completeUpload = mutation({
       });
     }
 
+    /*
+     * The 60-second cap, enforced a second time on the way in.
+     *
+     * `checkGrantEligibility` already refused an over-long video at grant time,
+     * but the duration it judged was the client's own estimate before the file
+     * existed. This is the number reported for the object that actually landed,
+     * and the two can disagree — a recorder that overshoots the stop, a client
+     * that rounds down. `byteSize` is bound by `matchesGrant` and cannot move;
+     * duration is not, so without this the 250 MB cap is the only real ceiling
+     * on a video and PLAN.md's "≤ 60 s" is a suggestion.
+     */
+    if (grant.mediaType === "video" && overVideoDuration(input.durationSeconds)) {
+      return await discard(ctx, { grant, fileKey: input.fileKey, reason: "tooLong", now });
+    }
+
+    if (isDerivativeRole(fileRoleOf(grant))) {
+      return await registerDerivative(ctx, {
+        grant,
+        role: fileRoleOf(grant) as DerivativeFileRole,
+        fileKey: input.fileKey,
+        byteSize: input.byteSize,
+        now,
+      });
+    }
+
     const row = await ensureMediaRow(ctx, grant, now);
     if (row === null) {
       // The capture belongs to another guest. The bytes are real and can never
@@ -614,7 +752,7 @@ export const completeUpload = mutation({
      */
     const reportedMime =
       input.mimeType !== undefined &&
-      allowedMimeTypes(grant.mediaType).includes(normaliseMime(input.mimeType))
+      allowedMimeTypesForRole(grant.mediaType, "original").includes(normaliseMime(input.mimeType))
         ? normaliseMime(input.mimeType)
         : undefined;
 
@@ -656,6 +794,105 @@ export const completeUpload = mutation({
     return { outcome: "registered", mediaId: media._id, state };
   },
 });
+
+/** Is a reported video duration outside the launch cap? */
+function overVideoDuration(durationSeconds: number | undefined): boolean {
+  if (durationSeconds === undefined) return false;
+  return !Number.isFinite(durationSeconds) || durationSeconds > VIDEO_MAX_DURATION_SECONDS;
+}
+
+/**
+ * Attach a landed derivative to the capture it belongs to.
+ *
+ * The mirror of the original's half of {@link completeUpload}, and deliberately
+ * much smaller: it writes one column and nothing else. It does **not** settle
+ * the row, move a counter, or write an `uploadCompleted` audit row, because a
+ * capture that arrives as three objects is still one submission — folding
+ * derivatives into that action would treble every party's apparent size and
+ * would make the pending badge count thumbnails.
+ *
+ * Ordering does not matter. A preview that lands before its original finds no
+ * media row, and the bytes are discarded rather than orphaned: the row will be
+ * created from the original's grant a moment later, and the client's retry
+ * (which re-requests a grant, which re-runs every check) is what reattaches it.
+ * That is the conservative branch on purpose — the alternative is inventing a
+ * media row out of a thumbnail's byte size and checksum.
+ */
+async function registerDerivative(
+  ctx: MutationCtx,
+  params: {
+    grant: Doc<"uploadGrants">;
+    role: DerivativeFileRole;
+    fileKey: string;
+    byteSize: number;
+    now: number;
+  },
+): Promise<CompletionResult> {
+  const { grant, now } = params;
+  const media = await findMediaByCapture(ctx, grant.eventId, grant.captureId);
+
+  if (media === null) {
+    return await discard(ctx, {
+      grant,
+      fileKey: params.fileKey,
+      reason: "derivativeWithoutOriginal",
+      now,
+    });
+  }
+  if (media.uploaderUserId !== grant.userId) {
+    return await discard(ctx, {
+      grant,
+      fileKey: params.fileKey,
+      reason: "captureOwnedByOther",
+      now,
+    });
+  }
+  if (media.state === "deleted") {
+    // Withdrawal is permanent, and it expires unspent grants precisely so this
+    // cannot happen — but the callback for one already in flight can still land.
+    return await discard(ctx, { grant, fileKey: params.fileKey, reason: "withdrawn", now });
+  }
+
+  const attachment = await attachDerivative(ctx, media, {
+    role: params.role,
+    fileKey: params.fileKey,
+    byteSize: params.byteSize,
+    now,
+  });
+
+  if (attachment === "conflict") {
+    return await discard(ctx, {
+      grant,
+      fileKey: params.fileKey,
+      reason: "duplicateDerivative",
+      now,
+    });
+  }
+
+  await linkGrantToMedia(ctx, grant._id, media._id, now);
+
+  if (attachment === "duplicate") {
+    return { outcome: "duplicate", mediaId: media._id, state: media.state };
+  }
+
+  await writeAuditEvent(ctx, {
+    action: AUDIT_ACTIONS.derivativeAttached,
+    subjectType: "media",
+    subjectId: media._id,
+    actor: { userId: grant.userId },
+    eventId: grant.eventId,
+    metadata: {
+      captureId: grant.captureId,
+      fileRole: params.role,
+      mediaType: grant.mediaType,
+      byteSize: params.byteSize,
+      storageRegion: grant.storageRegion,
+    },
+    now,
+  });
+
+  return { outcome: "registered", mediaId: media._id, state: media.state };
+}
 
 /**
  * The provider called back twice for one grant.
@@ -782,9 +1019,9 @@ export const withdraw = mutation({
     await applyCountChange(ctx, media.eventId, media.state, "deleted", now);
     await expireGrantsForCapture(ctx, media.eventId, media.captureId, now);
 
-    const keys = [media.storageKey, media.previewKey, media.posterKey].filter(
-      (key): key is string => key !== undefined,
-    );
+    // Every object the capture names, derivatives included — a withdrawn photo
+    // whose preview survived is a withdrawn photo the gallery can still render.
+    const keys = storageKeysOf(media);
     if (keys.length > 0) {
       await ctx.scheduler.runAfter(0, mediaFunctions.purgeStoredFile, {
         region: media.storageRegion,
@@ -1077,9 +1314,7 @@ export const stuckPurges = query({
           id: row._id,
           captureId: row.captureId,
           ...(row.deletedAt === undefined ? {} : { deletedAt: row.deletedAt }),
-          outstandingKeys: [row.storageKey, row.previewKey, row.posterKey].filter(
-            (key) => key !== undefined,
-          ).length,
+          outstandingKeys: storageKeysOf(row).length,
           storageRegion: row.storageRegion,
         })),
     };
@@ -1179,10 +1414,18 @@ export const eventMedia = query({
       .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
       .collect();
 
+    // The blocklist is applied **here**, on the gallery, and deliberately not in
+    // `myMedia` (which is only ever your own) nor in `moderation.pending` (where
+    // it sorts rather than hides — a host must not be able to stall their own
+    // queue by blocking somebody). App Review asks that blocked users' content
+    // stop appearing for the blocker; it does not ask for it to stop existing.
+    const blocked = await loadBlockedUserIds(ctx, actor.user._id);
+
     const visible = rows.filter(
       (row) =>
         row.eventId === args.eventId &&
         wanted.has(row.state) &&
+        !isHiddenByBlock(row, actor.user._id, blocked) &&
         canSeeMedia(actor.role, {
           state: row.state,
           isOwn: row.uploaderUserId === actor.user._id,

@@ -13,7 +13,7 @@ import type { MutationCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { scheduleAccountDeletion } from "./lib/account-deletion";
 import { applyVerifiedEmailMatching } from "./lib/email-matching";
-import { authBaseUrl, isAdminEmail, trustedOrigins } from "./lib/config";
+import { authBaseUrl, isAdminEmail, isDemoAddress, trustedOrigins } from "./lib/config";
 import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
 import { resolveDisplayName } from "./lib/profile";
@@ -44,6 +44,7 @@ const otpFunctions = internal.otp as unknown as {
     { email: string; now?: number },
     { allowed: boolean; reason?: OtpSendDenial; retryAfterMs: number }
   >;
+  recordDemoSignIn: FunctionReference<"mutation", "internal", { email: string }, null>;
 };
 
 /**
@@ -242,6 +243,26 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
         // `@partybooth/contracts`.
         ...emailOtpPolicyOptions(),
         sendVerificationOTP: async ({ email, otp, type }) => {
+          /*
+           * The reviewer's address, on a deployment that opted in.
+           *
+           * There is no mailbox behind it — App Review is handed the code on the
+           * submission form — so sending would fail and, because `sendEmail`
+           * refusing is how "we couldn't email you" surfaces, would turn the
+           * demo account into a 500 at the door. It also skips the per-address
+           * send throttle, which exists to stop a mailbomb against a real
+           * inbox: there is no inbox, and a reviewer who taps "resend" twice
+           * and is told to wait sixty seconds files a rejection.
+           *
+           * Every other address is untouched — same throttle, same random code,
+           * same email. That is the property worth protecting, and the tests
+           * assert it directly.
+           */
+          if (isDemoAddress(email)) {
+            await recordDemoSignIn(ctx, email);
+            return;
+          }
+
           await assertOtpSendAllowed(ctx, email);
           const purpose = otpPurposeFor(type, email);
           const message = otpEmail({ code: otp, purpose });
@@ -321,6 +342,24 @@ async function assertOtpSendAllowed(ctx: GenericCtx<DataModel>, email: string): 
       message: OTP_SEND_DENIAL_MESSAGES[reason],
       retryAfterMs: decision.retryAfterMs,
     });
+  }
+}
+
+/**
+ * Leave a row saying the demo credential was used.
+ *
+ * Best-effort on purpose: a failure to write the audit row must not stop App
+ * Review signing in, because a reviewer who cannot get past the first screen
+ * rejects the build and the audit row is worth less than the submission. It is
+ * reported rather than swallowed, so a deployment where this is silently failing
+ * is visible in Sentry rather than only in its absence from the log.
+ */
+async function recordDemoSignIn(ctx: GenericCtx<DataModel>, email: string): Promise<void> {
+  try {
+    if (!("runMutation" in ctx)) return;
+    await ctx.runMutation(otpFunctions.recordDemoSignIn, { email: normaliseEmail(email) });
+  } catch (error) {
+    captureError({ scope: "auth.demoSignIn", error, level: "warning" });
   }
 }
 

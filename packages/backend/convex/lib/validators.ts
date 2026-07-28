@@ -6,14 +6,17 @@ import {
   EVENT_ROLES,
   EVENT_STATES,
   GRANT_STATUSES,
+  MEDIA_FILE_ROLES,
   MEDIA_SOURCES,
   MEDIA_STATES,
   MEDIA_TYPES,
+  MODERATION_ACTIONS,
   MODERATION_ACTORS,
   MODERATION_DECISIONS,
   MODERATION_MODES,
   PUSH_PLATFORMS,
   REPORT_REASONS,
+  REPORT_STATUSES,
   STORAGE_REGIONS,
 } from "@partybooth/contracts";
 import { v, type Validator } from "convex/values";
@@ -51,15 +54,18 @@ export const eventState = literalUnion(EVENT_STATES);
 export const eventRole = literalUnion(EVENT_ROLES);
 export const moderationMode = literalUnion(MODERATION_MODES);
 export const moderationDecision = literalUnion(MODERATION_DECISIONS);
+export const moderationAction = literalUnion(MODERATION_ACTIONS);
 export const moderationActor = literalUnion(MODERATION_ACTORS);
 export const mediaState = literalUnion(MEDIA_STATES);
 export const mediaType = literalUnion(MEDIA_TYPES);
+export const mediaFileRole = literalUnion(MEDIA_FILE_ROLES);
 export const mediaSource = literalUnion(MEDIA_SOURCES);
 export const uploadGrantStatus = literalUnion(GRANT_STATUSES);
 export const captureState = literalUnion(CAPTURE_STATES);
 export const storageRegion = literalUnion(STORAGE_REGIONS);
 export const pushPlatform = literalUnion(PUSH_PLATFORMS);
 export const reportReason = literalUnion(REPORT_REASONS);
+export const reportStatus = literalUnion(REPORT_STATUSES);
 export const auditAction = literalUnion(AUDIT_ACTION_NAMES);
 
 /* -------------------------------------------------------------------------- */

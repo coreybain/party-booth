@@ -580,6 +580,7 @@ describe("completion idempotency", () => {
       mediaId: null,
       state: null,
       mediaType: "photo",
+      fileRole: "original",
       byteSize: 2048,
       mimeType: "image/jpeg",
     });
@@ -1065,6 +1066,65 @@ describe("sourceMetadataStripped is load-bearing on the read path", () => {
       .withIdentity({ subject: "owner" })
       .query(api.media.eventMedia, { eventId: f.eventId });
     expect(asHost?.url).toMatch(/^https:\/\/fake\.ufs\.test\//);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* …and since Sprint 4 it is the *location* half that is load-bearing         */
+/* -------------------------------------------------------------------------- */
+
+describe("the read path asks about location, not about re-encoding", () => {
+  async function seedClaim(
+    f: Fixture,
+    claim: { sourceMetadataStripped?: boolean; sourceCarriesNoLocation?: boolean },
+  ) {
+    const mediaId = await seedMedia(f.t, f.eventId, f.otherGuestId, { state: "approved" });
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(mediaId, claim);
+    });
+    return mediaId;
+  }
+
+  async function urlSeenByFellowGuest(f: Fixture) {
+    const [seen] = await f.t
+      .withIdentity({ subject: "guest" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    return seen?.url;
+  }
+
+  it("serves a clip that was never re-encoded but carries no location", async () => {
+    const f = await fixture();
+    // `apps/mobile`'s video path: nothing is transcoded, because nothing can be
+    // in the time a guest will wait — but the app ships no location permission
+    // on either platform, so there is no fix for the recorder to embed.
+    await seedClaim(f, { sourceMetadataStripped: false, sourceCarriesNoLocation: true });
+    expect(await urlSeenByFellowGuest(f)).toMatch(/^https:\/\/fake\.ufs\.test\//);
+  });
+
+  it("withholds a clip that can promise neither", async () => {
+    const f = await fixture();
+    // `apps/web`'s video path: a browser has no transcoder, and a clip picked
+    // from a camera roll can genuinely carry somebody's GPS trace.
+    await seedClaim(f, { sourceMetadataStripped: false, sourceCarriesNoLocation: false });
+    expect(await urlSeenByFellowGuest(f)).toBeUndefined();
+  });
+
+  it("lets an explicit location denial override a re-encode claim", async () => {
+    const f = await fixture();
+    await seedClaim(f, { sourceMetadataStripped: true, sourceCarriesNoLocation: false });
+    expect(await urlSeenByFellowGuest(f)).toBeUndefined();
+  });
+
+  it("leaves every pre-split row at exactly the visibility it had", async () => {
+    // The compatibility rule that makes this a no-migration change: a row with
+    // only the old flag inherits it for the new question.
+    const served = await fixture();
+    await seedClaim(served, { sourceMetadataStripped: true });
+    expect(await urlSeenByFellowGuest(served)).toMatch(/^https:\/\/fake\.ufs\.test\//);
+
+    const withheld = await fixture();
+    await seedClaim(withheld, { sourceMetadataStripped: false });
+    expect(await urlSeenByFellowGuest(withheld)).toBeUndefined();
   });
 });
 

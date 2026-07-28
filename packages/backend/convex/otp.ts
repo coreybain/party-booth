@@ -1,6 +1,9 @@
+import { AUDIT_ACTIONS } from "@partybooth/contracts";
 import { v } from "convex/values";
 
 import { internalMutation } from "./_generated/server";
+import { writeAuditEvent } from "./lib/audit";
+import { isDemoAddress } from "./lib/config";
 import { registerOtpSendFor } from "./lib/otp-throttle";
 
 /**
@@ -41,5 +44,37 @@ export const registerSend = internalMutation({
     return decision.allowed
       ? { allowed: true, retryAfterMs: 0 }
       : { allowed: false, reason: decision.reason, retryAfterMs: decision.retryAfterMs };
+  },
+});
+
+/**
+ * Record that the App Review demo credential was used to request a code.
+ *
+ * The fixed-OTP path is the one credential in the product that does not depend
+ * on somebody controlling a mailbox, so the only thing standing between it and
+ * an unnoticed back door is that every use is countable afterwards. Its own
+ * audit action (`auth.demo_sign_in`) rather than a flag on a normal sign-in,
+ * because "did anyone use the reviewer account during the party?" has to be one
+ * query, not a scan with a filter.
+ *
+ * It re-checks `isDemoAddress` rather than trusting its caller. This is an
+ * internal mutation and the caller is `auth.ts`, but an audit row asserting a
+ * bypass happened is exactly the row that must not be forgeable by a future
+ * caller passing the wrong argument.
+ */
+export const recordDemoSignIn = internalMutation({
+  args: { email: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (!isDemoAddress(args.email)) return null;
+
+    await writeAuditEvent(ctx, {
+      action: AUDIT_ACTIONS.demoSignIn,
+      subjectType: "platform",
+      // No address and no code. The action name says which account this was, and
+      // the code is a live credential for as long as the variables are set.
+      metadata: { stage: "codeIssued" },
+    });
+    return null;
   },
 });

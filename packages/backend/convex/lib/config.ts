@@ -134,17 +134,45 @@ export function demoLogin(): { email: string; code: string } | undefined {
  * The code comparison is constant-time. The address is not, and does not need
  * to be — it is not a secret, and `DEMO_LOGIN_EMAIL` is a value the reviewer is
  * handed. The code is the credential.
- *
- * TODO(Sprint 4): this is still unreferenced. When it *is* wired up, the bypass
- * must be gated on an explicit build/deployment marker
- * (`DEPLOYMENT_ENVIRONMENT !== "production"` at minimum) rather than on the
- * operator remembering not to set these two variables in the party deployment,
- * scoped to this one address and nothing else, given its own seeded demo event
- * with no real media, and audited on every sign-in.
  */
 export function isDemoLogin(email: string, code: string): boolean {
   const demo = demoLogin();
   if (!demo) return false;
-  if (demo.email !== email.trim().toLowerCase()) return false;
+  if (!isDemoAddress(email)) return false;
   return constantTimeEqual(demo.code, code);
+}
+
+/**
+ * Is this the reviewer's address, on a deployment that has opted in?
+ *
+ * The **whole** gate is "both variables are set". Sprint 3 left a note here
+ * asking for `DEPLOYMENT_ENVIRONMENT !== "production"` on top, and that note was
+ * wrong about the threat: App Review reviews the *production* build against the
+ * *production* backend, so a production block would not harden the bypass, it
+ * would delete the feature and guarantee a rejection. The environment marker
+ * cannot distinguish "the party deployment" from "the deployment Apple is
+ * looking at" because on 5 August they are the same deployment.
+ *
+ * So the controls are the ones that survive that:
+ *
+ * - **Two variables, both required.** A deployment that sets neither — which is
+ *   every deployment by default, and `.env.example` ships both blank — has no
+ *   bypass at all. There is no code path from an unset variable to a fixed code.
+ *   This is what the tests pin.
+ * - **Exactly one address.** Nothing about any other account changes: other
+ *   addresses get a random code, a real email, and the full throttle.
+ * - **Audited on every use** (`auth.demo_sign_in`). If that action appears in a
+ *   deployment real guests are using, that is the incident, and it is greppable.
+ * - **Nothing to steal.** The demo account is seeded into its own demo event by
+ *   `demo.seedDemoEvent` and is a member of nothing else, so the credential
+ *   unlocks a party with no real people in it.
+ *
+ * The residual risk is a leaked `DEMO_LOGIN_OTP` against a deployment that still
+ * has it set, and the mitigation is operational and belongs in the runbook:
+ * **unset both variables once the build is approved.**
+ */
+export function isDemoAddress(email: string | null | undefined): boolean {
+  const demo = demoLogin();
+  if (!demo || !email) return false;
+  return demo.email === email.trim().toLowerCase();
 }

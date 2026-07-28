@@ -1,15 +1,19 @@
 import {
   mediaStateAfterProcessing,
   mediaStateMachine,
+  originalIsServableToThirdParties,
+  type DerivativeFileRole,
   type MediaState,
 } from "@partybooth/contracts/media";
 import type { Role } from "@partybooth/contracts/roles";
 import { SIGNED_READ_URL_TTL_SECONDS, type SignedReadUrl } from "@partybooth/contracts/storage";
+import { v } from "convex/values";
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { ReadCtx } from "./guards";
 import { resolveStorageAdapter } from "./storage";
+import { mediaState, mediaType } from "./validators";
 
 /**
  * The `media` row: creating it, moving it, counting it, and turning it into
@@ -149,6 +153,9 @@ export async function ensureMediaRow(
     ...(grant.sourceMetadataStripped === undefined
       ? {}
       : { sourceMetadataStripped: grant.sourceMetadataStripped }),
+    ...(grant.sourceCarriesNoLocation === undefined
+      ? {}
+      : { sourceCarriesNoLocation: grant.sourceCarriesNoLocation }),
     ...(grant.capturedAt === undefined ? {} : { capturedAt: grant.capturedAt }),
     createdAt: now,
     updatedAt: now,
@@ -191,6 +198,70 @@ export async function settleAfterProcessing(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Derivatives                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** Every provider key a media row currently names. */
+export function storageKeysOf(media: Doc<"media">): string[] {
+  return [media.storageKey, media.previewKey, media.posterKey].filter(
+    (key): key is string => key !== undefined,
+  );
+}
+
+export type DerivativeAttachment = "attached" | "duplicate" | "conflict";
+
+/**
+ * Attach a derivative object to the capture it belongs to.
+ *
+ * Idempotent on the **key**, exactly like the original's half of
+ * `completeUpload` and for the same reason: the provider retries its callback,
+ * and a retry has to change nothing. The three answers are the three things that
+ * can be true —
+ *
+ * - `attached` — the column was empty and now names this object;
+ * - `duplicate` — the column already names *this* object, so a callback has
+ *   arrived twice and there is nothing to do;
+ * - `conflict` — the column already names a **different** object. One capture
+ *   has one preview; a second is bytes nobody asked for, and the caller deletes
+ *   them.
+ *
+ * It deliberately does **not** touch `state`. A derivative landing does not
+ * settle a capture and must not move the counters: the moderation queue counts
+ * submissions, and a photo that arrives as three objects is one submission.
+ * `settleAfterProcessing` stays the only thing that moves a row out of
+ * `processing`, and it is driven by the original.
+ */
+export async function attachDerivative(
+  ctx: MutationCtx,
+  media: Doc<"media">,
+  params: { role: DerivativeFileRole; fileKey: string; byteSize: number; now: number },
+): Promise<DerivativeAttachment> {
+  const existing = params.role === "preview" ? media.previewKey : media.posterKey;
+  if (existing === params.fileKey) return "duplicate";
+  if (existing !== undefined) return "conflict";
+
+  await ctx.db.patch(
+    media._id,
+    params.role === "preview"
+      ? { previewKey: params.fileKey, previewByteSize: params.byteSize, updatedAt: params.now }
+      : { posterKey: params.fileKey, posterByteSize: params.byteSize, updatedAt: params.now },
+  );
+  return "attached";
+}
+
+/**
+ * Bytes this capture occupies in storage, as far as the record knows.
+ *
+ * Approximate on purpose, and the organiser-facing copy says so: it is the sum
+ * of what the grants were issued for, not what the provider bills. Derivatives
+ * are included because they are real objects — counting only originals told a
+ * host a party was a third smaller than it is.
+ */
+export function storedBytesOf(media: Doc<"media">): number {
+  return media.byteSize + (media.previewByteSize ?? 0) + (media.posterByteSize ?? 0);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Reading                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -221,12 +292,62 @@ export interface MediaView {
   capturedAt?: number;
   uploadedAt?: number;
   moderatedAt?: number;
-  /** Absent while the item is still processing, or when storage is unreachable. */
+  /** How many open reports. Present only for hosts — see {@link projectMedia}. */
+  reportCount?: number;
+  flaggedAt?: number;
+  /**
+   * The **original**. Absent while the item is still processing, when storage is
+   * unreachable, and — for a viewer who is neither the submitter nor a host —
+   * whenever the client did not confirm it stripped the metadata.
+   */
   url?: string;
   urlExpiresAt?: number;
+  /** The artefact a gallery renders: downscaled image, or short muted clip. */
   previewUrl?: string;
   previewUrlExpiresAt?: number;
+  /** A video's still frame. Absent for photos. */
+  posterUrl?: string;
+  posterUrlExpiresAt?: number;
 }
+
+/**
+ * The Convex validator for {@link MediaView}.
+ *
+ * It lives here, next to the interface it describes, because four function
+ * modules now return this shape (`media`, `moderation`, `slideshow`, `stats`)
+ * and a returns-validator copied into four files is three chances to add a field
+ * to the type and not to the wire. Lib modules are not scanned for Convex
+ * entry points, so a plain exported value is safe here and would not be in a
+ * function module.
+ */
+export const mediaViewValidator = v.object({
+  id: v.id("media"),
+  eventId: v.id("events"),
+  captureId: v.string(),
+  state: mediaState,
+  mediaType,
+  fromLibrary: v.boolean(),
+  byteSize: v.number(),
+  mimeType: v.string(),
+  durationSeconds: v.optional(v.number()),
+  width: v.optional(v.number()),
+  height: v.optional(v.number()),
+  uploaderUserId: v.id("users"),
+  uploaderDisplayName: v.string(),
+  isOwn: v.boolean(),
+  createdAt: v.number(),
+  capturedAt: v.optional(v.number()),
+  uploadedAt: v.optional(v.number()),
+  moderatedAt: v.optional(v.number()),
+  reportCount: v.optional(v.number()),
+  flaggedAt: v.optional(v.number()),
+  url: v.optional(v.string()),
+  urlExpiresAt: v.optional(v.number()),
+  previewUrl: v.optional(v.string()),
+  previewUrlExpiresAt: v.optional(v.number()),
+  posterUrl: v.optional(v.string()),
+  posterUrlExpiresAt: v.optional(v.number()),
+});
 
 /**
  * Mint a signed URL, or give up quietly.
@@ -265,32 +386,71 @@ export interface ProjectMediaOptions {
 /**
  * May this viewer be served the **uploaded original**?
  *
- * `sourceMetadataStripped` is the client's claim that it re-encoded the frame
- * and dropped the EXIF/GPS block before uploading (ADR 0004 §7). It was being
- * recorded on the grant, copied to the row — and then read by nothing, while
- * `projectMedia` minted a URL for `storageKey` unconditionally. Since Sprint 3
- * produces no server-side derivative, that URL *is* the original: a guest
- * bypassing both first-party pipelines could upload a raw camera JPEG with a GPS
- * fix through the public `media.requestUploadGrant` mutation and have it served
- * at full resolution to everyone in the approved gallery. "Strip location
- * metadata from derivatives" then rested entirely on client self-attestation
- * with no consequence for a `false`.
+ * The row carries the client's claim about its own bytes (ADR 0004 §7). It was
+ * being recorded on the grant, copied to the row — and then read by nothing,
+ * while `projectMedia` minted a URL for `storageKey` unconditionally. Since
+ * Sprint 3 produced no derivative, that URL *is* the original: a guest bypassing
+ * both first-party pipelines could upload a raw camera JPEG with a GPS fix
+ * through the public `media.requestUploadGrant` mutation and have it served at
+ * full resolution to everyone in the approved gallery. "Strip location metadata
+ * from derivatives" then rested entirely on client self-attestation with no
+ * consequence for a `false`.
  *
- * So the flag is load-bearing on the read path, exactly as far as ADR 0004 §7
- * says it should be: an unconfirmed original goes to **its submitter and the
- * hosts** and to nobody else. Hosts keep it because moderation is impossible
- * without seeing the thing being moderated, and because a host is the party's
- * own data controller rather than a third party; a fellow guest is a third party
- * and gets no URL at all.
+ * So the claim is load-bearing here, exactly as far as ADR 0004 §7 says it
+ * should be: an unconfirmed original goes to **its submitter and the hosts** and
+ * to nobody else. Hosts keep it because moderation is impossible without seeing
+ * the thing being moderated, and because a host is the party's own data
+ * controller rather than a third party; a fellow guest is a third party and gets
+ * no URL at all.
  *
- * Derivatives are unaffected: `previewKey`/`posterKey` are written by a server
- * step, so anything under them is stripped by construction. When that step
- * lands (Sprint 4) this becomes "serve the derivative instead" rather than
- * "serve nothing".
+ * ## Which half of the claim this asks for
+ *
+ * Since Sprint 4 the claim has two halves (`MetadataClaim` in
+ * `@partybooth/contracts/media`), and this one asks **"does it carry a
+ * location?"** rather than **"was it re-encoded?"**. That is the question the
+ * privacy invariant in PLAN.md is actually about, and the two stopped being the
+ * same fact the moment video existed: no client can transcode a 60-second clip
+ * in the time a guest will wait, but `apps/mobile` ships no location permission
+ * on either platform and so can promise the location half honestly without
+ * claiming the encoding half. Reading `sourceMetadataStripped` here would
+ * withhold that clip from every fellow guest on the strength of a flag whose
+ * name answers a different question.
+ *
+ * A row that predates the split answers both the same way, so nothing that is
+ * already stored changes visibility — see `metadataClaimOf`.
+ *
+ * Derivatives are unaffected and are governed by the *other* half: a derivative
+ * grant is **refused** unless it claims the re-encode
+ * (`derivativeMetadataNotStripped`). That asymmetry is deliberate — on the
+ * original the claim is recorded and read here, on a derivative it is a
+ * precondition of the grant existing at all — and it is what lets this function
+ * mean "serve the derivative instead" rather than "serve nothing".
+ *
+ * The "serve nothing" branch has **not** gone away: an item whose preview has
+ * not landed yet — a phone that died between the two uploads — still shows a
+ * fellow guest no image at all rather than an unverified original.
  */
 function mayServeOriginal(media: Doc<"media">, viewer: { isOwn: boolean; role: Role }): boolean {
-  if (media.sourceMetadataStripped === true) return true;
+  if (originalIsServableToThirdParties(media)) return true;
   return viewer.isOwn || viewer.role === "owner" || viewer.role === "cohost";
+}
+
+/**
+ * The name to show for an uploader.
+ *
+ * An account on its way out is anonymised on the **read path** rather than by
+ * rewriting `users.displayName`, because the row still has to be recognisable
+ * to an admin resolving an abuse report and to the audit trail. PLAN.md keeps
+ * the media (it is the host's party, not the guest's alone) and drops the
+ * attribution, and doing that here means it is true of every surface at once
+ * rather than of whichever query remembered.
+ */
+function uploaderNameFor(uploader: Doc<"users"> | null): string {
+  if (!uploader) return "Someone";
+  if (uploader.accountState === "deletionScheduled" || uploader.accountState === "deleted") {
+    return "Former guest";
+  }
+  return uploader.displayName;
 }
 
 export async function projectMedia(
@@ -301,14 +461,19 @@ export async function projectMedia(
   const ttl = options.expiresInSeconds ?? SIGNED_READ_URL_TTL_SECONDS;
   const uploader = await ctx.db.get(media.uploaderUserId);
   const isOwn = media.uploaderUserId === options.viewerUserId;
+  const isHost = options.viewerRole === "owner" || options.viewerRole === "cohost";
 
   const originalKey = mayServeOriginal(media, { isOwn, role: options.viewerRole })
     ? media.storageKey
     : undefined;
 
-  const [original, preview] = await Promise.all([
+  const [original, preview, poster] = await Promise.all([
     safeUrl(media.storageRegion, originalKey, ttl),
+    // A photo with no preview yet falls back to its poster only because a video
+    // that has a poster and no clip should still render *something*; a photo has
+    // no poster, so this is a no-op for photos.
     safeUrl(media.storageRegion, media.previewKey ?? media.posterKey, ttl),
+    safeUrl(media.storageRegion, media.posterKey, ttl),
   ]);
 
   return {
@@ -324,15 +489,23 @@ export async function projectMedia(
     ...(media.width === undefined ? {} : { width: media.width }),
     ...(media.height === undefined ? {} : { height: media.height }),
     uploaderUserId: media.uploaderUserId,
-    uploaderDisplayName: uploader?.displayName ?? "Someone",
+    uploaderDisplayName: uploaderNameFor(uploader),
     isOwn,
     createdAt: media.createdAt,
     ...(media.capturedAt === undefined ? {} : { capturedAt: media.capturedAt }),
     ...(media.uploadedAt === undefined ? {} : { uploadedAt: media.uploadedAt }),
     ...(media.moderatedAt === undefined ? {} : { moderatedAt: media.moderatedAt }),
+    // Hosts only. A guest learning that three people reported the photo next to
+    // theirs is a leak, and telling an uploader they have been reported turns a
+    // report into a confrontation.
+    ...(isHost && media.reportCount !== undefined ? { reportCount: media.reportCount } : {}),
+    ...(isHost && media.flaggedAt !== undefined ? { flaggedAt: media.flaggedAt } : {}),
     ...(original === undefined ? {} : { url: original.url, urlExpiresAt: original.expiresAt }),
     ...(preview === undefined
       ? {}
       : { previewUrl: preview.url, previewUrlExpiresAt: preview.expiresAt }),
+    ...(poster === undefined
+      ? {}
+      : { posterUrl: poster.url, posterUrlExpiresAt: poster.expiresAt }),
   };
 }
