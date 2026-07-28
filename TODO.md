@@ -8,30 +8,32 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 
 ## Sprint 1 — Tue 29 Jul: skeleton online
 
-- [ ] Turborepo + pnpm workspaces, strict TS, shared eslint/prettier/vitest config, env validation (`t3-env` style)
-- [ ] `packages/backend`: Convex schema v1 — users, organiserInvitations, events (incl. `storageRegion`), memberships, inviteVersions, media, moderationDecisions, pushDevices, deletionJobs, auditEvents
-- [ ] `packages/contracts`: shared zod schemas, permission rules, role types
-- [ ] Better Auth on Convex: email OTP provider wired (Resend), Google + Apple providers configured
-- [ ] `apps/web` scaffold (Next.js App Router) deployed to Vercel; `apps/mobile` scaffold (Expo Router) building via EAS
-- [ ] Sentry wired into web + Convex; scrubbing rules for tokens/emails/URLs
-- [ ] CI: typecheck + unit tests on push
+- [x] Turborepo + pnpm workspaces, strict TS, shared eslint/prettier/vitest config, env validation (`t3-env` style)
+- [x] `packages/backend`: Convex schema v1 — users, organiserInvitations, events (incl. `storageRegion`), memberships, inviteVersions, media, moderationDecisions, pushDevices, deletionJobs, auditEvents (+ `otpChallenges` throttle table)
+- [x] `packages/contracts`: shared zod schemas, permission rules, role types
+- [x] Better Auth on Convex: email OTP provider wired (Resend), Google + Apple providers configured *(code complete; needs real keys)*
+- [x] `apps/web` scaffold (Next.js App Router) deployed to Vercel; `apps/mobile` scaffold (Expo Router) building via EAS *(builds green offline; Vercel link + `eas init` are owner steps)*
+- [x] Sentry wired into web + Convex; scrubbing rules for tokens/emails/URLs
+- [x] CI: typecheck + unit tests on push *(authored + reproduced locally; needs GitHub remote to run)*
 
 **RC1:** visit the Vercel URL → request an OTP → receive a real email → sign in as organiser → see an empty authenticated shell. Expo dev build installs and opens on your phone.
+> ⏳ **RC1 blocked on owner setup only** (accounts/keys/deploys — see notes section). Code side verified: 560 tests, offline typecheck/build green, Fable audit passed. **Add your email to `ADMIN_EMAIL_ALLOWLIST` before testing RC1** — organiser access is invitation-gated.
 
 ---
 
 ## Sprint 2 — Wed 30 Jul: events & joining
 
-- [ ] Event CRUD: create/edit (name, schedule + timezone, cover, accent, moderation mode), states `draft/scheduled/live/paused/archived`
-- [ ] Six-digit code generation (unique among joinable), high-entropy QR token, inviteVersion model
-- [ ] Join flow (Convex): authenticated, rate-limited, enumeration-protected, audited; membership creation
-- [ ] Web join page: `/join/<token>` universal-link target + code entry fallback with store links
-- [ ] Guest auth: app Apple/Google onboarding (name + photo confirm); web Google + email OTP
-- [ ] Verified-email matching → organiser/co-host powers on mobile
-- [ ] Mobile: event join by code, active-event selection
-- [ ] Unit tests: permission rules, event state transitions, code/token generation, join rate limits
+- [x] Event CRUD: create/edit (name, schedule + timezone, cover, accent, moderation mode), states `draft/scheduled/live/paused/archived` *(cover upload is Sprint 3 — the field is reserved)*
+- [x] Six-digit code generation (unique among joinable), high-entropy QR token, inviteVersion model *(archiving frees a code implicitly; re-opening re-checks it)*
+- [x] Join flow (Convex): authenticated, rate-limited, enumeration-protected, audited; membership creation
+- [x] Web join page: `/join/<token>` universal-link target + code entry fallback with store links *(QR encoder is ours, in `@partybooth/contracts/qr` — no third party sees a token)*
+- [x] Guest auth: app Apple/Google onboarding (name + photo confirm); web Google + email OTP *(photo is remembered on-device until the Sprint 3 upload pipeline)*
+- [x] Verified-email matching → organiser/co-host powers on mobile
+- [x] Mobile: event join by code, active-event selection
+- [x] Unit tests: permission rules, event state transitions, code/token generation, join rate limits
 
 **RC2:** on your phone (web + app): create an event on desktop, scan its QR with your phone, sign in as a guest, land in the event. Second phone joins by typing the code.
+> ⏳ **RC2 blocked on the same owner setup as RC1** (Convex deployment, Vercel link, OAuth keys — see the notes section). Code side verified: 861 tests, offline typecheck/lint/format green, `next build` and `expo export` both pass with an **empty** environment.
 
 ---
 

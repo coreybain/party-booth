@@ -15,6 +15,8 @@ erDiagram
     users ||--o{ events : owns
     users ||--o{ pushDevices : registers
     users ||--o{ organiserInvitations : "invited by"
+    users ||--o{ userEmails : "proves"
+    events ||--o{ cohostInvitations : "offers a seat via"
     events ||--o{ memberships : grants
     events ||--o{ inviteVersions : "rotates through"
     events ||--o{ media : collects
@@ -30,8 +32,11 @@ every privileged action.
 
 | Entity                 | Holds                                                                                        | Notes                                                       |
 | ---------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `users`                | identity, verified email, display name, avatar, account state                                | one row per human, shared across app and web                |
+| `users`                | identity, verified email, display name, avatar, `onboardedAt`, account state                 | one row per human, shared across app and web                |
 | `organiserInvitations` | email, token, issuing admin, expiry, redemption                                              | the only way into the private beta                          |
+| `cohostInvitations`    | event, email, inviting host, expiry, redemption                                              | a co-host seat offered to an address with no account yet    |
+| `userEmails`           | user, address, status, hashed verification code, attempts                                    | a second address proven by OTP (Apple private relay)        |
+| `joinAttempts`         | throttle key, failure count, window, lockout                                                 | holds no code and no event id — counters only               |
 | `events`               | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**        | see [ADR 0002](adr/0002-storage-region-adapter.md)          |
 | `memberships`          | user ↔ event, role, admitting `inviteVersion`, state                                         | a guest's presence in one event                             |
 | `inviteVersions`       | six-digit code, high-entropy QR token, version number, active flag                           | rotation creates a new version, never mutates the old       |
@@ -76,8 +81,18 @@ Two invariants worth stating loudly, because they are easy to erode:
 2. **A global admin never sees media and never impersonates.** Admin power is over accounts, events
    and codes — not over content.
 
-Everything above must be expressed as testable functions in `packages/contracts`, not as scattered
-`if` statements in UI code. Sprint 2 owns those unit tests.
+Everything above is expressed as testable functions in
+[`packages/contracts/src/permissions.ts`](../packages/contracts/src/permissions.ts), not as scattered
+`if` statements in UI code:
+
+- `hasCapability(role, action)` — does this role ever get this action?
+- `can(role, action, resource)` — …and does the resource's state and ownership allow it now?
+- `canAct(actor, action, resource)` / `explainCan(…)` — …and is the actor's **account** active enough?
+
+`permissions.test.ts` holds a `Record<Action, readonly Role[]>` covering every action × role pair, so
+adding an action is a compile error until the table is updated. The backend never re-derives a rule:
+`requirePermission` in `packages/backend/convex/lib/guards.ts` only turns a `false` into the right
+`ConvexError`.
 
 ## State machines
 
@@ -97,8 +112,15 @@ stateDiagram-v2
     archived --> [*]
 ```
 
-Joins and uploads are accepted in `live` only. `paused` keeps the gallery and slideshow readable but
-refuses new captures — it is the "we are done for now" pressure valve. `archived` is read-only.
+Uploads are accepted in `live` only. **Joins are accepted in `scheduled`, `live` and `paused`** — a
+QR printed a week early has to work when the guest scans it in the hallway, and pausing is a pressure
+valve on uploads, not a locked front door (`JOINABLE_EVENT_STATES` in
+[`contracts/src/events.ts`](../packages/contracts/src/events.ts)). `paused` keeps the gallery and
+slideshow readable but refuses new captures. `archived` is read-only.
+
+Hosts may set every state except `deletionScheduled` (`HOST_SETTABLE_EVENT_STATES`). That one is
+reserved for the deletion flow, because reaching it must also write the `deletionJobs` row that makes
+the 30-day restore window real.
 
 ### Media
 
@@ -150,6 +172,43 @@ post-launch; until then the final step is operated by script.
 `locked` suspends owner and co-host access, joins, uploads and slideshows across every event the
 account owns. That blast radius is the point: it is the party-night emergency stop.
 
+### Invite version
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: event created (version 1)
+    active --> revoked: rotation mints version n+1
+    revoked --> [*]
+```
+
+Two rules make this smaller than it looks:
+
+- **A version is never mutated.** Rotation inserts a new row and marks the old one `revoked`; the
+  old code and token stay on the old row. That is what lets "how did this person get in last week?"
+  stay answerable after three rotations.
+- **Exactly one version is `active` per event.** Everything a guest can present resolves to a
+  version, and only the active one admits.
+
+Rotation carries a `keepExistingMemberships` choice. `true` keeps everyone and only kills the old
+credential; `false` additionally revokes **guest** memberships — hosts always keep theirs, because
+locking a co-host out mid-party helps nobody. Memberships record the version that admitted them, so
+a revoked-version join is refusable without a second table.
+
+### Membership
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: join accepted / co-host invitation matched
+    active --> revoked: host rotates with keep = false
+    active --> revoked: host or admin removes the guest
+    revoked --> [*]
+```
+
+`revoked` is terminal, and that is the transition worth stating plainly _because_ it is missing: a
+revoked membership is **not** re-activated by presenting a current code. A host who removed someone meant it, and a fresh QR must
+not undo that. The join returns the same single rejection sentence as every other refusal, so the
+person cannot tell "removed" from "wrong code".
+
 ### Capture, client side
 
 ```mermaid
@@ -173,13 +232,91 @@ best-effort and post-launch.
 ## Invitations and joining
 
 An event has exactly one **active invite version** at a time. Each version carries a **six-digit
-join code**, unique among joinable events, and a **high-entropy QR token** used in the universal
-link. Rotation mints a new version and deactivates the old one; the host chooses whether existing
-memberships are **kept or revoked**. A join attempt against a superseded version is rejected.
+join code**, unique among joinable events, and a **high-entropy QR token** (160 bits, Crockford
+base32) used in the universal link. Rotation mints a new version and deactivates the old one; the
+host chooses whether existing memberships are **kept or revoked** — hosts always keep theirs. A join
+attempt against a superseded version is rejected.
 
-Joining is authenticated, rate-limited, enumeration-protected and audited. Enumeration protection
-matters more than it looks: a six-digit code is only a million values, so failed-join responses must
-not distinguish "no such event" from "wrong version" from "event not live".
+"Unique among joinable events" is doing real work. Archiving an event frees its code **implicitly**:
+nothing is rewritten, the old row keeps the code, and the code stops counting because its event is no
+longer joinable. So a lookup by code can match several rows and must filter rather than assume one —
+and re-opening an archived event has to re-check its code, redrawing it if somebody else has since
+been given that number.
+
+```mermaid
+flowchart TD
+    A["guest presents a credential<br/>(token from the QR, or six typed digits)"] --> B{throttle budget<br/>for this key?}
+    B -- "no" --> T["throttled<br/>(retryAfterMs — the caller's own history)"]
+    B -- "yes" --> C{"any inviteVersion<br/>holds it?"}
+    C -- "no" --> R
+    C -- "yes" --> D{"is that version<br/>active?"}
+    D -- "no" --> R
+    D -- "yes" --> E{"is the event<br/>joinable?"}
+    E -- "no" --> R
+    E -- "yes" --> F{"inside the<br/>join window?"}
+    F -- "no" --> R
+    F -- "yes" --> G{"an existing<br/>membership?"}
+    G -- "revoked" --> R
+    G -- "active" --> H["joined (alreadyMember = true)"]
+    G -- "none" --> I["membership created<br/>against this version"]
+    I --> J["joined"]
+    R["rejected — one sentence, no reason"]
+```
+
+Every path into `rejected` returns the **same value**: one fixed message and no other field. The
+five reasons are named in `JOIN_REJECTION_REASONS` and go to `auditEvents` only. `throttled` is the
+one failure that is safe to be specific about, because it depends solely on the caller's own attempt
+history, which is not information they lack.
+
+Joining is authenticated, rate-limited, enumeration-protected and audited:
+
+- **Authenticated** — there is always a user, which is what gives the throttle a key.
+- **Rate-limited** — `joinAttempts` counts failures per key (`user:<id>`, plus an optional
+  `net:<hash>` the web route can supply). Ten failures in fifteen minutes starts a fifteen-minute
+  lockout; a success hands the budget back. The read-decide-write happens inside a Convex mutation,
+  so it is transactional.
+- **Enumeration-protected** — a six-digit code is only a million values, so every failure returns the
+  same value: one fixed sentence, no other fields. "No such code", "superseded version", "not
+  joinable yet", "outside the schedule window" and "your membership was revoked" are
+  indistinguishable from outside. The real reason goes to `auditEvents` and nowhere else.
+- **Audited** — every attempt writes a row, successful or not.
+
+The pre-join preview follows the same logic, which is why it is split in two: previewing from a
+**token** is a query (160 bits is not enumerable, and the join page must render before sign-in),
+while previewing from a typed **code** is a _mutation_, because only a mutation can spend a throttle
+budget.
+
+### Verified-email matching
+
+On authentication — and on demand via `users.refreshRoles` — every address the user has **proven**
+is matched against pending `organiserInvitations` and `cohostInvitations`. A match accepts the
+invitation and grants the role: organiser (unlocking event creation) or a `cohost` membership.
+
+Only verified addresses count. An address is verified when the provider vouched for it
+(`users.emailVerified`) or its owner proved it with a six-digit code (`userEmails`). Anything looser
+would mean typing someone else's address into a sign-up form inherits their co-host seat.
+
+Apple private-relay users are the reason `userEmails` exists: an invitation cannot reach
+`@privaterelay.appleid.com`, so they add a real address and prove it through the same OTP
+infrastructure — same ten-minute expiry, same five-guess budget, same per-address send ceiling, code
+stored hashed.
+
+### Profile and onboarding
+
+`users.displayName` is what a host reads in the moderation queue, so it has exactly **one** writer:
+the `users.updateProfile` mutation, called by the name-confirmation step on both web and app.
+
+It used to have two. Both clients wrote the name through Better Auth's `updateUser` and relied on
+the `user.onUpdate` trigger to mirror it into `users.displayName` — which works right up until
+anything else touches the Better Auth row. Verifying an email fires that trigger, and the guest who
+typed "Sam" would quietly become "Samantha Smith" again. The trigger now defers to a confirmed name:
+**a provider name is a default, and a default never overwrites a choice.**
+
+`users.onboardedAt` is what makes that rule expressible, and it is a column rather than a device flag
+for the same reason. `displayName` cannot answer "has this human ever told us what to call them?",
+because it falls back to the local part of the email address and so is never empty. With the column,
+a reinstall does not re-prompt and a guest who onboarded on their phone is not asked again on the
+web.
 
 ## `storageRegion`
 
@@ -194,7 +331,6 @@ The full reasoning, alternatives and the multi-region path are in
 
 Filled in by the sprint that builds the thing, rather than guessed now:
 
-- **(Sprint 2)** Concrete permission-function names and their test matrix.
 - **(Sprint 3)** The upload-grant record: exact fields, expiry, single-use enforcement, and the
   reconciliation rules for out-of-order completion callbacks.
 - **(Sprint 4)** Report and block entities required for App Review.
