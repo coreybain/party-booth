@@ -146,7 +146,16 @@ did not land.
 | `media.withdraw`           | the submitter                | tombstone + expire grants + schedule the delete. Permanent.            |
 
 Read paths are `media.myMedia` and `media.eventMedia`; both return short-lived
-signed URLs and **never** a file key.
+signed URLs and **never** a file key, and both are permission-checked —
+`media.viewOwn` and `media.viewApproved` respectively, which is also what makes a
+`locked` or `deletionScheduled` account lose access rather than keep minting
+fresh URLs. `media.stuckPurges` is host-only and lists withdrawn rows whose bytes
+a purge never removed.
+
+An item whose `sourceMetadataStripped` is not `true` is served to its submitter
+and the hosts and to nobody else. Sprint 3 writes no derivative, so the URL a
+read mints _is_ the uploaded original; without that check a client that skipped
+the re-encode could put a GPS-bearing JPEG in front of the whole gallery.
 
 Three rules hold across the file, each because breaking it is expensive:
 
@@ -192,9 +201,18 @@ verification.** If it fails, move URL signing to an endpoint in `apps/web` behin
 the same `StorageAdapter` interface; no call site changes.
 
 Deletes are scheduled as an **action** because a Convex mutation has no network.
-`purgeStoredFile` deliberately does not catch: a withdrawal whose bytes are still
-in storage must surface as a failed action, not as a log line beside a row that
-claims to be deleted.
+A withdrawal whose bytes are still in storage is the worst outcome the product
+has, and **Convex does not retry a failed scheduled action** — only mutations get
+that. So `purgeStoredFile` carries its own retry: it reports through
+`reportError`, re-schedules with a bounded backoff (four attempts over about six
+minutes), and then gives up with an audit row rather than in silence. The record
+keeps its keys and its missing `storageDeletedAt` throughout, so
+`media.stuckPurges` can list it and a retry has something to name.
+
+A delete that _succeeds_ but removes fewer objects than it was handed is treated
+the same way. `storageDeletedAt` is stamped and the keys cleared **only on a full
+delete**: clearing them on a short count destroys the only pointer to bytes that
+are still there.
 
 ## Auth
 

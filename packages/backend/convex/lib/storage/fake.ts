@@ -35,6 +35,15 @@ export interface FakeStorageOptions {
   now?: (() => number) | undefined;
   /** Make every read fail, to exercise the degrade-don't-crash read paths. */
   failReads?: boolean | undefined;
+  /**
+   * Make every delete reject, to exercise the purge retry and give-up path.
+   *
+   * "Withdrawal is permanent" is only true if a failed delete is retried and
+   * then surfaced, and a failure nothing can simulate is a failure nothing
+   * tests — the old code's comment claimed Convex retried a failed action, which
+   * it does not.
+   */
+  failDeletes?: boolean | undefined;
 }
 
 export function createFakeStorageAdapter(options: FakeStorageOptions = {}): FakeStorageAdapter {
@@ -86,6 +95,9 @@ export function createFakeStorageAdapter(options: FakeStorageOptions = {}): Fake
 
     deleteFiles(keys) {
       deletes.push([...keys]);
+      if (options.failDeletes === true) {
+        return Promise.reject(new Error("fake storage: deletes are failing"));
+      }
       let deleted = 0;
       for (const key of keys) {
         if (stored.delete(key)) deleted += 1;

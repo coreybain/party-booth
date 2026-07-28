@@ -13,7 +13,7 @@ import "server-only";
  *
  * ## What the middleware is, and what it is not
  *
- * It is a **gate**, not the authority. Four things happen before an upload URL
+ * It is a **gate**, not the authority. Five things happen before an upload URL
  * exists, cheapest first:
  *
  * 1. the deployment is checked for credentials, so a misconfigured party fails
@@ -22,10 +22,13 @@ import "server-only";
  * 2. the ticket is parsed and cross-checked against the file actually offered
  *    (`checkTicketAgainstFiles`), which catches an honest client's bug and a
  *    lazy attacker's swap without a network round trip;
- * 3. the file is re-validated against `validateMediaFile` — the same function
- *    Convex runs — so the 20 MB photo cap is enforced here as well as there;
+ * 3. the ticket is sanity-checked against `validateMediaFile` — a cheap local
+ *    refusal that saves a round trip, and **not** a cap, because every value in
+ *    it came from the client;
  * 4. the grant is checked **with Convex**, as the signed-in guest, via
- *    `media.confirmUpload`.
+ *    `media.confirmUpload`;
+ * 5. the ticket is compared against what that grant actually authorised, and
+ *    `validateMediaFile` is run again on **those** values.
  *
  * Step 4 is the one that matters, and it is worth being precise about what it
  * proves. `confirmUpload` looks the grant up by hash, refuses a secret belonging
@@ -33,6 +36,19 @@ import "server-only";
  * media row for `(eventId, captureId)` — creating it in `processing` if this is
  * the first anyone has heard of the capture. So a request that survives it has
  * demonstrated a live, unexpired grant that belongs to the authenticated caller.
+ *
+ * Step 5 is what makes step 3 mean anything, and it was missing. Every value
+ * step 3 compared came from the client on both sides — `ticket.byteSize` against
+ * `MEDIA_LIMITS`, `ticket.mediaType` choosing which limit — so a guest holding a
+ * legitimate 1 MB photo grant could send a ticket declaring
+ * `mediaType: "video", mimeType: "video/mp4", byteSize: 250 MB`, be routed to
+ * the 256 MB `video` slot, and have a quarter of a gigabyte written to private
+ * storage before Convex refused it on the way back out and scheduled the delete.
+ * At sixty grants per five minutes that is fifteen gigabytes of transient stored
+ * bytes and paid egress per guest, on the guaranteed party-night path.
+ * `confirmUpload` now answers with the grant's own `mediaType`, `byteSize` and
+ * `mimeType`, and a ticket that disagrees with any of them is refused here —
+ * before the presigned URL exists.
  *
  * What it does **not** do is spend the grant. Single use is enforced inside
  * `media.completeUpload`, in one Convex transaction, and that is not an
@@ -59,8 +75,10 @@ import { createUploadthing, type FileRouter } from "uploadthing/next";
 import { fetchAuthMutation } from "@/lib/auth-server";
 import {
   checkTicketAgainstFiles,
+  checkTicketAgainstGrant,
   uploadTicketSchema,
   validateMediaFile,
+  type MediaType,
   type UploadTicket,
 } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
@@ -69,10 +87,16 @@ import { registerCompletedUpload, uploadServerStatus } from "@/lib/upload/server
 /**
  * What the middleware passes forward to `onUploadComplete`.
  *
- * Deliberately narrower than the ticket: the completion call needs the grant and
- * the shape facts, and nothing is served by carrying a checksum the client
- * supplied twice — Convex already holds the one the grant was minted with, and
- * comparing a value against itself is not a check.
+ * Deliberately narrower than the ticket, but it does carry `checksum`. That is a
+ * change: it used to be dropped here on the argument that both sides of the
+ * comparison originate on the client, which is true and still leaves the
+ * documented control — "the checksum lets the callback reject a swapped body",
+ * `schemas.ts` and ADR 0004 — reading as implemented when nothing exercised it.
+ * `matchesGrant` compares a checksum only when the completion carries one, and
+ * no completion ever did, so the entire content binding was byte length. It
+ * catches an inconsistent client rather than a determined one; the binding a
+ * determined client cannot walk around is the byte size the grant was capped at,
+ * now checked in the middleware as well as in `matchesGrant`.
  *
  * A `type`, not an `interface`, and that is load-bearing: UploadThing's
  * `ValidMiddlewareObject` is `{ [key: string]: unknown }`, and TypeScript only
@@ -87,6 +111,7 @@ type UploadCallbackMetadata = {
   readonly secret: string;
   readonly eventId: string;
   readonly captureId: string;
+  readonly checksum: string;
   readonly width?: number;
   readonly height?: number;
   readonly durationSeconds?: number;
@@ -97,6 +122,7 @@ function callbackMetadataFor(ticket: UploadTicket): UploadCallbackMetadata {
     secret: ticket.secret,
     eventId: ticket.eventId,
     captureId: ticket.captureId,
+    checksum: ticket.checksum,
     ...(ticket.width === undefined ? {} : { width: ticket.width }),
     ...(ticket.height === undefined ? {} : { height: ticket.height }),
     ...(ticket.durationSeconds === undefined ? {} : { durationSeconds: ticket.durationSeconds }),
@@ -159,14 +185,18 @@ export const partyBoothFileRouter = {
         throw new UploadThingError({ code: "BAD_REQUEST", message: match.message });
       }
 
-      const file = validateMediaFile({
+      // Cheap and local, and *only* that: both sides came from the client, so
+      // this saves a round trip on an honest client's bug and proves nothing
+      // about a dishonest one. The authoritative version is below, against the
+      // grant.
+      const claimed = validateMediaFile({
         mediaType: ticket.mediaType,
         byteSize: ticket.byteSize,
         mimeType: ticket.mimeType,
         durationSeconds: ticket.durationSeconds,
       });
-      if (!file.ok) {
-        throw new UploadThingError({ code: "BAD_REQUEST", message: file.message });
+      if (!claimed.ok) {
+        throw new UploadThingError({ code: "BAD_REQUEST", message: claimed.message });
       }
 
       // The grant check. Runs as the signed-in guest: `fetchAuthMutation`
@@ -200,6 +230,53 @@ export const partyBoothFileRouter = {
         });
       }
 
+      /*
+       * The ticket against the grant it names. This is the only comparison in
+       * the middleware with a server-minted value on one side, and it is what
+       * stops a 1 MB photo grant from authorising a 250 MB "video" upload.
+       *
+       * A disagreement is not a size error to explain; it is a client
+       * describing a different file from the one it was authorised to send, so
+       * it gets the same sentence a swapped body gets and no detail about which
+       * field gave it away.
+       */
+      if (confirmed.mediaType === null || confirmed.byteSize === null) {
+        throw new UploadThingError({
+          code: "BAD_REQUEST",
+          message: "That upload is no longer valid. Take the photo again.",
+        });
+      }
+
+      const authorised = {
+        mediaType: confirmed.mediaType,
+        byteSize: confirmed.byteSize,
+        ...(confirmed.mimeType === null ? {} : { mimeType: confirmed.mimeType }),
+      };
+
+      // The comparison itself lives in `@partybooth/contracts` rather than here,
+      // for the reason the ticket does: it is a rule, it has to be verifiable
+      // with no deployment and no credentials, and a rule that only exists
+      // inside a route handler is a rule with no test.
+      const bound = checkTicketAgainstGrant(ticket, authorised);
+      if (!bound.ok) {
+        throw new UploadThingError({ code: "BAD_REQUEST", message: bound.message });
+      }
+
+      // …and the caps, applied to the grant's own facts rather than to the
+      // ticket's. `MEDIA_LIMITS` is the same table Convex consulted when it
+      // issued the grant, so this cannot disagree with it — which is the point:
+      // it is a backstop against a grant issued under an older limit, not a
+      // second opinion.
+      const capped = validateMediaFile({
+        mediaType: authorised.mediaType,
+        byteSize: authorised.byteSize,
+        mimeType: authorised.mimeType ?? ticket.mimeType,
+        durationSeconds: ticket.durationSeconds,
+      });
+      if (!capped.ok) {
+        throw new UploadThingError({ code: "BAD_REQUEST", message: capped.message });
+      }
+
       return callbackMetadataFor(ticket);
     })
     .onUploadComplete(async ({ metadata, file }) => {
@@ -219,6 +296,10 @@ export const partyBoothFileRouter = {
         fileKey: file.key,
         byteSize: file.size,
         mimeType: file.type,
+        // Forwarded so `matchesGrant` actually runs the comparison the design
+        // documents. It is the ticket's value, so it catches a client that
+        // hashed one body and sent another, not one that lies consistently.
+        checksum: metadata.checksum,
         ...(typeof metadata.width === "number" ? { width: metadata.width } : {}),
         ...(typeof metadata.height === "number" ? { height: metadata.height } : {}),
         ...(typeof metadata.durationSeconds === "number"
@@ -251,9 +332,14 @@ export type PartyBoothFileRouter = typeof partyBoothFileRouter;
  * `media.confirmUpload`, with the "no backend" branch hoisted out of the
  * middleware so the narrowing survives the `await`.
  */
-async function confirmGrant(
-  secret: string,
-): Promise<{ mediaId: string | null; state: string | null }> {
+async function confirmGrant(secret: string): Promise<{
+  mediaId: string | null;
+  state: string | null;
+  /** What the grant authorised. Server-minted — the only trustworthy values here. */
+  mediaType: MediaType | null;
+  byteSize: number | null;
+  mimeType: string | null;
+}> {
   if (!fetchAuthMutation) {
     throw new UploadThingError({
       code: "INTERNAL_SERVER_ERROR",

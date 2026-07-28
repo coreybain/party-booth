@@ -8,6 +8,7 @@ import {
   canIssueGrant,
   checkGrantEligibility,
   checkTicketAgainstFiles,
+  checkTicketAgainstGrant,
   grantExpiresAt,
   grantHasExpired,
   GRANT_POLICY,
@@ -526,6 +527,60 @@ describe("checkTicketAgainstFiles", () => {
     for (const reason of ["fileCount", "byteSize", "mimeType"] as const) {
       expect(TICKET_MISMATCH_MESSAGES[reason].length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("checkTicketAgainstGrant", () => {
+  const authorised = { mediaType: "photo", byteSize: 1_000, mimeType: "image/jpeg" } as const;
+  const ticket = { mediaType: "photo", byteSize: 1_000, mimeType: "image/jpeg" } as const;
+
+  it("accepts a ticket that describes what was granted", () => {
+    expect(checkTicketAgainstGrant(ticket, authorised)).toEqual({ ok: true });
+  });
+
+  it("refuses a photo grant re-declared as a video, which is the whole point", () => {
+    // Without this the route's size cap was applied to attacker-chosen values on
+    // both sides: 250 MB of "video" against a 1 MB photo grant passed every edge
+    // check and reached the 256 MB video slot before Convex saw it.
+    expect(
+      checkTicketAgainstGrant(
+        { mediaType: "video", byteSize: 250 * 1024 * 1024, mimeType: "video/mp4" },
+        authorised,
+      ),
+    ).toMatchObject({ ok: false, reason: "mediaType" });
+  });
+
+  it("refuses a byte size the grant was not minted for", () => {
+    expect(checkTicketAgainstGrant({ ...ticket, byteSize: 1_001 }, authorised)).toMatchObject({
+      ok: false,
+      reason: "byteSize",
+    });
+  });
+
+  it("refuses a type the grant was not minted for", () => {
+    expect(checkTicketAgainstGrant({ ...ticket, mimeType: "image/png" }, authorised)).toMatchObject(
+      {
+        ok: false,
+        reason: "mimeType",
+      },
+    );
+  });
+
+  it("ignores charset and case, the way the file check does", () => {
+    expect(
+      checkTicketAgainstGrant({ ...ticket, mimeType: "IMAGE/JPEG; charset=x" }, authorised),
+    ).toEqual({ ok: true });
+  });
+
+  it("says the same sentence whichever field gave it away", () => {
+    const messages = new Set(
+      [
+        checkTicketAgainstGrant({ ...ticket, mediaType: "video" }, authorised),
+        checkTicketAgainstGrant({ ...ticket, byteSize: 2 }, authorised),
+        checkTicketAgainstGrant({ ...ticket, mimeType: "image/png" }, authorised),
+      ].map((result) => (result.ok ? "" : result.message)),
+    );
+    expect(messages.size).toBe(1);
   });
 });
 

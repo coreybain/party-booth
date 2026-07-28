@@ -244,14 +244,26 @@ export async function seedInviteVersion(
  * pair it with `useFakeStorage(undefined)` — or the `afterEach` below — because
  * convex-test shares the module registry across a file.
  */
+/**
+ * The fake currently installed, if any.
+ *
+ * Kept so {@link seedMedia} can tell it about the object it just claimed exists.
+ * A seeded row whose key is *not* in the fake makes `deleteFiles` report a short
+ * count, which the purge path now — correctly — treats as an unfinished delete;
+ * without this every seeded withdrawal would exercise the failure branch.
+ */
+let installedFake: FakeStorageAdapter | undefined;
+
 export function useFakeStorage(options: FakeStorageOptions = {}): FakeStorageAdapter {
   const adapter = createFakeStorageAdapter(options);
   setStorageAdapterOverride(() => adapter);
+  installedFake = adapter;
   return adapter;
 }
 
 export function clearFakeStorage(): void {
   setStorageAdapterOverride(undefined);
+  installedFake = undefined;
 }
 
 /**
@@ -323,6 +335,12 @@ export async function seedMedia(
   const now = over.createdAt ?? Date.now();
   const state = over.state ?? "pending";
   const storageKey = over.storageKey ?? `key_${Math.random().toString(36).slice(2, 10)}`;
+
+  // A row that names an object and a provider that has never heard of it is not
+  // a state the product can reach, so the fake is told about it too.
+  if (state !== "processing" || over.storageKey !== undefined) {
+    installedFake?.put(storageKey, over.byteSize ?? 1024);
+  }
 
   return await t.run(async (ctx) => {
     const mediaId = await ctx.db.insert("media", {

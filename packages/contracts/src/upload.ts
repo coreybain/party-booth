@@ -346,6 +346,24 @@ export function checkGrantEligibility(input: GrantEligibilityInput): GrantEligib
     };
   }
 
+  /*
+   * **Advisory, not a security boundary.**
+   *
+   * `mediaSource` is a claim the client makes about itself: the schema derives
+   * it from the `mediaSource`/`fromLibrary` pair the caller sent and defaults to
+   * `"capture"` when neither is present, and nothing on the server corroborates
+   * it. A caller with dev tools open on the capture page uploads a photo-roll
+   * image into an event with `allowLibraryImport: false` by declaring
+   * `mediaSource: "capture"`, and no server-side proof is possible at launch —
+   * a phone cannot demonstrate that a JPEG came from its own camera.
+   *
+   * So this refuses the honest clients, which is what the setting is for: it
+   * stops a guest tapping "choose from library" at a party where the host asked
+   * for live photos only. It is a preference the first-party clients respect,
+   * and the host-facing copy says so. Making it real needs a signal the client
+   * cannot assert — a capture attestation rather than a declared source — which
+   * is post-launch work.
+   */
   if (input.mediaSource === "library" && !input.event.allowLibraryImport) {
     return {
       ok: false,
@@ -673,6 +691,68 @@ export function checkTicketAgainstFiles(
 
 function ticketFail(reason: TicketMismatch): TicketCheck {
   return { ok: false, reason, message: TICKET_MISMATCH_MESSAGES[reason] };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The ticket against the grant it names                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What `media.confirmUpload` says the grant actually authorised.
+ *
+ * Server-minted, every field: these are the values Convex capped, validated and
+ * stored when it issued the grant, handed back to the one caller that has proved
+ * it holds that grant.
+ */
+export interface AuthorisedUpload {
+  readonly mediaType: MediaType;
+  readonly byteSize: number;
+  readonly mimeType?: string | undefined;
+}
+
+export type GrantTicketMismatch = "mediaType" | "byteSize" | "mimeType";
+
+export type GrantTicketCheck =
+  { ok: true } | { ok: false; reason: GrantTicketMismatch; message: string };
+
+/**
+ * Does the ticket describe the file the grant was issued for?
+ *
+ * This is the check {@link checkTicketAgainstFiles} is *not*. That one compares
+ * two client-written values and is honest about it; this one has a server-minted
+ * value on one side of every comparison, which makes it the first point in the
+ * request path where a lie costs anything.
+ *
+ * It exists because without it the upload route's size cap was applied to
+ * attacker-chosen inputs on both sides: `ticket.byteSize` measured against the
+ * limit that `ticket.mediaType` selected. A guest holding a legitimate 1 MB
+ * photo grant could declare `mediaType: "video", byteSize: 250 MB`, be routed to
+ * the video slot, and have a quarter of a gigabyte written to private storage
+ * before Convex refused it on the way out and scheduled a delete.
+ *
+ * One sentence for all three mismatches. The caller is either an honest client
+ * whose state has drifted — in which case "ask for a fresh grant" is the whole
+ * remedy — or one probing for which field it got wrong.
+ */
+export function checkTicketAgainstGrant(
+  ticket: Pick<UploadTicket, "mediaType" | "byteSize" | "mimeType">,
+  authorised: AuthorisedUpload,
+): GrantTicketCheck {
+  const fail = (reason: GrantTicketMismatch): GrantTicketCheck => ({
+    ok: false,
+    reason,
+    message: TICKET_MISMATCH_MESSAGES.byteSize,
+  });
+
+  if (ticket.mediaType !== authorised.mediaType) return fail("mediaType");
+  if (ticket.byteSize !== authorised.byteSize) return fail("byteSize");
+  if (
+    authorised.mimeType !== undefined &&
+    normaliseMime(ticket.mimeType) !== normaliseMime(authorised.mimeType)
+  ) {
+    return fail("mimeType");
+  }
+  return { ok: true };
 }
 
 export function normaliseMime(value: string): string {

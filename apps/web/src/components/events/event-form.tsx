@@ -245,7 +245,7 @@ export function EventForm({
           />
           <ToggleField
             label="Let guests pick existing photos"
-            description="Off means the camera only — nothing from the camera roll."
+            description="Off asks the PartyBooth app for the camera only. It is a nudge, not a lock — we cannot prove where a photo came from."
             checked={values.allowLibraryImport}
             onChange={(checked) => {
               set("allowLibraryImport", checked);

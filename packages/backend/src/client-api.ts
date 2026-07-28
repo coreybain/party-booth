@@ -296,6 +296,24 @@ export interface StorageStatus {
   readonly callbackConfigured: boolean;
 }
 
+/**
+ * Withdrawn items whose bytes are still in storage.
+ *
+ * A row with `deletedAt` set and no `storageDeletedAt` is the one shape in the
+ * schema that contradicts a promise made to a guest, and nothing asked for it
+ * until this existed. It carries counts, never file keys.
+ */
+export interface StuckPurges {
+  readonly count: number;
+  readonly items: readonly {
+    readonly id: MediaId;
+    readonly captureId: string;
+    readonly deletedAt?: number;
+    readonly outstandingKeys: number;
+    readonly storageRegion: StorageRegion;
+  }[];
+}
+
 /* -------------------------------------------------------------------------- */
 /* The surface                                                                */
 /* -------------------------------------------------------------------------- */
@@ -359,10 +377,23 @@ export interface BackendApi {
      * The client says its own upload finished. Creates the media row if the
      * provider callback has not got here first, and asserts nothing about what
      * is actually in storage.
+     *
+     * It also answers with what the grant **authorised** — `mediaType`,
+     * `byteSize`, `mimeType` — which is the only server-minted description of
+     * the upload the UploadThing middleware in `apps/web` can get hold of. It
+     * refuses a ticket that disagrees, before any bytes move. The caller has
+     * already proven it holds the grant, so this discloses nothing it did not
+     * send.
      */
     readonly confirmUpload: Mutation<
       { secret: string },
-      { mediaId: MediaId | null; state: MediaState | null }
+      {
+        mediaId: MediaId | null;
+        state: MediaState | null;
+        mediaType: MediaType | null;
+        byteSize: number | null;
+        mimeType: string | null;
+      }
     >;
     /**
      * **Server-only** — the UploadThing route handler in `apps/web`, never a
@@ -390,6 +421,8 @@ export interface BackendApi {
       MediaItem[]
     >;
     readonly storageStatus: Query<{ eventId: EventId }, StorageStatus>;
+    /** Host-only. Withdrawn rows whose objects a purge never removed. */
+    readonly stuckPurges: Query<{ eventId: EventId; limit?: number }, StuckPurges>;
   };
   readonly join: {
     readonly join: Mutation<

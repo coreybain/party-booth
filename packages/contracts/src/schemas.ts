@@ -289,7 +289,17 @@ export const uploadGrantRequestSchema = z
     mediaType: mediaTypeSchema,
     byteSize: z.number().int().positive(),
     mimeType: z.string().min(1).max(128),
-    /** SHA-256 of the file, lower-case hex. Lets the callback reject a swapped body. */
+    /**
+     * SHA-256 of the file, lower-case hex.
+     *
+     * Carried back through the upload ticket and compared in `matchesGrant`, so
+     * a completion whose body is not the one the grant was minted against is
+     * refused and the object deleted. Both sides of that comparison originate on
+     * the client, so it catches an *inconsistent* client rather than a
+     * determined one — the cap that a determined client cannot walk around is
+     * `byteSize`, which the middleware now checks against the grant before any
+     * bytes move.
+     */
     checksum: checksumSchema,
     durationSeconds: z.number().positive().max(VIDEO_MAX_DURATION_SECONDS).optional(),
     capturedAt: timestampSchema.optional(),

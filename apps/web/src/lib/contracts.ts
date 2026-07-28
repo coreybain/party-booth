@@ -133,6 +133,7 @@ export {
   buildUploadTicket,
   checkGrantEligibility,
   checkTicketAgainstFiles,
+  checkTicketAgainstGrant,
   grantHasExpired,
   GRANT_POLICY,
   grantSizeCap,

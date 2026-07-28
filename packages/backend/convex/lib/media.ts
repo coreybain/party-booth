@@ -3,6 +3,7 @@ import {
   mediaStateMachine,
   type MediaState,
 } from "@partybooth/contracts/media";
+import type { Role } from "@partybooth/contracts/roles";
 import { SIGNED_READ_URL_TTL_SECONDS, type SignedReadUrl } from "@partybooth/contracts/storage";
 
 import type { Doc, Id } from "../_generated/dataModel";
@@ -251,8 +252,45 @@ async function safeUrl(
 
 export interface ProjectMediaOptions {
   viewerUserId: Id<"users">;
+  /**
+   * The viewer's role **for this event**. Decides who is allowed to be served an
+   * original whose metadata was never confirmed stripped — see
+   * {@link mayServeOriginal}.
+   */
+  viewerRole: Role;
   /** Overrides the default read TTL; see `SIGNED_READ_URL_TTL_SECONDS`. */
   expiresInSeconds?: number | undefined;
+}
+
+/**
+ * May this viewer be served the **uploaded original**?
+ *
+ * `sourceMetadataStripped` is the client's claim that it re-encoded the frame
+ * and dropped the EXIF/GPS block before uploading (ADR 0004 §7). It was being
+ * recorded on the grant, copied to the row — and then read by nothing, while
+ * `projectMedia` minted a URL for `storageKey` unconditionally. Since Sprint 3
+ * produces no server-side derivative, that URL *is* the original: a guest
+ * bypassing both first-party pipelines could upload a raw camera JPEG with a GPS
+ * fix through the public `media.requestUploadGrant` mutation and have it served
+ * at full resolution to everyone in the approved gallery. "Strip location
+ * metadata from derivatives" then rested entirely on client self-attestation
+ * with no consequence for a `false`.
+ *
+ * So the flag is load-bearing on the read path, exactly as far as ADR 0004 §7
+ * says it should be: an unconfirmed original goes to **its submitter and the
+ * hosts** and to nobody else. Hosts keep it because moderation is impossible
+ * without seeing the thing being moderated, and because a host is the party's
+ * own data controller rather than a third party; a fellow guest is a third party
+ * and gets no URL at all.
+ *
+ * Derivatives are unaffected: `previewKey`/`posterKey` are written by a server
+ * step, so anything under them is stripped by construction. When that step
+ * lands (Sprint 4) this becomes "serve the derivative instead" rather than
+ * "serve nothing".
+ */
+function mayServeOriginal(media: Doc<"media">, viewer: { isOwn: boolean; role: Role }): boolean {
+  if (media.sourceMetadataStripped === true) return true;
+  return viewer.isOwn || viewer.role === "owner" || viewer.role === "cohost";
 }
 
 export async function projectMedia(
@@ -262,9 +300,14 @@ export async function projectMedia(
 ): Promise<MediaView> {
   const ttl = options.expiresInSeconds ?? SIGNED_READ_URL_TTL_SECONDS;
   const uploader = await ctx.db.get(media.uploaderUserId);
+  const isOwn = media.uploaderUserId === options.viewerUserId;
+
+  const originalKey = mayServeOriginal(media, { isOwn, role: options.viewerRole })
+    ? media.storageKey
+    : undefined;
 
   const [original, preview] = await Promise.all([
-    safeUrl(media.storageRegion, media.storageKey, ttl),
+    safeUrl(media.storageRegion, originalKey, ttl),
     safeUrl(media.storageRegion, media.previewKey ?? media.posterKey, ttl),
   ]);
 
@@ -282,7 +325,7 @@ export async function projectMedia(
     ...(media.height === undefined ? {} : { height: media.height }),
     uploaderUserId: media.uploaderUserId,
     uploaderDisplayName: uploader?.displayName ?? "Someone",
-    isOwn: media.uploaderUserId === options.viewerUserId,
+    isOwn,
     createdAt: media.createdAt,
     ...(media.capturedAt === undefined ? {} : { capturedAt: media.capturedAt }),
     ...(media.uploadedAt === undefined ? {} : { uploadedAt: media.uploadedAt }),

@@ -125,6 +125,13 @@ export interface CompletedUploadFacts {
   readonly fileKey: string;
   readonly byteSize: number;
   readonly mimeType?: string;
+  /**
+   * SHA-256 the client computed over the body it sent, carried through the
+   * middleware metadata. `matchesGrant` compares it against the one the grant
+   * was minted with — a comparison that was documented but never exercised
+   * until this field existed, because nothing supplied it.
+   */
+  readonly checksum?: string;
   readonly width?: number;
   readonly height?: number;
   readonly durationSeconds?: number;
@@ -172,6 +179,7 @@ export async function registerCompletedUpload(
     fileKey: facts.fileKey,
     byteSize: facts.byteSize,
     ...(facts.mimeType === undefined ? {} : { mimeType: facts.mimeType }),
+    ...(facts.checksum === undefined ? {} : { checksum: facts.checksum }),
     ...(facts.width === undefined ? {} : { width: facts.width }),
     ...(facts.height === undefined ? {} : { height: facts.height }),
     ...(facts.durationSeconds === undefined ? {} : { durationSeconds: facts.durationSeconds }),

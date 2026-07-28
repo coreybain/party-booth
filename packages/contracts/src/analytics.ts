@@ -151,6 +151,17 @@ export const AUDIT_ACTIONS = {
   mediaDeleted: "media.deleted",
   /** The bytes themselves left storage. Separate from the record's tombstone. */
   mediaFilePurged: "media.file_purged",
+  /**
+   * A purge did **not** finish: the provider refused every retry, or it reported
+   * fewer deletions than objects it was handed.
+   *
+   * Its own action rather than a flag on {@link AUDIT_ACTIONS.mediaFilePurged},
+   * because "withdrawal is permanent" is the invariant this contradicts and a
+   * contradiction of an invariant has to be greppable. The row is left with
+   * `deletedAt` set, `storageDeletedAt` unset and its keys intact so
+   * `media.stuckPurges` can list it and a retry has something to name.
+   */
+  mediaFilePurgeFailed: "media.file_purge_failed",
   mediaReported: "media.reported",
 
   /** An additional address was proven by OTP (Apple private-relay path). */

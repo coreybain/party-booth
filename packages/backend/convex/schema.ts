@@ -474,8 +474,13 @@ export default defineSchema({
      * Whether the client re-encoded the frame — dropping the EXIF/GPS block —
      * before it left the device. See ADR 0004: client-side stripping is the
      * chosen strategy, and this records whether it actually happened for this
-     * item rather than assuming it did. An item without it never has its
-     * original served as a derivative.
+     * item rather than assuming it did.
+     *
+     * **Read on the read path**, not merely recorded: `projectMedia` omits the
+     * URL entirely for an item whose flag is not `true` unless the viewer is the
+     * submitter or a host. Sprint 3 writes no derivative, so the URL a read
+     * mints *is* the uploaded original — without that check a `false` here cost
+     * a bypassing client nothing.
      */
     sourceMetadataStripped: v.optional(v.boolean()),
     capturedAt: v.optional(v.number()),
@@ -489,8 +494,13 @@ export default defineSchema({
      * When the bytes actually left storage, which is a later and less certain
      * event than the record being tombstoned. The mutation cannot call the
      * provider — a Convex mutation has no network — so withdrawal schedules the
-     * delete and this is stamped when it lands. A row with `deletedAt` and no
-     * `storageDeletedAt` is one the purge worker still owes work on.
+     * delete and this is stamped when it lands — **only on a full delete**, so
+     * a provider that removed fewer objects than it was handed leaves the keys
+     * on the row rather than orphaning the bytes they name.
+     *
+     * A row with `deletedAt` and no `storageDeletedAt` is one the purge worker
+     * still owes work on, and `media.stuckPurges` is what lists them until that
+     * worker (P1) ships.
      */
     storageDeletedAt: v.optional(v.number()),
 

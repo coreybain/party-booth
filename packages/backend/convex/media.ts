@@ -1,11 +1,13 @@
 import { constantTimeEqual } from "@partybooth/contracts/codes";
 import {
+  allowedMimeTypes,
   canSeeMedia,
   MEDIA_STATES,
   mediaStateMachine,
   type MediaState,
 } from "@partybooth/contracts/media";
 import { DENIAL_MESSAGES, explainCan } from "@partybooth/contracts/permissions";
+import type { Role } from "@partybooth/contracts/roles";
 import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
 import {
   accountGrantKey,
@@ -14,6 +16,7 @@ import {
   grantSizeCap,
   grantThrottled,
   matchesGrant,
+  normaliseMime,
   type GrantResult,
   type UploadCompletionOutcome,
   type UploadRejectionReason,
@@ -56,6 +59,7 @@ import {
   settleAfterProcessing,
   type MediaView,
 } from "./lib/media";
+import { reportError } from "./lib/sentry";
 import { resolveStorageAdapter } from "./lib/storage";
 import {
   consumeGrant,
@@ -117,13 +121,24 @@ const mediaFunctions = internal.media as unknown as {
   purgeStoredFile: FunctionReference<
     "action",
     "internal",
-    { region: Doc<"media">["storageRegion"]; keys: string[]; mediaId?: Id<"media"> },
+    {
+      region: Doc<"media">["storageRegion"];
+      keys: string[];
+      mediaId?: Id<"media">;
+      attempt?: number;
+    },
     null
   >;
   markStoragePurged: FunctionReference<
     "mutation",
     "internal",
-    { mediaId: Id<"media">; deleted: number },
+    { mediaId: Id<"media">; deleted: number; requested?: number },
+    null
+  >;
+  markStoragePurgeFailed: FunctionReference<
+    "mutation",
+    "internal",
+    { mediaId: Id<"media">; attempts: number; requested: number; deleted: number },
     null
   >;
 };
@@ -394,12 +409,30 @@ async function rejectGrant(
  * Its value is latency: the "uploading…" spinner on a phone can turn into
  * "waiting for the host" the moment the bytes leave, without waiting for a
  * server-to-server callback to cross the country.
+ *
+ * ## Why it also returns `mediaType`, `byteSize` and `mimeType`
+ *
+ * Because the UploadThing middleware in `apps/web` calls this, and until it did
+ * there was **nothing in the request path that knew what the grant authorised**.
+ * The middleware only ever saw the ticket, and a ticket is entirely
+ * client-written: a guest holding a legitimate 1 MB photo grant could declare
+ * `mediaType: "video", byteSize: 250 MB`, pass every edge check, and have a
+ * quarter of a gigabyte written to private storage before Convex rejected it on
+ * the way back out. Answering with the grant's own facts is what lets the edge
+ * refuse that before any bytes move.
+ *
+ * It discloses nothing: the caller has already proven it holds this grant, and
+ * these are the three values it sent when it asked for one.
  */
 export const confirmUpload = mutation({
   args: { secret: v.string() },
   returns: v.object({
     mediaId: v.union(v.id("media"), v.null()),
     state: v.union(mediaState, v.null()),
+    /** What the grant authorised. `null` only when the grant is unknown. */
+    mediaType: v.union(mediaType, v.null()),
+    byteSize: v.union(v.number(), v.null()),
+    mimeType: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
@@ -410,17 +443,25 @@ export const confirmUpload = mutation({
     // answers must not tell a caller whether a secret exists.
     if (!grant || grant.userId !== user._id) throw notFound("That upload");
 
+    // Attached to every answer below, including the ones that refuse: the caller
+    // that needs them most is the middleware deciding whether to let bytes move.
+    const authorised = {
+      mediaType: grant.mediaType,
+      byteSize: grant.byteSize,
+      mimeType: grant.mimeType,
+    };
+
     const existing = await findMediaByCapture(ctx, grant.eventId, grant.captureId);
     if (existing) {
       // Never regress a row the callback has already settled, and never revive a
       // withdrawn one.
-      return { mediaId: existing._id, state: existing.state };
+      return { mediaId: existing._id, state: existing.state, ...authorised };
     }
 
     // A grant whose time ran out with nothing stored creates nothing: the client
     // has to ask for a new one, which re-runs every check.
     if (grant.status === "expired" || Date.now() > grant.expiresAt) {
-      return { mediaId: null, state: null };
+      return { mediaId: null, state: null, ...authorised };
     }
 
     const now = Date.now();
@@ -430,7 +471,7 @@ export const confirmUpload = mutation({
     if (row === null) throw notFound("That upload");
 
     await linkGrantToMedia(ctx, grant._id, row.media._id, now);
-    return { mediaId: row.media._id, state: row.media.state };
+    return { mediaId: row.media._id, state: row.media.state, ...authorised };
   },
 });
 
@@ -558,12 +599,31 @@ export const completeUpload = mutation({
       return { outcome: "duplicate", mediaId: media._id, state: media.state };
     }
 
+    /*
+     * The provider-reported content type is a **claim**, and it reaches us
+     * having passed through the client that uploaded the body. Patching it onto
+     * the row unchecked let an item settle carrying a `mimeType` its grant's
+     * `mediaType` does not admit — a row saying `video/mp4` under a photo grant,
+     * which every downstream renderer then believes.
+     *
+     * A disagreement is not a correction, so the grant's own (already validated)
+     * mimeType is kept and the provider's is dropped. It is not grounds to
+     * discard the bytes: `matchesGrant` has already agreed on byte size and
+     * checksum, so this is a provider or client that describes the same body
+     * differently, not a different body.
+     */
+    const reportedMime =
+      input.mimeType !== undefined &&
+      allowedMimeTypes(grant.mediaType).includes(normaliseMime(input.mimeType))
+        ? normaliseMime(input.mimeType)
+        : undefined;
+
     await ctx.db.patch(media._id, {
       storageKey: input.fileKey,
       grantId: grant._id,
       uploadedAt: now,
       updatedAt: now,
-      ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
+      ...(reportedMime === undefined ? {} : { mimeType: reportedMime }),
       ...(input.width === undefined ? {} : { width: input.width }),
       ...(input.height === undefined ? {} : { height: input.height }),
       ...(input.durationSeconds === undefined ? {} : { durationSeconds: input.durationSeconds }),
@@ -759,25 +819,104 @@ export const withdraw = mutation({
 /* Storage side-effects (actions — the only place with a network)             */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * How long to wait before each re-attempt at deleting objects.
+ *
+ * Bounded and explicit because **Convex does not retry a failed scheduled
+ * action**. Only mutations get automatic retry; an action that throws is logged
+ * and forgotten, which for this function means a withdrawn guest's photo sitting
+ * in private storage indefinitely behind a row that says it is gone. The retry
+ * therefore has to be written, and its length is the array: four attempts over
+ * about six minutes, which covers a provider blip without turning a permanent
+ * misconfiguration (no `UPLOADTHING_TOKEN`) into an endless scheduler loop.
+ */
+const PURGE_RETRY_DELAYS_MS = [15_000, 60_000, 300_000] as const;
+
 export const purgeStoredFile = internalAction({
   args: {
     region: storageRegion,
     keys: v.array(v.string()),
     mediaId: v.optional(v.id("media")),
+    /** 1 for the first try. Threaded so the backoff is stateless. */
+    attempt: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    // Deliberately *not* wrapped in a try/catch. A withdrawal whose bytes are
-    // still in storage is the worst outcome in the product, so a failure here
-    // must surface as a failed action Convex will retry and Sentry will see —
-    // never as a quiet log line next to a row that claims to be deleted.
+    const attempt = args.attempt ?? 1;
     const adapter = resolveStorageAdapter(args.region);
-    const { deleted } = await adapter.deleteFiles(args.keys);
+
+    let deleted: number;
+    try {
+      ({ deleted } = await adapter.deleteFiles(args.keys));
+    } catch (error) {
+      /*
+       * A failed delete used to be invisible: the action threw, the comment here
+       * claimed Convex would retry it, and nothing did. So this reports, then
+       * re-schedules itself with a bounded backoff, and gives up loudly rather
+       * than quietly. `reportError` is safe in an action — actions have `fetch`
+       * — and falls back to a scrubbed `console.error` with no DSN.
+       */
+      const nextDelay = PURGE_RETRY_DELAYS_MS[attempt - 1];
+      await reportError({
+        scope: "media.purgeStoredFile",
+        error,
+        level: nextDelay === undefined ? "error" : "warning",
+        extra: {
+          region: args.region,
+          keyCount: args.keys.length,
+          attempt,
+          willRetry: nextDelay !== undefined,
+          ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
+        },
+      });
+
+      if (nextDelay !== undefined) {
+        await ctx.scheduler.runAfter(nextDelay, mediaFunctions.purgeStoredFile, {
+          region: args.region,
+          keys: args.keys,
+          ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
+          attempt: attempt + 1,
+        });
+        return null;
+      }
+
+      if (args.mediaId !== undefined) {
+        await ctx.runMutation(mediaFunctions.markStoragePurgeFailed, {
+          mediaId: args.mediaId,
+          attempts: attempt,
+          requested: args.keys.length,
+          deleted: 0,
+        });
+      }
+      return null;
+    }
+
+    if (deleted < args.keys.length) {
+      /*
+       * The call succeeded and removed fewer objects than it was handed.
+       * UploadThing's `deletedCount` can legitimately be lower on a partial or
+       * no-op delete, and the old code stamped the row as purged anyway — which
+       * threw away the only record of *which* objects were left behind. Nothing,
+       * including the P1 purge worker, could ever find them again.
+       */
+      await reportError({
+        scope: "media.purgeStoredFile",
+        error: new Error(`storage delete removed ${deleted} of ${args.keys.length} objects`),
+        level: "warning",
+        extra: {
+          region: args.region,
+          keyCount: args.keys.length,
+          deleted,
+          ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
+        },
+      });
+    }
 
     if (args.mediaId !== undefined) {
       await ctx.runMutation(mediaFunctions.markStoragePurged, {
         mediaId: args.mediaId,
         deleted,
+        requested: args.keys.length,
       });
     }
     return null;
@@ -791,14 +930,40 @@ export const purgeStoredFile = internalAction({
  * a row that can still mint a signed URL. After this there is nothing on the
  * record that names an object, which is what makes the read paths safe by
  * construction rather than by remembering to filter.
+ *
+ * **Only on a full delete.** `requested` is the number of keys the action was
+ * handed and `deleted` is what the provider says it removed; a short count means
+ * at least one object survived, and clearing the keys then would destroy the
+ * only pointer to it. On a shortfall the row keeps its keys, keeps `deletedAt`
+ * without `storageDeletedAt` — so {@link stuckPurges} lists it — and gets an
+ * audit row saying so.
  */
 export const markStoragePurged = internalMutation({
-  args: { mediaId: v.id("media"), deleted: v.number() },
+  args: { mediaId: v.id("media"), deleted: v.number(), requested: v.optional(v.number()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const media = await ctx.db.get(args.mediaId);
     if (!media) return null;
     const now = Date.now();
+
+    const requested = args.requested ?? args.deleted;
+    if (args.deleted < requested) {
+      await writeAuditEvent(ctx, {
+        action: AUDIT_ACTIONS.mediaFilePurgeFailed,
+        subjectType: "media",
+        subjectId: media._id,
+        eventId: media.eventId,
+        metadata: {
+          deleted: args.deleted,
+          requested,
+          storageRegion: media.storageRegion,
+          reason: "shortDelete",
+        },
+        now,
+      });
+      await ctx.db.patch(media._id, { updatedAt: now });
+      return null;
+    }
 
     await ctx.db.patch(media._id, {
       storageKey: undefined,
@@ -813,10 +978,111 @@ export const markStoragePurged = internalMutation({
       subjectType: "media",
       subjectId: media._id,
       eventId: media.eventId,
-      metadata: { deleted: args.deleted, storageRegion: media.storageRegion },
+      metadata: { deleted: args.deleted, requested, storageRegion: media.storageRegion },
       now,
     });
     return null;
+  },
+});
+
+/**
+ * The provider refused every attempt. Leave the evidence, loudly.
+ *
+ * No keys are cleared and no timestamp is stamped, so the row stays visible to
+ * {@link stuckPurges} and a later retry has something to name. The audit row is
+ * the thing an incident is reconstructed from: it is the moment the product's
+ * "withdrawal is permanent" promise became false for one item.
+ */
+export const markStoragePurgeFailed = internalMutation({
+  args: {
+    mediaId: v.id("media"),
+    attempts: v.number(),
+    requested: v.number(),
+    deleted: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const media = await ctx.db.get(args.mediaId);
+    if (!media) return null;
+    const now = Date.now();
+
+    await writeAuditEvent(ctx, {
+      action: AUDIT_ACTIONS.mediaFilePurgeFailed,
+      subjectType: "media",
+      subjectId: media._id,
+      eventId: media.eventId,
+      metadata: {
+        attempts: args.attempts,
+        requested: args.requested,
+        deleted: args.deleted,
+        storageRegion: media.storageRegion,
+        reason: "deleteFailed",
+      },
+      now,
+    });
+    await ctx.db.patch(media._id, { updatedAt: now });
+    return null;
+  },
+});
+
+/**
+ * Withdrawn items whose bytes are still in storage.
+ *
+ * A tombstoned row with no `storageDeletedAt` is the one shape in this schema
+ * that contradicts a promise made to a guest, and until this query existed
+ * nothing anywhere asked for it — the sweep ADR 0004 §6 refers to is the P1
+ * purge worker, which has not shipped. Four bounded retries plus a Sentry report
+ * cover the transient case; this covers the one where they all failed, so a
+ * stuck purge is answerable from the host console on the night rather than from
+ * a log line nobody read.
+ *
+ * Host-only and scoped to one event, like `storageStatus`: it names
+ * infrastructure and it is a fact about the host's own party. It returns counts
+ * and timestamps, never a file key.
+ */
+export const stuckPurges = query({
+  args: { eventId: v.id("events"), limit: v.optional(v.number()) },
+  returns: v.object({
+    count: v.number(),
+    items: v.array(
+      v.object({
+        id: v.id("media"),
+        captureId: v.string(),
+        deletedAt: v.optional(v.number()),
+        /** How many objects the row still names. Never the keys themselves. */
+        outstandingKeys: v.number(),
+        storageRegion,
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+    if (actor.role !== "owner" && actor.role !== "cohost") throw forbidden();
+
+    const rows = await ctx.db
+      .query("media")
+      .withIndex("by_event_and_state", (q) => q.eq("eventId", args.eventId).eq("state", "deleted"))
+      .collect();
+
+    const stuck = rows.filter(
+      (row) => row.deletedAt !== undefined && row.storageDeletedAt === undefined,
+    );
+
+    return {
+      count: stuck.length,
+      items: stuck
+        .sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0))
+        .slice(0, args.limit ?? 50)
+        .map((row) => ({
+          id: row._id,
+          captureId: row.captureId,
+          ...(row.deletedAt === undefined ? {} : { deletedAt: row.deletedAt }),
+          outstandingKeys: [row.storageKey, row.previewKey, row.posterKey].filter(
+            (key) => key !== undefined,
+          ).length,
+          storageRegion: row.storageRegion,
+        })),
+    };
   },
 });
 
@@ -830,12 +1096,28 @@ export const markStoragePurged = internalMutation({
  * Includes `processing`, `pending` and `declined`, because the whole point of
  * the screen is to tell the person who sent it what happened to it. Excludes
  * `deleted`, because they withdrew it.
+ *
+ * The `media.viewOwn` check is what makes an account state mean something here.
+ * `requireEventActor` resolves identity through `requireUser`, not
+ * `requireActiveUser` — deliberately, because a locked user must still be able
+ * to read their own account and find out why — so without this a `locked` or
+ * `deletionScheduled` account kept full access to its media and minted a fresh
+ * ten-minute signed URL on every poll. PLAN.md: accounts scheduled for deletion
+ * "lose access" immediately, and `accountStateAllows` inside `explainCan` is
+ * where that becomes true.
  */
 export const myMedia = query({
   args: { eventId: v.id("events") },
   returns: v.array(mediaViewValidator),
   handler: async (ctx, args): Promise<MediaView[]> => {
     const actor = await requireEventActor(ctx, args.eventId);
+
+    requirePermission(toPermissionActor(actor.user, actor.role), "media.viewOwn", {
+      kind: "media",
+      state: "pending",
+      isOwn: true,
+      event: { state: actor.event.state },
+    });
 
     const rows = await ctx.db
       .query("media")
@@ -847,7 +1129,7 @@ export const myMedia = query({
     const visible = rows.filter((row) =>
       canSeeMedia(actor.role, { state: row.state, isOwn: true }),
     );
-    return await projectAll(ctx, visible, actor.user._id);
+    return await projectAll(ctx, visible, { userId: actor.user._id, role: actor.role });
   },
 });
 
@@ -909,19 +1191,21 @@ export const eventMedia = query({
 
     const limited = visible.sort((a, b) => b.createdAt - a.createdAt).slice(0, input.limit ?? 200);
 
-    return await projectAll(ctx, limited, actor.user._id);
+    return await projectAll(ctx, limited, { userId: actor.user._id, role: actor.role });
   },
 });
 
 async function projectAll(
   ctx: Parameters<typeof projectMedia>[0],
   rows: readonly Doc<"media">[],
-  viewerUserId: Id<"users">,
+  viewer: { userId: Id<"users">; role: Role },
 ): Promise<MediaView[]> {
   const sorted = [...rows].sort((a, b) => b.createdAt - a.createdAt);
   const views: MediaView[] = [];
   for (const row of sorted) {
-    views.push(await projectMedia(ctx, row, { viewerUserId }));
+    views.push(
+      await projectMedia(ctx, row, { viewerUserId: viewer.userId, viewerRole: viewer.role }),
+    );
   }
   return views;
 }

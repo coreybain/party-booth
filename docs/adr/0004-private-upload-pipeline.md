@@ -36,6 +36,28 @@ Before any bytes move, a guest calls `media.requestUploadGrant`. It is permissio
 bound to `{eventId, captureId, mediaType, byteSize, checksum, storageRegion}` and valid for **two
 minutes**.
 
+The `allowLibraryImport` gate is **advisory, and is documented as such**. It is decided on
+`mediaSource`, which the client asserts about itself and which defaults to `"capture"` when absent,
+and no server-side proof is possible at launch — a phone cannot demonstrate that a JPEG came from
+its own camera. It stops a guest tapping "choose from library" at a party where the host asked for
+live photos; it is not a security boundary, and the host-facing copy now says so. Making it real
+needs a capture attestation rather than a declared source.
+
+The binding is only worth as much as the point at which it is checked, and the route handler in
+`apps/web` is the earliest one. `media.confirmUpload` answers the middleware with the grant's own
+`mediaType`, `byteSize` and `mimeType`, and `checkTicketAgainstGrant` refuses a ticket that
+disagrees **before a presigned URL exists**. Without that the middleware's cap was applied to
+attacker-chosen values on both sides — `ticket.byteSize` measured against whichever limit
+`ticket.mediaType` selected — so a legitimate 1 MB photo grant authorised a 250 MB "video" upload
+into private storage, which Convex then refused and scheduled for deletion. At sixty grants per five
+minutes that is about fifteen gigabytes of transient stored bytes and paid egress per guest.
+
+`checksum` is compared in `matchesGrant` at completion, and the upload ticket now carries it through
+the middleware metadata so that comparison actually runs. Both sides of it originate on the client,
+so it catches an inconsistent client rather than a determined one; **`byteSize` is the binding a
+determined client cannot walk around**, because one side of that comparison is the value the server
+capped when it issued the grant.
+
 The secret is **stored as a SHA-256**, exactly the way `userEmails` stores OTP codes: a leak of
 `uploadGrants` must not be a leak of usable capabilities. It is returned once and never logged or
 audited.
@@ -112,10 +134,32 @@ admins see nothing, because admins never look at guests' photos.
 
 A late callback that races all of this finds the row `deleted` and deletes its own bytes.
 
-The delete is an **action** because a mutation has no network. It deliberately does not catch: a
-withdrawal whose bytes are still in storage is the worst outcome in the product, so it must surface
-as a failed action that Convex retries and Sentry sees, never as a log line next to a row that
-claims to be deleted.
+The delete is an **action** because a mutation has no network.
+
+An earlier draft of this section said the action should simply not catch, "so it must surface as a
+failed action that Convex retries and Sentry sees". That was wrong on both halves and it made the
+worst outcome in the product a silent one. **Convex does not automatically retry a failed scheduled
+action** — only mutations get that, which is what the action-retrier component exists for — and
+nothing in the deployment called `reportError`, so the only trace was a Convex log line. A single
+UploadThing 5xx, or a deployment with `UPLOADTHING_TOKEN` unset (where `unconfiguredAdapter`
+rejects unconditionally), left a withdrawn guest's photo in private storage indefinitely behind a
+row that told them it was gone.
+
+So the retry is **written**: `purgeStoredFile` reports through `reportError` and re-schedules itself
+with a bounded backoff (four attempts over about six minutes), then gives up loudly rather than
+quietly — an audit row (`media.file_purge_failed`) and a record that still names the objects, so a
+retry has something to work from. A bounded loop rather than an unbounded one because a permanent
+misconfiguration must not become an endless scheduler job.
+
+The same applies to a delete that _succeeds_ and removes less than it was asked to. UploadThing's
+`deletedCount` can legitimately come back lower than the number of keys; the row is stamped
+`storageDeletedAt` and stripped of its keys **only on a full delete**, because clearing them on a
+short count destroys the only pointer to bytes that are still there and no later sweep — including
+the P1 purge worker — could ever find them again.
+
+And because a stuck purge that nobody can see is a stuck purge that stays stuck,
+`media.stuckPurges` lists rows with `deletedAt` set and `storageDeletedAt` unset for the host
+console. It returns counts, never keys.
 
 ### 7. Location metadata is stripped **client-side, at capture, by re-encoding**
 
@@ -130,9 +174,21 @@ in a runtime that has none (Convex's isolate cannot run `sharp`); and it cannot 
 original at all under the "never retain pre-effect frames" rule, only to derivatives.
 
 Because the client cannot be trusted, the claim is **recorded, not assumed**:
-`media.sourceMetadataStripped` carries what the client said it did. An item without it is never
-served as a derivative to anyone but its submitter and the hosts. Verifying it server-side is
-post-launch work; the field is what makes that a query rather than a migration.
+`media.sourceMetadataStripped` carries what the client said it did, and the read path enforces it.
+`projectMedia` omits `url` entirely for an item whose flag is not `true` unless the viewer is the
+submitter or a host. That enforcement is the whole point of recording the flag and it was missing
+for a while: Sprint 3 produces no server-side derivative, so the URL a read path mints **is** the
+uploaded original, and `media.requestUploadGrant` is a public mutation reachable from the browser
+bundle. Without the check, a guest bypassing both first-party pipelines could push a raw camera
+JPEG with a GPS fix and have it served at full resolution to the whole approved gallery, with a
+`false` on the flag costing them nothing.
+
+Hosts keep access because moderating a photo you cannot see is not moderation, and a host is the
+party's own data controller rather than a third party. A fellow guest is a third party.
+
+Verifying the claim server-side is post-launch work; the field is what makes that a query rather
+than a migration. When the derivative step lands, the check becomes "serve the derivative instead"
+rather than "serve nothing".
 
 ## Consequences
 
@@ -151,6 +207,14 @@ that is diagnosable from the host console rather than from a log.
   check and the write apart, or into an action, removes it without changing a line of the policy.
 - **`UPLOAD_CALLBACK_SECRET` is a real credential.** It is what stands between a guest and pointing a
   media row at somebody else's file.
+- **A check whose two sides both come from the client is not a check.** Two of the controls here read
+  as enforcement and were not, until one side of each comparison came from the server: the
+  middleware's size and type cap (now against `confirmUpload`'s answer) and the
+  `sourceMetadataStripped` flag (now read on the read path). Anything added to the ticket deserves
+  the same question before it is described as a limit.
+- **Convex does not retry a failed scheduled action.** Only mutations get automatic retry. Any
+  scheduled action whose failure matters has to carry its own bounded backoff and its own alert;
+  `purgeStoredFile` is the worked example.
 - **Ten minutes of signed URL outlives a moderation decision.** Declining a photo does not invalidate
   a URL already handed out; only deleting the object does. Withdrawal deletes; declining does not.
   That is the correct trade for a host who changes their mind at 1am, and it is a trade.

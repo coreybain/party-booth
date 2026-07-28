@@ -7,6 +7,7 @@ import {
   auditActions,
   CALLBACK_SECRET,
   clearFakeStorage,
+  internal,
   makeTest,
   seedEvent,
   seedMedia,
@@ -573,7 +574,15 @@ describe("completion idempotency", () => {
     const result = await f.t
       .withIdentity({ subject: "guest" })
       .mutation(api.media.confirmUpload, { secret });
-    expect(result).toEqual({ mediaId: null, state: null });
+    // No row and no state — but the grant's own facts still come back, because
+    // the middleware needs them to refuse a ticket that disagrees.
+    expect(result).toEqual({
+      mediaId: null,
+      state: null,
+      mediaType: "photo",
+      byteSize: 2048,
+      mimeType: "image/jpeg",
+    });
     expect(await mediaRows(f)).toHaveLength(0);
   });
 });
@@ -873,5 +882,309 @@ describe("read paths", () => {
     await expect(
       f.t.withIdentity({ subject: "admin" }).query(api.media.eventMedia, { eventId: f.eventId }),
     ).rejects.toThrow();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The ticket against the grant                                               */
+/* -------------------------------------------------------------------------- */
+
+describe("media.confirmUpload authorises the ticket", () => {
+  it("answers with what the grant actually authorised", async () => {
+    const f = await fixture();
+    const { secret } = await grant(f);
+
+    // The UploadThing middleware has nothing else to compare a ticket against:
+    // before this, every value it checked came from the client on both sides, so
+    // a 1 MB photo grant authorised a 250 MB "video" upload as far as the edge
+    // could tell. `checkTicketAgainstGrant` in `@partybooth/contracts` is what
+    // consumes these.
+    const confirmed = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.confirmUpload, { secret });
+
+    expect(confirmed).toMatchObject({
+      state: "processing",
+      mediaType: "photo",
+      byteSize: 2048,
+      mimeType: "image/jpeg",
+    });
+  });
+
+  it("reports the grant's facts even for a capture that is already settled", async () => {
+    const f = await fixture();
+    const { secret } = await grant(f);
+    await f.t.mutation(api.media.completeUpload, completionArgs(secret));
+
+    const confirmed = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.confirmUpload, { secret });
+    expect(confirmed).toMatchObject({ state: "pending", mediaType: "photo", byteSize: 2048 });
+  });
+});
+
+describe("media.completeUpload and the provider's content type", () => {
+  it("keeps the granted type when the provider reports one the grant does not admit", async () => {
+    const f = await fixture();
+    const { secret } = await grant(f);
+
+    const completed = await f.t.mutation(
+      api.media.completeUpload,
+      completionArgs(secret, { mimeType: "video/mp4" }),
+    );
+    expect(completed.outcome).toBe("registered");
+
+    // A row saying `video/mp4` under a photo grant is one every downstream
+    // renderer believes. The disagreement is dropped, not applied.
+    const row = await f.t.run(async (ctx) => ctx.db.get(completed.mediaId as Id<"media">));
+    expect(row?.mimeType).toBe("image/jpeg");
+    expect(row?.mediaType).toBe("photo");
+  });
+
+  it("accepts a supported type the provider normalised differently", async () => {
+    const f = await fixture();
+    const { secret } = await grant(f, { mimeType: "image/png" });
+    const completed = await f.t.mutation(
+      api.media.completeUpload,
+      completionArgs(secret, { mimeType: "IMAGE/PNG; charset=binary" }),
+    );
+    const row = await f.t.run(async (ctx) => ctx.db.get(completed.mediaId as Id<"media">));
+    expect(row?.mimeType).toBe("image/png");
+  });
+
+  it("refuses a completion whose checksum the middleware now forwards", async () => {
+    const f = await fixture();
+    const storage = useFakeStorage();
+    const { secret } = await grant(f);
+    storage.put(FILE_KEY);
+
+    const result = await f.t.mutation(
+      api.media.completeUpload,
+      completionArgs(secret, { checksum: "b".repeat(64) }),
+    );
+    expect(result).toMatchObject({ outcome: "discarded", reason: "checksum" });
+    await runScheduled(f.t);
+    expect(storage.has(FILE_KEY)).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Account state on the read path                                             */
+/* -------------------------------------------------------------------------- */
+
+describe("media.myMedia and account state", () => {
+  it.each(["locked", "deletionScheduled", "deleted"] as const)(
+    "refuses a %s account rather than minting it fresh signed URLs",
+    async (accountState) => {
+      const f = await fixture();
+      await seedMedia(f.t, f.eventId, f.guestId, { state: "pending" });
+      await f.t.run(async (ctx) => ctx.db.patch(f.guestId, { accountState }));
+
+      // `requireEventActor` resolves identity through `requireUser`, not
+      // `requireActiveUser` — deliberately, so a locked user can still read
+      // their own account and find out why. `media.viewOwn` is what makes the
+      // account state mean something here, and it was enforced nowhere.
+      await expect(
+        f.t.withIdentity({ subject: "guest" }).query(api.media.myMedia, { eventId: f.eventId }),
+      ).rejects.toThrow();
+    },
+  );
+
+  it("still serves an active account", async () => {
+    const f = await fixture();
+    await seedMedia(f.t, f.eventId, f.guestId, { state: "pending" });
+    expect(
+      await f.t.withIdentity({ subject: "guest" }).query(api.media.myMedia, { eventId: f.eventId }),
+    ).toHaveLength(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Unstripped originals                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("sourceMetadataStripped is load-bearing on the read path", () => {
+  async function seedUnstripped(f: Fixture, stripped: boolean | undefined) {
+    const mediaId = await seedMedia(f.t, f.eventId, f.otherGuestId, { state: "approved" });
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(
+        mediaId,
+        stripped === undefined ? {} : { sourceMetadataStripped: stripped },
+      );
+    });
+    return mediaId;
+  }
+
+  it("never serves an unconfirmed original to a fellow guest", async () => {
+    const f = await fixture();
+    await seedUnstripped(f, undefined);
+
+    // Sprint 3 produces no derivative, so the URL `projectMedia` mints *is* the
+    // uploaded original. A guest bypassing both first-party pipelines could push
+    // a raw camera JPEG with a GPS fix through the public grant mutation and
+    // have it served at full resolution to the whole gallery.
+    const [seen] = await f.t
+      .withIdentity({ subject: "guest" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(seen?.state).toBe("approved");
+    expect(seen?.url).toBeUndefined();
+    expect(seen?.urlExpiresAt).toBeUndefined();
+  });
+
+  it("serves it once the client says it re-encoded", async () => {
+    const f = await fixture();
+    await seedUnstripped(f, true);
+    const [seen] = await f.t
+      .withIdentity({ subject: "guest" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(seen?.url).toMatch(/^https:\/\/fake\.ufs\.test\//);
+  });
+
+  it("refuses a client that says it did not", async () => {
+    const f = await fixture();
+    await seedUnstripped(f, false);
+    const [seen] = await f.t
+      .withIdentity({ subject: "guest" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(seen?.url).toBeUndefined();
+  });
+
+  it("still serves it to the submitter and to the hosts", async () => {
+    const f = await fixture();
+    await seedUnstripped(f, undefined);
+
+    // ADR 0004 §7: an unconfirmed original goes to its submitter and the hosts
+    // and to nobody else. Hosts keep it because moderating a thing you cannot
+    // see is not moderation.
+    const [own] = await f.t
+      .withIdentity({ subject: "other" })
+      .query(api.media.myMedia, { eventId: f.eventId });
+    expect(own?.url).toMatch(/^https:\/\/fake\.ufs\.test\//);
+
+    const [asHost] = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(asHost?.url).toMatch(/^https:\/\/fake\.ufs\.test\//);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* A purge that does not finish                                               */
+/* -------------------------------------------------------------------------- */
+
+describe("purging is retried, then surfaced", () => {
+  async function scheduledJobs(f: Fixture) {
+    return await f.t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  }
+
+  it("schedules a retry when the provider refuses, rather than trusting Convex to", async () => {
+    const f = await fixture();
+    useFakeStorage({ failDeletes: true });
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      storageKey: "k-doomed",
+    });
+
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+    await runScheduled(f.t);
+
+    // Convex retries failed *mutations*, not failed scheduled actions — the
+    // comment that claimed otherwise is what made this silent. The retry is
+    // written, so it exists as a queued job.
+    const pending = (await scheduledJobs(f)).filter(
+      (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
+    );
+    expect(pending.length).toBeGreaterThan(0);
+
+    // …and nothing has claimed the bytes are gone.
+    const row = await f.t.run(async (ctx) => ctx.db.get(mediaId));
+    expect(row?.storageDeletedAt).toBeUndefined();
+    expect(row?.storageKey).toBe("k-doomed");
+  });
+
+  it("gives up loudly on the last attempt, leaving the keys to retry from", async () => {
+    const f = await fixture();
+    useFakeStorage({ failDeletes: true });
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      storageKey: "k-doomed",
+    });
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+
+    await f.t.action(internal.media.purgeStoredFile, {
+      region: "pdx1",
+      keys: ["k-doomed"],
+      mediaId,
+      attempt: 99,
+    });
+
+    const row = await f.t.run(async (ctx) => ctx.db.get(mediaId));
+    expect(row?.storageDeletedAt).toBeUndefined();
+    expect(row?.storageKey).toBe("k-doomed");
+    expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.mediaFilePurgeFailed);
+  });
+
+  it("does not stamp a row as purged when the provider deleted fewer objects than it was given", async () => {
+    const f = await fixture();
+    const storage = useFakeStorage();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      storageKey: "k-half",
+    });
+    // The provider quietly no-ops on this one. `deletedCount` comes back lower
+    // than the number of keys and the call still resolves; the old code stamped
+    // the row purged and cleared the keys, destroying the only pointer to bytes
+    // that are still there.
+    storage.reset();
+
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+    await runScheduled(f.t);
+
+    const row = await f.t.run(async (ctx) => ctx.db.get(mediaId));
+    expect(row?.state).toBe("deleted");
+    expect(row?.storageDeletedAt).toBeUndefined();
+    expect(row?.storageKey).toBe("k-half");
+    expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.mediaFilePurgeFailed);
+  });
+
+  it("lists a stuck purge for the host, without naming an object", async () => {
+    const f = await fixture();
+    const storage = useFakeStorage();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      storageKey: "k-half",
+    });
+    storage.reset();
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+    await runScheduled(f.t);
+
+    const stuck = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.media.stuckPurges, { eventId: f.eventId });
+    expect(stuck.count).toBe(1);
+    expect(stuck.items[0]).toMatchObject({ id: mediaId, outstandingKeys: 1 });
+    expect(JSON.stringify(stuck)).not.toContain("k-half");
+
+    // A guest has no business knowing about the party's storage.
+    await expect(
+      f.t.withIdentity({ subject: "guest" }).query(api.media.stuckPurges, { eventId: f.eventId }),
+    ).rejects.toThrow(/forbidden/i);
+  });
+
+  it("reports nothing once a purge completes cleanly", async () => {
+    const f = await fixture();
+    useFakeStorage();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, { state: "approved" });
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+    await runScheduled(f.t);
+
+    const row = await f.t.run(async (ctx) => ctx.db.get(mediaId));
+    expect(row?.storageDeletedAt).toBeDefined();
+    expect(row?.storageKey).toBeUndefined();
+
+    const stuck = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.media.stuckPurges, { eventId: f.eventId });
+    expect(stuck).toEqual({ count: 0, items: [] });
   });
 });
