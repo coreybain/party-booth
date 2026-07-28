@@ -173,15 +173,20 @@ afterwards, so the window in which the sensitive artefact exists is real; it nee
 in a runtime that has none (Convex's isolate cannot run `sharp`); and it cannot be applied to the
 original at all under the "never retain pre-effect frames" rule, only to derivatives.
 
-Because the client cannot be trusted, the claim is **recorded, not assumed**:
-`media.sourceMetadataStripped` carries what the client said it did, and the read path enforces it.
-`projectMedia` omits `url` entirely for an item whose flag is not `true` unless the viewer is the
-submitter or a host. That enforcement is the whole point of recording the flag and it was missing
-for a while: Sprint 3 produces no server-side derivative, so the URL a read path mints **is** the
-uploaded original, and `media.requestUploadGrant` is a public mutation reachable from the browser
-bundle. Without the check, a guest bypassing both first-party pipelines could push a raw camera
-JPEG with a GPS fix and have it served at full resolution to the whole approved gallery, with a
-`false` on the flag costing them nothing.
+Because the client cannot be trusted, the claim is **recorded, not assumed**: the media row carries
+what the client said it did, and the read path enforces it. `projectMedia` omits `url` entirely for
+an item that cannot promise it carries no location, unless the viewer is the submitter or a host.
+
+> **Amended in Sprint 4.** The claim is now two booleans rather than one, because video broke the
+> identity between them: `sourceMetadataStripped` ("was re-encoded", required by a derivative grant)
+> and `sourceCarriesNoLocation` ("carries no location", read here). Absent means "same as the
+> re-encode claim", so everything below still describes the photo path exactly. See `MetadataClaim`
+> in `@partybooth/contracts/media` and [ADR 0008](0008-client-produced-derivatives.md). That enforcement is the whole point of recording the flag and it was missing
+> for a while: Sprint 3 produces no server-side derivative, so the URL a read path mints **is** the
+> uploaded original, and `media.requestUploadGrant` is a public mutation reachable from the browser
+> bundle. Without the check, a guest bypassing both first-party pipelines could push a raw camera
+> JPEG with a GPS fix and have it served at full resolution to the whole approved gallery, with a
+> `false` on the flag costing them nothing.
 
 Hosts keep access because moderating a photo you cannot see is not moderation, and a host is the
 party's own data controller rather than a third party. A fellow guest is a third party.

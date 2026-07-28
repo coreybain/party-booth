@@ -22,6 +22,8 @@ erDiagram
     events ||--o{ media : collects
     inviteVersions ||--o{ memberships : "admitted under"
     media ||--o{ moderationDecisions : "reviewed by"
+    media ||--o{ mediaReports : "flagged by"
+    users ||--o{ userBlocks : "chooses not to see"
     events ||--o{ exportJobs : "archived by"
     users ||--o{ deletionJobs : "scheduled for"
     events ||--o{ deletionJobs : "scheduled for"
@@ -30,22 +32,24 @@ erDiagram
 `auditEvents` is deliberately absent from the diagram: it references everything and is written by
 every privileged action.
 
-| Entity                 | Holds                                                                                        | Notes                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `users`                | identity, verified email, display name, avatar, `onboardedAt`, account state                 | one row per human, shared across app and web                |
-| `organiserInvitations` | email, token, issuing admin, expiry, redemption                                              | the only way into the private beta                          |
-| `cohostInvitations`    | event, email, inviting host, expiry, redemption                                              | a co-host seat offered to an address with no account yet    |
-| `userEmails`           | user, address, status, hashed verification code, attempts                                    | a second address proven by OTP (Apple private relay)        |
-| `joinAttempts`         | throttle key, failure count, window, lockout                                                 | holds no code and no event id — counters only               |
-| `events`               | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**        | see [ADR 0002](adr/0002-storage-region-adapter.md)          |
-| `memberships`          | user ↔ event, role, admitting `inviteVersion`, state                                         | a guest's presence in one event                             |
-| `inviteVersions`       | six-digit code, high-entropy QR token, version number, active flag                           | rotation creates a new version, never mutates the old       |
-| `media`                | event, submitter, capture id, type, byte size, checksum, `storageRegion`, storage key, state | one row per submitted capture                               |
-| `moderationDecisions`  | media, decider, decision, reason, timestamp                                                  | append-only; the media row carries the current state        |
-| `exportJobs`           | event, requester, state, artefact key, expiry                                                | **post-launch (P2)** — table shape reserved                 |
-| `pushDevices`          | user, Expo push token, platform, last seen                                                   | one row per installed app instance                          |
-| `deletionJobs`         | subject (user or event), scheduled-at, state, requester                                      | states ship at launch, the purge worker is post-launch (P1) |
-| `auditEvents`          | actor, action, subject, reason, before/after summary, timestamp                              | immutable; every admin and host action writes one           |
+| Entity                 | Holds                                                                                                      | Notes                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `users`                | identity, verified email, display name, avatar, `onboardedAt`, account state                               | one row per human, shared across app and web                               |
+| `organiserInvitations` | email, token, issuing admin, expiry, redemption                                                            | the only way into the private beta                                         |
+| `cohostInvitations`    | event, email, inviting host, expiry, redemption                                                            | a co-host seat offered to an address with no account yet                   |
+| `userEmails`           | user, address, status, hashed verification code, attempts                                                  | a second address proven by OTP (Apple private relay)                       |
+| `joinAttempts`         | throttle key, failure count, window, lockout                                                               | holds no code and no event id — counters only                              |
+| `events`               | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**                      | see [ADR 0002](adr/0002-storage-region-adapter.md)                         |
+| `memberships`          | user ↔ event, role, admitting `inviteVersion`, state                                                       | a guest's presence in one event                                            |
+| `inviteVersions`       | six-digit code, high-entropy QR token, version number, active flag                                         | rotation creates a new version, never mutates the old                      |
+| `media`                | event, submitter, capture id, type, byte size, checksum, `storageRegion`, storage + derivative keys, state | one row per submitted capture, **however many objects it is made of**      |
+| `moderationDecisions`  | media, decider, decision, reason, timestamp                                                                | append-only; the media row carries the current state                       |
+| `mediaReports`         | media, reporter, reason, free-text detail, open/actioned/dismissed                                         | a complaint, not a decision — see [ADR 0005](adr/0005-moderation-model.md) |
+| `userBlocks`           | blocker, blocked, where it was made                                                                        | per-account and global; a filter on the blocker's own reads                |
+| `exportJobs`           | event, requester, state, artefact key, expiry                                                              | **post-launch (P2)** — table shape reserved                                |
+| `pushDevices`          | user, Expo push token, platform, last seen                                                                 | one row per installed app instance                                         |
+| `deletionJobs`         | subject (user or event), scheduled-at, state, requester                                                    | states ship at launch, the purge worker is post-launch (P1)                |
+| `auditEvents`          | actor, action, subject, reason, before/after summary, timestamp                                            | immutable; every admin and host action writes one                          |
 
 ## Roles and permissions
 
@@ -392,14 +396,35 @@ Four things about this shape are load-bearing:
 2. **Metadata is stripped at capture, by re-encoding**, before the checksum is taken — so the value
    the grant is minted against is the value of the stripped file. Server-side stripping would mean
    writing the GPS-bearing original to storage first, which is the artefact the promise says never
-   exists. `sourceMetadataStripped` records what the pipeline actually did; it is never a literal
-   `true`. See [ADR 0004](adr/0004-private-upload-pipeline.md) §7.
+   exists. The claim records what the pipeline actually did; it is never a literal `true`. See
+   [ADR 0004](adr/0004-private-upload-pipeline.md) §7.
+
+   Since Sprint 4 the claim is **two** booleans, because video broke the identity between them:
+
+   | Field                     | Means                             | Consulted by                                |
+   | ------------------------- | --------------------------------- | ------------------------------------------- |
+   | `sourceMetadataStripped`  | these bytes were **re-encoded**   | the derivative grant, as a **precondition** |
+   | `sourceCarriesNoLocation` | these bytes **carry no location** | the read path (`mayServeOriginal`)          |
+
+   For a photograph they are the same fact — the re-encode is the mechanism. For a clip they are
+   not: no client can transcode 60 seconds of 1080p in the time a guest will wait, so `apps/mobile`
+   sends `false` / `true` (structural: the app ships no location permission on either platform, and
+   video library import is not built) and `apps/web` sends `false` / `false` (an `input[capture]`
+   element is a request, not a guarantee — the same sheet offers the camera roll). Absent means
+   "same as the re-encode claim", so every row written before the split keeps exactly the meaning
+   and exactly the visibility it had. `metadataClaimOf` in
+   [`contracts/media.ts`](../packages/contracts/src/media.ts) is the only place that default lives.
+
 3. **Completion needs two credentials.** The grant says _which_ upload; `UPLOAD_CALLBACK_SECRET` says
    the caller is our own route handler. Without the second, a guest replaying their own legitimate
    grant could point a media row at any file key in the app.
 4. **All four completion outcomes are HTTP 200.** A callback that answers with an error is one the
    provider retries for ever, and "we already had this" and "the guest withdrew it mid-flight" are
    not conditions retrying will fix. Anything Convex refuses to attach, it schedules for deletion.
+5. **The sequence above runs once per file role**, not once per capture. A photo does it twice
+   (original, preview) and a video three times (original, poster, preview), against the same
+   `captureId`. Only the `original` pass creates the media row and settles its state; the others
+   attach a key and stop. See the Derivatives section below.
 
 ### The upload ticket
 
@@ -418,22 +443,119 @@ a file other than the one that was authorised.
 
 ### Derivatives
 
-Both clients produce two files and upload one:
+Both clients produce the derivatives on the device and upload them alongside the original, under the
+**same `captureId`** with a different **file role**. The full reasoning — and why there is no
+server-side step — is [ADR 0008](adr/0008-client-produced-derivatives.md).
 
-| File     | Web (`<canvas>`) | App (`expo-image-manipulator`) | Goes where                        |
-| -------- | ---------------- | ------------------------------ | --------------------------------- |
-| original | 2560 px, q 0.85  | 4096 px, q 0.92                | uploaded — this is the submission |
-| preview  | 480 px, q 0.6    | 640 px, q 0.6                  | stays on the device               |
+| Role       | Photo                          | Video             | Who is served it                         |
+| ---------- | ------------------------------ | ----------------- | ---------------------------------------- |
+| `original` | 2560 px web / 4096 px app JPEG | the recorded file | submitter, hosts, and guests if stripped |
+| `preview`  | 480 px web / 640 px app JPEG   | short muted clip  | everyone who may see the row             |
+| `poster`   | —                              | still frame, JPEG | everyone who may see the row             |
 
-The ceilings differ because mobile Safari caps canvas area and silently returns a blank bitmap past
-it, which `expo-image-manipulator` does not do. Both profiles live together in
-[`packages/contracts/src/capture.ts`](../packages/contracts/src/capture.ts) so the difference is a
-recorded decision rather than an accident. Output is always JPEG: the re-encode is happening anyway
-for the metadata strip, and it normalises iPhone HEIC into something the organiser's laptop can
-display.
+The original's ceilings differ per platform because mobile Safari caps canvas area and silently
+returns a blank bitmap past it, which `expo-image-manipulator` does not do. Both profiles live
+together in [`packages/contracts/src/capture.ts`](../packages/contracts/src/capture.ts). Output is
+always JPEG for images: the re-encode is happening anyway for the metadata strip, and it normalises
+iPhone HEIC into something the organiser's laptop can display.
 
-The preview is **local-only** on both platforms — `media.completeUpload` takes one `fileKey` per
-capture, so there is nowhere to put a second object. Sprint 4's video poster needs that path.
+What the backend enforces:
+
+1. **A derivative gets its own grant** — a grant binds one exact body by size and checksum, so it
+   cannot cover three files. Same capture, different `fileRole`.
+2. **Its own caps.** A preview or poster is held to **2 MiB**, a video preview clip to 25 MiB, where
+   the originals get 20 MB and 250 MB. A camera JPEG with its EXIF block intact does not fit in 2 MiB.
+3. **The re-encode claim is required**, not merely recorded (`derivativeMetadataNotStripped`). The
+   original's `sourceMetadataStripped` is read on the read path (ADR 0004 §7); a derivative's is a
+   precondition of the grant, because the derivative is what third parties are served.
+4. **A derivative attaches and nothing else.** It does not settle the row, move `events.counts`, or
+   count as a submission — one capture is one submission however many objects it is made of. The
+   audit action is `media.derivative_attached`, not `media.upload_completed`.
+5. **Ordering is free, and a missing derivative never strands a capture.** A preview whose original
+   has not landed is deleted rather than orphaned; the client retries. A capture with no preview is
+   still `pending` and still moderatable — what it loses is visibility to fellow guests.
+6. **Withdrawal takes all three objects** (`storageKeysOf`).
+
+`mayServeOriginal` in [`lib/media.ts`](../packages/backend/convex/lib/media.ts) is where this lands
+on the read path. Its "serve nothing" branch is now "serve the derivative instead" — and it keeps the
+old branch for the case where no derivative has arrived yet:
+
+| Viewer                    | Original carries no location | Gets                        |
+| ------------------------- | ---------------------------- | --------------------------- |
+| submitter, owner, cohost  | either                       | original + preview + poster |
+| another guest             | yes                          | original + preview + poster |
+| another guest             | no / unknown                 | preview + poster only       |
+| another guest, no preview | no / unknown                 | nothing                     |
+
+The question in that column is deliberately **location, not encoding**: the invariant in PLAN.md is
+about location, and reading the re-encode flag here would withhold a mobile clip from every fellow
+guest on the strength of a flag that answers a different question. The derivative grant asks the
+other half, and that asymmetry is the point — on the original the claim is recorded and read here;
+on a derivative it is a precondition of the grant existing at all.
+
+### Moderation
+
+Three actions — `approve`, `decline`, `revoke` — through one mutation, `moderation.moderate`, which
+always takes a list. `revoke` lands in `declined` like a decline but **refuses anything not currently
+`approved`**, so "un-approve this" cannot become "decline this thing nobody approved" when two hosts
+work the same grid. There is no `approved → pending`: the state machine has no such edge, and the
+pending badge must not count items nobody is waiting on.
+
+Every decision writes, in one transaction: the state (through the machine), the event counters, a
+`moderationDecisions` row carrying the **prior** state and the actor, the `moderatedAt` stamps, and an
+audit row. Bulk is the same function per item, sequentially — they all patch the same `counts` object.
+
+A batch **succeeds partially**: refusals come back itemised (`stillProcessing`, `withdrawn`,
+`notApproved`) and the mutation throws only for failures of the request. Repeating an action returns
+`changed: false` and writes nothing.
+
+"Removed from the gallery immediately" is the state moving — the gallery and the slideshow are
+reactive queries over `approved`. A signed URL already handed out still outlives the decision by up to
+ten minutes; only deleting the object invalidates it (ADR 0004).
+
+### Reports and blocks
+
+Both exist because App Review requires them, and both are deliberately weaker than they could be.
+See [ADR 0005](adr/0005-moderation-model.md).
+
+- **A report flags; it does not moderate.** Any member may report somebody else's item; it raises
+  `media.flaggedAt`, sorts the item to the top of the host's queue and changes nothing else.
+  Auto-hiding would hand any guest a veto over any other guest's photograph. Idempotent per
+  `(media, reporter)`. The count is shown to hosts only; the reporter's identity to nobody.
+- **A block is a filter on the blocker's own reads.** Per-account and global. It hides the blocked
+  account's media from the blocker's gallery and slideshow, notifies nobody, changes nothing for
+  anybody else, and does not touch a membership. In a host's pending queue it sorts last rather than
+  hiding, so blocking cannot be used to stall a queue; it never hides your own media from you.
+
+### The App Review demo login
+
+Apple has to be able to sign in without a mailbox. `generateOTP` in
+[`convex/otp.ts`](../packages/backend/convex/lib/otp.ts) returns a **fixed** code for exactly one
+address, gated on two environment variables being set together — `DEMO_LOGIN_EMAIL` and
+`DEMO_LOGIN_OTP`.
+
+What makes this a narrow hole rather than a back door:
+
+- **The code still goes through Better Auth.** Nothing compares a submitted code to an environment
+  variable. The fixed value is _issued_ as that account's challenge and then verified against the
+  stored hash like any other, with the same ten-minute expiry and five-attempt limit.
+- **Unset means the branch does not exist.** With either variable missing the function returns
+  `undefined` and the normal random path runs. There is no code path from an environment variable to
+  an accepted login.
+- **One address, and only that address.** It skips the send throttle and the email — there is no
+  mailbox to send to — and changes nothing for anybody else.
+- **Every use is audited** as `auth.demo_sign_in`.
+
+There is deliberately **no `DEPLOYMENT_ENVIRONMENT !== production` gate**, contrary to an earlier
+Sprint 3 note: Apple reviews the _production_ build against the production deployment, so such a gate
+would disable the thing at exactly the moment it is needed. The gate is the two variables, the one
+address, and the audit trail — and the operational half of it is **unsetting both once the build is
+approved**, which is why that instruction is in `.env.example` next to the variables.
+
+`demo.seedDemoEvent` (internal, refuses unless both variables are set, idempotent) builds the party
+the reviewer lands in; `pnpm seed:demo <assetKey…>` drives it. The asset keys are supplied by hand
+because a Convex mutation cannot put bytes into storage — without them the demo party has rows and no
+thumbnails.
 
 ## The storage adapter
 
@@ -508,5 +630,5 @@ can never eat into the budget they need to send the photo they came here to send
 
 Filled in by the sprint that builds the thing, rather than guessed now:
 
-- **(Sprint 4)** Report and block entities required for App Review.
 - **(Sprint 5)** The audit-event taxonomy — the closed list of `action` values.
+- **(Sprint 5)** Co-host invitation and invite-rotation flows as the UI actually exposes them.

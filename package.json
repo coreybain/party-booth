@@ -20,6 +20,8 @@
     "test:coverage": "vitest run --coverage",
     "env:doctor": "node scripts/env-doctor.mjs",
     "verify:app-links": "node scripts/verify-app-links.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "icons": "node scripts/make-icons.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "turbo run typecheck lint test",
