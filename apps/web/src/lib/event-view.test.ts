@@ -1,0 +1,126 @@
+import { describe, expect, it } from "vitest";
+
+import { EVENT_STATES, eventStateMachine, type EventState } from "./contracts";
+import {
+  allowedNextStates,
+  EVENT_STATE_COPY,
+  eventStatusLine,
+  formatGuestCount,
+  galleryIsVisible,
+  groupJoinCode,
+  guestsCanJoin,
+  guestsCanUpload,
+  STATE_ACTION_LABELS,
+} from "./event-view";
+
+/**
+ * The console must never offer a button Convex will refuse, and must never
+ * claim a guest can do something the contract says they cannot. Both are
+ * checked against `@partybooth/contracts` rather than against a second copy of
+ * the rules written here.
+ */
+
+describe("EVENT_STATE_COPY", () => {
+  it("has a label for every state the backend can return", () => {
+    for (const state of EVENT_STATES) {
+      expect(EVENT_STATE_COPY[state].label.length).toBeGreaterThan(0);
+      expect(EVENT_STATE_COPY[state].description.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("allowedNextStates", () => {
+  it("offers exactly the transitions the state machine permits", () => {
+    for (const from of EVENT_STATES) {
+      for (const to of allowedNextStates(from)) {
+        expect(eventStateMachine.canTransition(from, to)).toBe(true);
+      }
+    }
+  });
+
+  it("never offers the current state — that button would do nothing", () => {
+    for (const from of EVENT_STATES) {
+      expect(allowedNextStates(from)).not.toContain(from);
+    }
+  });
+
+  it("never offers deletion, which has to go through the deletion flow", () => {
+    for (const from of EVENT_STATES) {
+      expect(allowedNextStates(from)).not.toContain("deletionScheduled");
+    }
+  });
+
+  it("offers the after-party: archived can go back to live", () => {
+    expect(allowedNextStates("archived")).toContain("live");
+  });
+
+  it("has an action label for every state it can offer", () => {
+    for (const from of EVENT_STATES) {
+      for (const to of allowedNextStates(from)) {
+        expect(STATE_ACTION_LABELS[to]).toBeDefined();
+      }
+    }
+  });
+});
+
+describe("capability helpers", () => {
+  it("lets guests in exactly while the code is meant to work", () => {
+    const joinable = EVENT_STATES.filter((state: EventState) => guestsCanJoin(state));
+    expect(joinable).toEqual(["scheduled", "live", "paused"]);
+  });
+
+  it("accepts uploads only while live", () => {
+    const uploadable = EVENT_STATES.filter((state: EventState) => guestsCanUpload(state));
+    expect(uploadable).toEqual(["live"]);
+  });
+
+  it("keeps the gallery visible after the party", () => {
+    const viewable = EVENT_STATES.filter((state: EventState) => galleryIsVisible(state));
+    expect(viewable).toEqual(["live", "paused", "archived"]);
+  });
+});
+
+describe("eventStatusLine", () => {
+  const now = Date.UTC(2026, 7, 5, 12, 0);
+
+  it("tells a scheduled host that the code already works", () => {
+    const line = eventStatusLine({ state: "scheduled", startsAt: now + 3 * 86_400_000 }, now);
+    expect(line).toContain("guests can join now");
+  });
+
+  it("warns when a live event has run past its end time", () => {
+    const line = eventStatusLine(
+      { state: "live", startsAt: now - 86_400_000, endsAt: now - 3_600_000 },
+      now,
+    );
+    expect(line).toContain("archive");
+  });
+
+  it("falls back to the state's own description", () => {
+    expect(eventStatusLine({ state: "draft", startsAt: now }, now)).toBe(
+      EVENT_STATE_COPY.draft.description,
+    );
+  });
+});
+
+describe("formatGuestCount", () => {
+  it("counts the host out, because the host is not a guest", () => {
+    expect(formatGuestCount(1)).toBe("0 guests");
+    expect(formatGuestCount(2)).toBe("1 guest");
+    expect(formatGuestCount(13)).toBe("12 guests");
+  });
+
+  it("never goes negative on an event with no membership rows yet", () => {
+    expect(formatGuestCount(0)).toBe("0 guests");
+  });
+});
+
+describe("groupJoinCode", () => {
+  it("splits six digits so they can be read across a noisy room", () => {
+    expect(groupJoinCode("482913")).toBe("482 913");
+  });
+
+  it("leaves anything that is not six digits alone", () => {
+    expect(groupJoinCode("4829")).toBe("4829");
+  });
+});

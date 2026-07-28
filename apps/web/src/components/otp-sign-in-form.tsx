@@ -19,12 +19,18 @@ import {
 } from "@/lib/contracts";
 import { authErrorMessage, formatCooldown, isProbablyEmail, normaliseEmail } from "@/lib/otp";
 
-export type OtpAudience = "organiser" | "admin";
+export type OtpAudience = "organiser" | "admin" | "guest";
 
 export interface OtpSignInFormProps {
   readonly audience: OtpAudience;
-  /** Where to land after a successful sign-in. */
-  readonly redirectTo: string;
+  /**
+   * Where to land after a successful sign-in. Omit when {@link onSignedIn} is
+   * given — the guest join flow continues on the same screen rather than
+   * navigating, so the invite token never has to survive a round trip.
+   */
+  readonly redirectTo?: string;
+  /** Called instead of navigating. */
+  readonly onSignedIn?: () => void;
 }
 
 type Step = "email" | "code";
@@ -42,7 +48,7 @@ type Step = "email" | "code";
  * With no backend configured the form renders in full but is inert, so the
  * screen can still be reviewed offline.
  */
-export function OtpSignInForm({ audience, redirectTo }: OtpSignInFormProps) {
+export function OtpSignInForm({ audience, redirectTo, onSignedIn }: OtpSignInFormProps) {
   const router = useRouter();
 
   const [step, setStep] = useState<Step>("email");
@@ -135,9 +141,18 @@ export function OtpSignInForm({ audience, redirectTo }: OtpSignInFormProps) {
           setError(authErrorMessage(result.error));
           return;
         }
+        if (onSignedIn) {
+          // The guest join flow stays on the page: `useConvexAuth` picks the
+          // new identity up on its own, and navigating away would drop the
+          // invite token the flow is holding. The cache still has to go, so a
+          // Server Component that rendered a signed-out state is not reused.
+          router.refresh();
+          onSignedIn();
+          return;
+        }
         // The authenticated shells are Server Components gated on the session
         // cookie, so the cache has to be invalidated as well as navigated.
-        router.replace(redirectTo);
+        if (redirectTo !== undefined) router.replace(redirectTo);
         router.refresh();
       } catch (caught) {
         setAttemptsLeft((remaining) => Math.max(0, remaining - 1));
@@ -146,7 +161,7 @@ export function OtpSignInForm({ audience, redirectTo }: OtpSignInFormProps) {
         setPending(false);
       }
     },
-    [code, email, redirectTo, router],
+    [code, email, onSignedIn, redirectTo, router],
   );
 
   const restart = useCallback(() => {
@@ -253,7 +268,7 @@ export function OtpSignInForm({ audience, redirectTo }: OtpSignInFormProps) {
             loading={pending}
             disabled={disabled || code.length !== OTP_LENGTH}
           >
-            Sign in
+            {audience === "guest" ? "Continue" : "Sign in"}
           </Button>
 
           <div className="flex items-center justify-between gap-3 pt-1">

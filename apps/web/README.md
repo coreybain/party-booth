@@ -2,11 +2,26 @@
 
 The Next.js 16 (App Router) site. It hosts three audiences from one codebase:
 
-| Audience           | Routes                                                           | Status                                       |
-| ------------------ | ---------------------------------------------------------------- | -------------------------------------------- |
-| Organiser          | `/` (sign in), `/dashboard`, `/slideshow`, `/media`, `/settings` | Sprint 1: shell only                         |
-| Global admin       | `/admin/login`, `/admin`                                         | Sprint 1: shell only                         |
-| Guest (mobile web) | `/join`, `/join/<token>`                                         | Sprint 1: shell only, Sprint 2–3 fills it in |
+| Audience           | Routes                                                                                                               | Status                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 2: events, code + QR. Media Sprint 3–4 |
+| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                          |
+| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 2: join works. Capture Sprint 3        |
+
+### The join path
+
+`/join/<token>` is the universal-link target the QR encodes, and the guest path
+PLAN.md makes _guaranteed_ for 5 August. It shows the event first (the preview
+query is unauthenticated — the token is 160 bits, so there is nothing to
+enumerate), then Google or email-OTP sign-in in place, then a name confirmation,
+then the join. `/join` is the typed-code fallback and reverses the first two
+steps on purpose: resolving six digits is only safe from an authenticated,
+throttled mutation.
+
+Every refusal renders the same sentence, from `JOIN_REJECTED_MESSAGE` in
+`@partybooth/contracts` — unknown code, superseded QR, event not open and
+revoked membership must stay indistinguishable. Nothing in `src/components/join/`
+may branch on that string.
 
 ## Run it
 
@@ -39,27 +54,62 @@ src/app/
   (organiser)/                authenticated organiser shell + four pages
   admin/login/                admin OTP sign-in — reachable while signed out
   admin/(console)/            authenticated admin shell (distinct palette)
+  (organiser)/events/         create, event home (code + QR), edit
   join/, join/[token]/        code entry + universal-link target
+  event/[eventId]/            where a guest lands after joining
   api/auth/[...all]/          Better Auth ↔ Convex proxy
   error.tsx, global-error.tsx, not-found.tsx
 
 src/components/
   providers.tsx               ConvexReactClient + ConvexBetterAuthProvider
+  backend-gate.tsx            ⚠️ every Convex hook must render inside one
   otp-sign-in-form.tsx        the whole OTP request/verify flow
-  join-code-form.tsx          six-digit event-code entry
+  join-code-form.tsx          six-digit event-code entry (presentational)
+  qr-code.tsx                 inline SVG from the contracts QR encoder
+  events/                     create/edit form, event home, invite panel, list
+  guest/                      Google + OTP sign-in, name confirm, event view
+  join/                       token flow, code flow, preview card, refusals
   layout/                     AppShell, CentredPane, Card, nav, event switcher
-  ui/                         Button, TextField, CodeField, Callout
+  ui/                         Button, TextField, CodeField, Select, Choice, …
 
 src/lib/
   auth-client.ts              Better Auth browser client (convex + emailOTP plugins)
   auth-server.ts              server-side session checks + route handler
   backend.ts                  "is a backend configured?" — used everywhere
   contracts.ts                ⚠️ seam for @partybooth/contracts (see the file)
+  convex-api.ts               ⚠️ seam for @partybooth/backend/client-api
+  app-errors.ts               ConvexError → one actionable sentence
+  use-join.ts                 the one join controller, both doors
+  join-url.ts                 which origin a join link is built on (tested)
+  datetime.ts                 wall clock ↔ epoch, in the event's zone (tested)
+  event-form.ts               form model + contract validation  (tested)
+  event-view.ts               state copy, legal transitions     (tested)
+  use-browser-time-zone.ts    hydration-safe Intl zone
+  server-now.ts               `Date.now()` for Server Components only
   otp.ts                      email/code input helpers          (tested)
   sentry-scrub.ts             PII + secret scrubbing            (tested)
   sentry-options.ts           shared Sentry.init options
   cn.ts                       class-name joiner                 (tested)
 ```
+
+### Two seams and one gate
+
+- **`src/lib/contracts.ts`** and **`src/lib/convex-api.ts`** are the only files
+  that import `@partybooth/contracts` and `@partybooth/backend`. The typed
+  function references live in `@partybooth/backend/client-api` — shared with
+  `apps/mobile`, because offline `convex codegen` can only emit the generic
+  `AnyApi` and two hand-written copies of one wire contract drift silently. That
+  file becomes a re-export once a deployment exists; this seam does not change.
+- **`useJoinAttempt`** (`src/lib/use-join.ts`) is the single join controller.
+  `/join/<token>` and `/join` are two front doors onto one mutation, and having
+  written the call out twice is how one copy acquires a more helpful error
+  message and the join path becomes an enumeration oracle.
+- **`BackendGate`** is structural, not cosmetic. With no `NEXT_PUBLIC_CONVEX_URL`
+  there is no `ConvexBetterAuthProvider` in the tree, so `useQuery`,
+  `useMutation` and `useConvexAuth` throw. An early `return` inside the
+  component is too late — the hooks have already run. Any component calling a
+  Convex hook must therefore be _rendered by_ a gate, not merely guarded inside
+  one.
 
 ## Styling
 

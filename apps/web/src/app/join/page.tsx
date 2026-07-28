@@ -3,29 +3,27 @@ import Link from "next/link";
 
 import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
-import { JoinCodeForm } from "@/components/join-code-form";
-import { QrIcon } from "@/components/icons";
+import { JoinByCode } from "@/components/join/join-by-code";
 
-export const metadata: Metadata = { title: "Join an event" };
+export const metadata: Metadata = {
+  title: "Join an event",
+  robots: { index: false, follow: false },
+};
 
 /**
- * Code-entry entry point, for guests who type the six digits from the printed
- * signage instead of scanning the QR (TODO.md Sprint 2 → "code entry fallback").
+ * Code-entry fallback, for a guest who types the six digits from the printed
+ * signage instead of scanning the QR (TODO.md Sprint 2 → "code entry fallback
+ * with store links").
+ *
+ * This is also the URL printed on the sign under the QR, because it is the only
+ * one that is safe to print in full: it carries no credential, so a photograph
+ * of the poster is not an invitation.
  */
 export default function JoinPage() {
   return (
-    <CentredPane footer="You'll be asked to sign in before you can add photos.">
+    <CentredPane width="md" footer="Private beta · 18+ · Photos stay private to this event.">
       <Card>
-        <div className="mb-6 flex items-start gap-3">
-          <QrIcon size={22} className="mt-0.5 shrink-0 text-accent" />
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-ink">Join an event</h1>
-            <p className="mt-1 text-sm text-muted">
-              Enter the six-digit code from the sign, or scan its QR code.
-            </p>
-          </div>
-        </div>
-        <JoinCodeForm />
+        <JoinByCode />
       </Card>
 
       <p className="mt-6 text-center text-sm text-muted">

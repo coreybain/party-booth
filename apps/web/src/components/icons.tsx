@@ -104,6 +104,58 @@ export function QrIcon(props: IconProps) {
   );
 }
 
+export function CalendarIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3.5" y="5" width="17" height="15.5" rx="2" />
+      <path d="M3.5 9.5h17M8 3.5V6.5M16 3.5V6.5" />
+    </Icon>
+  );
+}
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="8.5" y="8.5" width="12" height="12" rx="2" />
+      <path d="M15.5 5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2" />
+    </Icon>
+  );
+}
+
+export function CheckIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m4.5 12.5 5 5 10-11" />
+    </Icon>
+  );
+}
+
+export function PlusIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Icon>
+  );
+}
+
+export function ArrowRightIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 12h15M13.5 6l6 6-6 6" />
+    </Icon>
+  );
+}
+
+export function UsersIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="9.5" cy="8" r="3.5" />
+      <path d="M3 20c0-3.3 2.9-5.5 6.5-5.5S16 16.7 16 20" />
+      <path d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6M18 14.9c2 .8 3 2.6 3 5.1" />
+    </Icon>
+  );
+}
+
 /** The PartyBooth mark: a camera aperture with a confetti burst. */
 export function LogoMark({ size = 24, ...props }: IconProps) {
   return (

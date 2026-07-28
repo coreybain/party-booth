@@ -14,11 +14,77 @@
 export { ROLES, type Role, type EventRole, isHostRole } from "@partybooth/contracts/roles";
 
 export {
+  displayUrl,
   EVENT_CODE_LENGTH,
+  INVITE_TOKEN_LENGTH,
+  inviteUrl,
   isValidEventCode,
   isValidInviteToken,
+  JOIN_FALLBACK_PATH,
+  joinFallbackUrl,
+  joinPath,
   normalizeEventCode,
+  normalizeInviteToken,
 } from "@partybooth/contracts/codes";
+
+/**
+ * The QR encoder. Pure, and shared with `apps/mobile`'s host tab, so the symbol
+ * on the laptop and the symbol on the phone are the same bits — see
+ * `packages/contracts/src/qr.ts`. Rendering stays local: this app draws inline
+ * SVG (`src/components/qr-code.tsx`).
+ */
+export {
+  byteCapacity,
+  encodeQr,
+  QR_QUIET_ZONE,
+  QrCapacityError,
+  qrPath,
+  qrViewBoxSize,
+  type QrMatrix,
+} from "@partybooth/contracts/qr";
+
+/* -------------------------------------------------------------------------- */
+/* Events                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export {
+  acceptsUploads,
+  EVENT_STATES,
+  eventStateMachine,
+  HOST_SETTABLE_EVENT_STATES,
+  isEditableEventState,
+  isJoinableEventState,
+  isViewableEventState,
+  JOIN_WINDOW,
+  joinWindowStatus,
+  LAUNCH_MODERATION_MODES,
+  type EventState,
+  type HostSettableEventState,
+  type LaunchModerationMode,
+  type ModerationMode,
+} from "@partybooth/contracts/events";
+
+export {
+  createEventInputSchema,
+  displayNameSchema,
+  eventNameSchema,
+  eventScheduleSchema,
+  hexColorSchema,
+  timeZoneSchema,
+  updateEventInputSchema,
+} from "@partybooth/contracts/schemas";
+
+/* -------------------------------------------------------------------------- */
+/* Joining                                                                    */
+/* -------------------------------------------------------------------------- */
+
+export {
+  JOIN_POLICY,
+  JOIN_REJECTED_MESSAGE,
+  JOIN_THROTTLED_MESSAGE,
+  parseJoinResult,
+  type JoinResult,
+} from "@partybooth/contracts/join";
 
 import { EVENT_CODE_LENGTH } from "@partybooth/contracts/codes";
 import { OTP_POLICY } from "@partybooth/contracts/otp";

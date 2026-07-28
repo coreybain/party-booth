@@ -11,18 +11,31 @@ interface NavItem {
   readonly href: string;
   readonly label: string;
   readonly Icon: ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
+  /** Extra path prefixes this tab owns, beyond `href` itself. */
+  readonly owns?: readonly string[];
 }
 
 /**
  * The organiser console's four destinations (PLAN.md → "Organiser website").
  * Sprint 1 ships the shell; each page fills in over Sprints 2–5.
+ *
+ * "Home" also owns `/events/*`: an event's own page is reached *from* the list,
+ * and leaving every tab unlit while a host looks at their event reads as a
+ * broken nav rather than as a different section.
  */
 export const ORGANISER_NAV: readonly NavItem[] = [
-  { href: "/dashboard", label: "Home", Icon: HomeIcon },
+  { href: "/dashboard", label: "Home", Icon: HomeIcon, owns: ["/events"] },
   { href: "/slideshow", label: "Slideshow", Icon: SlideshowIcon },
   { href: "/media", label: "Media", Icon: MediaIcon },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
+
+/** Does this tab own the current path? */
+export function isNavItemActive(item: NavItem, pathname: string): boolean {
+  return [item.href, ...(item.owns ?? [])].some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
 
 /**
  * A small centred pill of icon buttons.
@@ -38,8 +51,9 @@ export function OrganiserNav({ className }: { readonly className?: string }) {
   return (
     <nav aria-label="Organiser sections" className={cn("flex justify-center", className)}>
       <ul className="flex items-center gap-1 rounded-full border border-line bg-surface p-1">
-        {ORGANISER_NAV.map(({ href, label, Icon }) => {
-          const active = pathname === href || pathname.startsWith(`${href}/`);
+        {ORGANISER_NAV.map((item) => {
+          const { href, label, Icon } = item;
+          const active = isNavItemActive(item, pathname);
           return (
             <li key={href}>
               <Link
