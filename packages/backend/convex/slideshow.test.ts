@@ -235,3 +235,76 @@ describe("slideshow.feed", () => {
     ).rejects.toThrow();
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Approval order, and telling a client what has gone                          */
+/* -------------------------------------------------------------------------- */
+
+describe("slideshow.feed reconciliation", () => {
+  it("delivers an item approved after the cursor has passed its capture time", async () => {
+    const f = await fixture();
+    const now = Date.now();
+
+    // Two captures: the old one is approved *later*, which is what a host
+    // working through a backlog does all evening.
+    const old = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "pending",
+      createdAt: now - 3_600_000,
+      sourceMetadataStripped: true,
+    });
+    const recent = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      createdAt: now,
+      sourceMetadataStripped: true,
+    });
+    await f.t.run(async (ctx) => ctx.db.patch(recent, { approvedAt: now }));
+
+    const first = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.slideshow.feed, { eventId: f.eventId });
+    expect(first.items.map((item) => item.id)).toEqual([recent]);
+
+    await f.t.withIdentity({ subject: "owner" }).mutation(api.moderation.moderate, {
+      eventId: f.eventId,
+      mediaIds: [old],
+      action: "approve",
+    });
+
+    // On a `createdAt` cursor this returned nothing: the item sorts an hour
+    // behind a cursor that has already passed it, so it never reached the
+    // television until the five-minute full refresh.
+    const next = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.slideshow.feed, { eventId: f.eventId, after: first.nextCursor });
+    expect(next.items.map((item) => item.id)).toEqual([old]);
+  });
+
+  it("names the approved set, so a client can drop what a host took down", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+    await f.t.run(async (ctx) => ctx.db.patch(mediaId, { approvedAt: Date.now() }));
+
+    const before = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.slideshow.feed, { eventId: f.eventId });
+    expect(before.approvedIds).toContain(mediaId);
+    expect(before.approvedIdsComplete).toBe(true);
+
+    await f.t.withIdentity({ subject: "owner" }).mutation(api.moderation.moderate, {
+      eventId: f.eventId,
+      mediaIds: [mediaId],
+      action: "revoke",
+    });
+
+    // A cursor can only add. This is the only way a client learns about removal
+    // — and without it a revoked photograph kept cycling for the full ten-minute
+    // life of the signed URL it was already holding.
+    const after = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.slideshow.feed, { eventId: f.eventId, after: before.nextCursor });
+    expect(after.approvedIds).not.toContain(mediaId);
+  });
+});

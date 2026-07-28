@@ -17,7 +17,6 @@ import {
   PHOTO_MAX_BYTES,
   validateMediaFile,
   VIDEO_MAX_BYTES,
-  VIDEO_MAX_DURATION_SECONDS,
   type MediaState,
 } from "./media";
 import {
@@ -37,9 +36,12 @@ const LIVE_EVENT = { state: "live", allowLibraryImport: true } as const;
 /* -------------------------------------------------------------------------- */
 
 describe("file roles", () => {
-  it("gives a photo a preview and a video a poster as well", () => {
+  it("gives a photo a preview and a video a poster, and a video nothing else", () => {
     expect(derivativeRolesFor("photo")).toEqual(["preview"]);
-    expect(derivativeRolesFor("video")).toEqual(["poster", "preview"]);
+    // No video `preview`: neither client transcodes, and an open 25 MiB slot
+    // that accepts the original's own containers corroborates nothing.
+    expect(derivativeRolesFor("video")).toEqual(["poster"]);
+    expect(isFileRoleAllowed("video", "preview")).toBe(false);
   });
 
   it("refuses a poster for a photo — there is no still to lift", () => {
@@ -65,10 +67,10 @@ describe("per-role caps", () => {
     expect(maxBytesForRole("photo", "preview")).toBeLessThan(PHOTO_MAX_BYTES);
   });
 
-  it("gives a video's preview clip room and its poster none", () => {
+  it("holds every derivative to the image cap, video posters included", () => {
     expect(maxBytesForRole("video", "original")).toBe(VIDEO_MAX_BYTES);
-    expect(maxBytesForRole("video", "preview")).toBe(DERIVATIVE_LIMITS.videoPreview.maxBytes);
     expect(maxBytesForRole("video", "poster")).toBe(DERIVATIVE_LIMITS.image.maxBytes);
+    expect(maxBytesForRole("video", "preview")).toBe(DERIVATIVE_LIMITS.image.maxBytes);
   });
 
   it("reports the cap for the role, not for the type", () => {
@@ -117,29 +119,27 @@ describe("validateMediaFile with a role", () => {
     ).toEqual({ ok: true });
   });
 
-  it("still demands one for a video's original and its preview clip", () => {
-    for (const fileRole of ["original", "preview"] as const) {
-      expect(
-        validateMediaFile({
-          mediaType: "video",
-          fileRole,
-          byteSize: 50_000,
-          mimeType: "video/mp4",
-        }),
-      ).toMatchObject({ ok: false, reason: "missingDuration" });
-    }
+  it("still demands one for a video's original", () => {
+    expect(
+      validateMediaFile({
+        mediaType: "video",
+        fileRole: "original",
+        byteSize: 50_000,
+        mimeType: "video/mp4",
+      }),
+    ).toMatchObject({ ok: false, reason: "missingDuration" });
   });
 
-  it("holds a video preview clip to the same sixty seconds", () => {
+  it("refuses a video preview outright — the role no longer exists", () => {
     expect(
       validateMediaFile({
         mediaType: "video",
         fileRole: "preview",
         byteSize: 50_000,
         mimeType: "video/mp4",
-        durationSeconds: VIDEO_MAX_DURATION_SECONDS + 1,
+        durationSeconds: 8,
       }),
-    ).toMatchObject({ ok: false, reason: "tooLong" });
+    ).toMatchObject({ ok: false, reason: "unsupportedFileRole" });
   });
 
   it("refuses an mp4 offered as a photo's preview", () => {

@@ -78,6 +78,23 @@ export default defineSchema({
     /** Apple private relay addresses cannot receive organiser invites. */
     isPrivateRelayEmail: v.optional(v.boolean()),
 
+    /**
+     * The version of the user terms this account accepted, and when.
+     *
+     * Both Play's UGC policy and Apple's guideline 1.2 ask for terms that define
+     * and prohibit objectionable content *and* for the user to have accepted
+     * them. A published page nobody agreed to satisfies neither, which is what
+     * the repository had — no terms at all, and a store listing that said the
+     * follow-ups were done.
+     *
+     * Versioned rather than a boolean, because the question that gets asked
+     * afterwards is "which text did they agree to". `TERMS_VERSION` in
+     * `@partybooth/contracts/terms` is compared for equality, so bumping it asks
+     * everybody again — see `hasAcceptedTerms`.
+     */
+    acceptedTermsVersion: v.optional(v.string()),
+    acceptedTermsAt: v.optional(v.number()),
+
     accountState,
     /** Invitation-only private beta: `true` unlocks event creation. */
     isOrganiser: v.boolean(),
@@ -100,6 +117,23 @@ export default defineSchema({
      * Cleared when the membership behind it goes away.
      */
     activeEventId: v.optional(v.id("events")),
+
+    /**
+     * This row was written by `demo.seedDemoEvent`, not by an authentication.
+     *
+     * It exists for one reason: the seeded reviewer has to become the *same*
+     * account the reviewer signs into. The seed cannot reach inside Better
+     * Auth's tables to pre-create a user, so it writes a mirror row with a
+     * placeholder `authId`, and the `user.onCreate` trigger adopts that row —
+     * matching on the normalised address — instead of inserting a second one.
+     * Without it the reviewer signed into an account with no membership of the
+     * seeded party and found an empty shell.
+     *
+     * Adoption is deliberately confined to rows carrying this flag. Adopting any
+     * matching address would mean a mirror row could be claimed by whoever next
+     * signs up with that address, which is a different and much worse feature.
+     */
+    seeded: v.optional(v.boolean()),
 
     lastSeenAt: v.optional(v.number()),
     createdAt: v.number(),
@@ -250,6 +284,17 @@ export default defineSchema({
       declined: v.number(),
       total: v.number(),
     }),
+
+    /**
+     * The App Review demo party, seeded by `demo.seedDemoEvent`.
+     *
+     * The demo identity is confined to events carrying this flag —
+     * `assertDemoConfinement` in `lib/guards.ts` refuses it every other one, at
+     * join and on every event-scoped read and write. Before that, the only thing
+     * keeping the published reviewer credentials out of real parties was that
+     * nobody had handed them a code, which is an absence rather than a control.
+     */
+    isDemo: v.optional(v.boolean()),
 
     /** Locks `storageRegion`. */
     firstUploadAt: v.optional(v.number()),
@@ -484,6 +529,20 @@ export default defineSchema({
     /** Lower-case hex SHA-256, checked against the stored object. */
     checksum: v.string(),
     durationSeconds: v.optional(v.number()),
+    /**
+     * Whether `durationSeconds` was read out of the stored object rather than
+     * taken from the client.
+     *
+     * The 60-second cap used to be checked twice and independently zero times:
+     * the grant judged the client's estimate, and the completion callback
+     * forwards `metadata.durationSeconds`, which the route handler copies off
+     * the client-authored upload ticket. `media.verifyVideoDuration` fetches the
+     * file's own header and reads the container's duration; `true` means it
+     * agreed with the cap, `false` means the check ran and could not confirm
+     * (an unrecognised container, or storage unreachable), and absent means it
+     * has not run yet or the row is not a video.
+     */
+    durationVerified: v.optional(v.boolean()),
     width: v.optional(v.number()),
     height: v.optional(v.number()),
 
@@ -506,6 +565,31 @@ export default defineSchema({
     previewByteSize: v.optional(v.number()),
     posterKey: v.optional(v.string()),
     posterByteSize: v.optional(v.number()),
+
+    /**
+     * The derivatives' own checksums and location claims.
+     *
+     * Both exist to make the re-encode claim falsifiable without an image
+     * pipeline, which it was not: the claim was required at grant time and then
+     * read by nothing, while `projectMedia` minted `previewUrl` for every viewer
+     * unconditionally. That made the derivative slot the way around
+     * `mayServeOriginal` — re-upload the withheld original under
+     * `fileRole: "preview"` and the whole gallery is served it.
+     *
+     * The checksum is compared against the original's (and the sibling
+     * derivative's) before a grant is issued and again before the object is
+     * attached: a decode/re-encode round trip never reproduces its input byte for
+     * byte, so equality means "this is the original, re-labelled".
+     *
+     * The location flag is the read-path half — `mayServeDerivative` withholds a
+     * derivative that cannot promise it from anyone but the submitter and the
+     * hosts, exactly as `mayServeOriginal` does for the original. Absent means
+     * "inherit the original's claim", so no stored row changes visibility.
+     */
+    previewChecksum: v.optional(v.string()),
+    previewCarriesNoLocation: v.optional(v.boolean()),
+    posterChecksum: v.optional(v.string()),
+    posterCarriesNoLocation: v.optional(v.boolean()),
 
     fromLibrary: v.boolean(),
     /**
@@ -538,6 +622,24 @@ export default defineSchema({
 
     moderatedAt: v.optional(v.number()),
     moderatedByUserId: v.optional(v.id("users")),
+
+    /**
+     * When this item most recently became `approved` — the slideshow's clock.
+     *
+     * Separate from `moderatedAt`, which moves on a decline and on a revoke too.
+     * The slideshow's cursor used to run on `createdAt`, which is *capture*
+     * order, and that is not the order approvals happen in: a photo taken at
+     * eight o'clock and approved at midnight sits behind a cursor that passed it
+     * hours ago, so it never reached the television until the five-minute full
+     * refresh. "Approve on the laptop and it is on the wall a moment later" is
+     * the whole feature.
+     *
+     * Set by `settleAfterProcessing` (automatic mode) and by `applyModeration`
+     * (a host's approve). Left in place on a decline or a revoke: the row leaves
+     * the index the moment its state moves, and keeping the timestamp means a
+     * re-approval is a new one and sorts as one.
+     */
+    approvedAt: v.optional(v.number()),
 
     /**
      * When a member first reported this item, and how many have.
@@ -575,15 +677,21 @@ export default defineSchema({
   })
     .index("by_event", ["eventId"])
     .index("by_event_and_state", ["eventId", "state"])
+    .index("by_event_state_and_created", ["eventId", "state", "createdAt"])
     /**
      * The slideshow's index.
      *
-     * Chronological order over one state, resumable from a cursor: a TV left
+     * **Approval** order over one state, resumable from a cursor: a TV left
      * running all night asks for "approved items after the last one I have"
      * every time the subscription re-runs, and without this that is a full scan
      * of the party's media on every approval.
+     *
+     * Approval order rather than capture order because the cursor is what makes
+     * the show live, and a cursor that advances by capture time silently drops
+     * every item approved out of capture order — which is most of them, once a
+     * host works through a backlog.
      */
-    .index("by_event_state_and_created", ["eventId", "state", "createdAt"])
+    .index("by_event_state_and_approved", ["eventId", "state", "approvedAt"])
     .index("by_event_and_capture", ["eventId", "captureId"])
     .index("by_event_and_uploader", ["eventId", "uploaderUserId"])
     .index("by_uploader", ["uploaderUserId"])

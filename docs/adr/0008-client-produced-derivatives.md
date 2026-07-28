@@ -1,6 +1,7 @@
 # 0008. Client-produced derivatives, ingested as file roles on one capture
 
-- **Status:** Accepted
+- **Status:** Accepted — §4 and §6 amended, and the video `preview` role withdrawn, by
+  [ADR 0009](0009-verified-uploads-and-real-deletion.md)
 - **Date:** 1 Aug 2026
 - **Sprint:** 4 — moderate, watch, submit (see [`TODO.md`](../../TODO.md))
 

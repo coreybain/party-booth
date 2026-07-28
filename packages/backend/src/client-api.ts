@@ -119,6 +119,14 @@ export interface CurrentUser {
   /** Unlocked by an accepted organiser invitation. Gates event creation. */
   readonly isOrganiser: boolean;
   readonly isGlobalAdmin: boolean;
+  /**
+   * The version of the user terms this account agreed to, if any.
+   *
+   * Compare with `TERMS_VERSION` through `hasAcceptedTerms` rather than by hand
+   * — see `@partybooth/contracts/terms`. An account that has not accepted the
+   * current version cannot be issued an upload grant.
+   */
+  readonly acceptedTermsVersion?: string;
 }
 
 /** `users.updateProfile`. */
@@ -127,6 +135,13 @@ export interface UpdateProfileResult {
   readonly avatarKey?: string;
   /** Stamped on the first confirmation and never moved afterwards. */
   readonly onboardedAt: number;
+  readonly acceptedTermsVersion?: string;
+}
+
+/** `users.acceptTerms`. */
+export interface AcceptTermsResult {
+  readonly acceptedTermsVersion: string;
+  readonly acceptedTermsAt: number;
 }
 
 /** `users.refreshRoles` — the result of re-running verified-email matching. */
@@ -403,7 +418,13 @@ export interface ReportResult {
   readonly reportId: ReportId;
   /** `false` when this reporter had already reported this item. */
   readonly created: boolean;
-  readonly reportCount: number;
+  /**
+   * How many members have reported this item. **Hosts only** — a guest is never
+   * told, for the same reason `MediaView.reportCount` is host-only: a tally a
+   * guest can poll by pressing the button again is a step towards identifying
+   * who else pressed it.
+   */
+  readonly reportCount?: number;
 }
 
 /**
@@ -484,6 +505,17 @@ export interface SlideshowPage {
   readonly hasMore: boolean;
   /** Approved items in the event, ignoring the cursor. For "12 of 240". */
   readonly total: number;
+  /**
+   * Every approved id this viewer may see, ignoring the cursor.
+   *
+   * A cursor can only add. This is how a client learns about **removal** — an
+   * item a host has declined, revoked or that a block now hides — so a photo
+   * taken off the wall mid-party comes off the television at once instead of
+   * cycling for the rest of the session behind a still-live signed URL.
+   */
+  readonly approvedIds: readonly MediaId[];
+  /** `false` when the list above was truncated. Do not prune when it is. */
+  readonly approvedIdsComplete: boolean;
 }
 
 /** `users.requestAccountDeletion` — Apple's in-app deletion requirement. */
@@ -501,17 +533,29 @@ export interface BackendApi {
   readonly users: {
     readonly currentUser: Query<NoArgs, CurrentUser | null>;
     readonly updateProfile: Mutation<
-      { displayName: string; avatarKey?: string },
+      { displayName: string; avatarKey?: string; acceptedTermsVersion?: string },
       UpdateProfileResult
     >;
+    /**
+     * Agree to the current user terms.
+     *
+     * Onboarding takes acceptance alongside the name, which covers every new
+     * account; this is for the two cases it does not — an account that predates
+     * the terms, and everybody after `TERMS_VERSION` moves. Play's UGC policy
+     * asks for accepted terms before content is created, so an account without
+     * one is refused an upload grant with `termsNotAccepted`.
+     */
+    readonly acceptTerms: Mutation<{ version: string }, AcceptTermsResult>;
     readonly refreshRoles: Mutation<NoArgs, RefreshRolesResult>;
     /**
      * Delete this account, from inside the app (Apple 5.1.1(v)).
      *
-     * Moves to `deletionScheduled` and revokes access **immediately**; the purge
-     * is thirty days out and post-launch. Submissions are retained and
-     * anonymised — the photographs belong to the party as much as to the person
-     * who took them, so the attribution goes and the picture does not.
+     * Moves to `deletionScheduled` and revokes access **immediately**. Thirty
+     * days later `deletion.runDueDeletions` erases the account and its
+     * associated data — media, stored objects, memberships, blocks, push
+     * devices and the Better Auth credential. Until then submissions stay in
+     * their party with the attribution removed, so a host mid-event does not
+     * lose the evening and a change of mind is still possible.
      */
     readonly requestAccountDeletion: Mutation<{ reason?: string }, AccountDeletionResult>;
   };

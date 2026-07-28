@@ -18,6 +18,7 @@ import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
 import { resolveDisplayName } from "./lib/profile";
 import { socialProviderConfig } from "./lib/providers";
+import { isPrivateRelayEmail, mirrorAuthUser, normaliseEmail } from "./lib/user-mirror";
 import { captureError } from "./lib/sentry";
 
 /* -------------------------------------------------------------------------- */
@@ -67,21 +68,12 @@ export const authComponent = createClient<DataModel>(betterAuthComponent, {
         try {
           const now = Date.now();
           const email = normaliseEmail(doc.email);
-          const userId = await ctx.db.insert("users", {
+          const userId = await mirrorAuthUser(ctx, {
             authId: doc._id,
             email,
             emailVerified: doc.emailVerified ?? false,
-            displayName: doc.name?.trim() || defaultDisplayName(email),
-            isPrivateRelayEmail: isPrivateRelayEmail(email),
-            accountState: "active",
-            // Private beta is invitation-only. Accepting an organiser invitation
-            // flips this; nothing else may.
-            isOrganiser: false,
-            // Cached from the server-side allowlist — `isAdminEmail` stays the
-            // authority on every check.
-            isGlobalAdmin: isAdminEmail(email),
-            createdAt: now,
-            updatedAt: now,
+            providerName: doc.name,
+            now,
           });
 
           // Verified-email matching, run at the earliest possible moment: an
@@ -287,10 +279,6 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function normaliseEmail(email: string | null | undefined): string {
-  return (email ?? "").trim().toLowerCase();
-}
-
 /**
  * Run verified-email matching for a mirrored user, inside the trigger's own
  * transaction.
@@ -361,19 +349,4 @@ async function recordDemoSignIn(ctx: GenericCtx<DataModel>, email: string): Prom
   } catch (error) {
     captureError({ scope: "auth.demoSignIn", error, level: "warning" });
   }
-}
-
-/**
- * Apple's private relay. Such an address cannot receive an organiser
- * invitation, which is why PLAN.md gives those users an OTP path to verify a
- * real address instead.
- */
-function isPrivateRelayEmail(email: string): boolean {
-  return email.endsWith("@privaterelay.appleid.com");
-}
-
-/** A usable name before the user confirms one, e.g. "corey" from the address. */
-function defaultDisplayName(email: string): string {
-  const [local] = email.split("@");
-  return local && local.length > 0 ? local : "Guest";
 }

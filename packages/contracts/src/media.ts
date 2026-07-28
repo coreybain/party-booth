@@ -296,7 +296,23 @@ export function isDerivativeRole(role: MediaFileRole): role is DerivativeFileRol
  */
 export const DERIVATIVE_ROLES_BY_TYPE = {
   photo: ["preview"],
-  video: ["poster", "preview"],
+  /**
+   * A video has a **poster and nothing else**.
+   *
+   * The `preview` slot was open for a downscaled muted clip that neither client
+   * has ever produced — nothing in Expo or in a browser transcodes video — and an
+   * open slot is not free. It carried a 25 MiB ceiling and the *same*
+   * `MEDIA_LIMITS.video.mimeTypes` containers as the original, so a guest whose
+   * original was withheld from third parties could have re-uploaded the identical
+   * bytes as a "preview" and had them served to the whole gallery: nothing
+   * corroborated the re-encode claim, because a same-container file of similar
+   * size is exactly what a genuine re-encode would look like.
+   *
+   * Closing the slot is the honest fix while the artefact does not exist. Video
+   * `preview` is P2 work (`TODO.md`), and it comes back with a transcoder and a
+   * container/duration check, not before.
+   */
+  video: ["poster"],
 } as const satisfies Record<MediaType, readonly DerivativeFileRole[]>;
 
 export function derivativeRolesFor(mediaType: MediaType): readonly DerivativeFileRole[] {
@@ -437,16 +453,16 @@ export const VIDEO_MAX_DURATION_SECONDS = MEDIA_LIMITS.video.maxDurationSeconds;
  * image can still carry GPS) but it is the cheapest available corroboration,
  * and it is why the preview cap is not simply "the photo cap".
  *
- * A video's `preview` is a short muted clip rather than an image, so it gets its
- * own, larger ceiling; its `poster` is a still and gets the image one.
+ * **Every derivative is an image**, and that is now the whole rule. A video's
+ * `preview` — a downscaled muted clip with its own 25 MiB ceiling and the
+ * original's containers — was the one derivative that could not be corroborated
+ * at all, and no client produces it; see {@link DERIVATIVE_ROLES_BY_TYPE}.
  */
 export const DERIVATIVE_IMAGE_MIME_TYPES = ["image/jpeg", "image/webp", "image/png"] as const;
 
 export const DERIVATIVE_LIMITS = {
   /** Applies to a photo's preview and to any poster. */
   image: { maxBytes: 2 * MIB },
-  /** A video's preview clip: downscaled, muted, ≤ the original's duration. */
-  videoPreview: { maxBytes: 25 * MIB },
 } as const;
 
 export function maxBytesFor(mediaType: MediaType): number {
@@ -460,7 +476,6 @@ export function allowedMimeTypes(mediaType: MediaType): readonly string[] {
 /** The byte ceiling for one exact `(mediaType, role)` pair. */
 export function maxBytesForRole(mediaType: MediaType, role: MediaFileRole): number {
   if (role === "original") return maxBytesFor(mediaType);
-  if (role === "preview" && mediaType === "video") return DERIVATIVE_LIMITS.videoPreview.maxBytes;
   return DERIVATIVE_LIMITS.image.maxBytes;
 }
 
@@ -470,7 +485,6 @@ export function allowedMimeTypesForRole(
   role: MediaFileRole,
 ): readonly string[] {
   if (role === "original") return allowedMimeTypes(mediaType);
-  if (role === "preview" && mediaType === "video") return MEDIA_LIMITS.video.mimeTypes;
   return DERIVATIVE_IMAGE_MIME_TYPES;
 }
 
@@ -548,7 +562,7 @@ export function validateMediaFile(candidate: MediaFileCandidate): MediaValidatio
 
   // A poster is a still frame: it has no duration, and demanding one would
   // refuse every legitimate video thumbnail.
-  const needsDuration = mediaType === "video" && fileRole !== "poster";
+  const needsDuration = mediaType === "video" && fileRole === "original";
   if (needsDuration) {
     if (durationSeconds === undefined || !Number.isFinite(durationSeconds)) {
       return {

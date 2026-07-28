@@ -162,11 +162,27 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         // so this colour shows through them on every launcher mask shape.
         backgroundColor: "#FF2E88",
       },
+      /*
+       * Two permissions, and deliberately not four.
+       *
+       * `READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` used to be here, and they are
+       * exactly the pair current Play policy restricts to apps that need broad,
+       * persistent access to a device's whole media library. PartyBooth needs no
+       * such thing: library import is a **single** image chosen through
+       * `expo-image-picker`, which routes through the Android system photo
+       * picker and hands back one URI with no permission at all, and there is no
+       * video-library import anywhere in the product. Declaring them bought
+       * nothing and put the release in the path of a policy rejection with a
+       * declaration form attached.
+       *
+       * They are listed under `blockedPermissions` below rather than merely
+       * omitted, because an autolinked library adding them back to the merged
+       * manifest is precisely the failure mode — verify the **release** manifest
+       * (`docs/store/android-internal.md`) rather than this file.
+       */
       permissions: [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.POST_NOTIFICATIONS",
       ],
       // Autolinked libraries like to add these; PartyBooth never reads arbitrary
@@ -174,6 +190,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       blockedPermissions: [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
       ],

@@ -248,3 +248,60 @@ describe("controls", () => {
     expect(positionLabel(state)).toBe("2 of 3");
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Reconciling — what a host's takedown does to a running show                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `appended` cannot express removal, so a photograph a host declined or revoked
+ * mid-party kept cycling on the television for the rest of the session — and
+ * because decline does not delete the stored object, the signed URL already
+ * minted stayed live for its full ten minutes. That is exactly the remedy
+ * `resolveReport` and `moderate` exist to provide for a reported photo.
+ */
+describe("reconciled", () => {
+  const rng = () => 0;
+  const build = (ids: readonly string[]) =>
+    slideshowReducer(initialSlideshowState, { type: "reconciled", ids, rng });
+
+  it("adds like `appended` when nothing has gone", () => {
+    const state = build(["a", "b", "c"]);
+    expect(state.playlist).toEqual(["a", "b", "c"]);
+  });
+
+  it("takes a revoked item off the playlist", () => {
+    const state = slideshowReducer(build(["a", "b", "c"]), {
+      type: "reconciled",
+      ids: ["a", "c"],
+      rng,
+    });
+    expect(state.playlist).toEqual(["a", "c"]);
+  });
+
+  it("advances to whatever followed when the item on screen is the one removed", () => {
+    const showing = slideshowReducer(build(["a", "b", "c"]), { type: "advance", by: 1 });
+    expect(currentId(showing)).toBe("b");
+
+    const after = slideshowReducer(showing, { type: "reconciled", ids: ["a", "c"], rng });
+    // Not "back to the start", and not a stall on a gap: the next slide.
+    expect(currentId(after)).toBe("c");
+  });
+
+  it("stays on the photograph the room is looking at when something else goes", () => {
+    const showing = slideshowReducer(build(["a", "b", "c"]), { type: "advance", by: 1 });
+    const after = slideshowReducer(showing, { type: "reconciled", ids: ["b", "c"], rng });
+    expect(currentId(after)).toBe("b");
+  });
+
+  it("forgets that a removed item was broken, so a re-approval can play", () => {
+    const broken = slideshowReducer(build(["a", "b"]), { type: "failed", id: "a" });
+    expect(broken.broken.has("a")).toBe(true);
+
+    const gone = slideshowReducer(broken, { type: "reconciled", ids: ["b"], rng });
+    expect(gone.broken.has("a")).toBe(false);
+
+    const back = slideshowReducer(gone, { type: "reconciled", ids: ["b", "a"], rng });
+    expect(back.playlist).toContain("a");
+  });
+});

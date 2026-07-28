@@ -16,9 +16,11 @@
  *   to vanish would report it again and again;
  * - blocking says it is silent and does not eject, because `blocks.block`
  *   touches no membership;
- * - deletion says access goes now, data goes in thirty days, and photographs are
- *   kept and anonymised — the last of which is the part a guest is most likely
- *   to be surprised by.
+ * - deletion says access goes now, everything is erased in thirty days, and
+ *   photographs are anonymised in the meantime — the last of which is the part a
+ *   guest is most likely to be surprised by. "Erased" is load-bearing: the purge
+ *   worker (`convex/deletion.ts`) ships with the button, so the copy is a
+ *   description rather than an intention.
  */
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -376,11 +378,12 @@ describe("Settings — in-app account deletion (5.1.1(v))", () => {
     await renderSettings();
     fireEvent.click(screen.getByLabelText("Delete my account"));
 
-    // Access now, data in thirty days, photographs kept and anonymised. The
-    // last is the part a guest is most likely to be surprised by, so it is said
-    // before the button rather than after.
+    // Access now, everything erased in thirty days, photographs anonymised in
+    // the meantime. The last is the part a guest is most likely to be surprised
+    // by, so it is said before the button rather than after — and the middle one
+    // has to say *erased*, because it is what the purge worker now does.
     expect(screen.getByText(/signed out straight away/i)).toBeTruthy();
-    expect(screen.getByText(/fully deleted after 30 days/i)).toBeTruthy();
+    expect(screen.getByText(/After 30 days everything goes/i)).toBeTruthy();
     expect(screen.getByText(/your name comes off them/i)).toBeTruthy();
     expect(fake.requestAccountDeletion).not.toHaveBeenCalled();
   });

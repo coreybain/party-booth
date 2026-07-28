@@ -11,8 +11,8 @@ import {
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { isAdminEmail } from "./config";
-import { forbidden, notFound, unauthenticated } from "./errors";
+import { isAdminEmail, isDemoAddress } from "./config";
+import { forbidden, isAppError, notFound, unauthenticated } from "./errors";
 
 export type ReadCtx = QueryCtx | MutationCtx;
 
@@ -152,10 +152,73 @@ export async function requireEventActor(ctx: ReadCtx, eventId: Id<"events">): Pr
   const event = await ctx.db.get(eventId);
   if (!event) throw notFound("That event");
 
+  assertDemoConfinement(user, event);
+
   const resolved = await resolveEventRole(ctx, event, user);
   if (!resolved) throw notFound("That event");
 
   return { user, event, role: resolved.role, membership: resolved.membership };
+}
+
+/**
+ * The App Review demo identity may touch the demo party and nothing else.
+ *
+ * The reviewer credential is a **published** address and a **published** fixed
+ * six-digit code, deliberately enabled against the deployment Apple reviews —
+ * which on 5 August is the deployment the real party runs on, so there is no
+ * environment marker that can separate the two (see `lib/config.ts`). The
+ * argument that the credential "unlocks a party with no real people in it" held
+ * only for as long as nobody invited it anywhere else: a code on a printed sign,
+ * or a QR photographed at the door, was enough for anyone holding the published
+ * credentials to join a real party and start uploading and reporting inside it.
+ *
+ * So the identity is confined rather than trusted. This runs before the role is
+ * resolved, so it covers every event-scoped read and write in the product at
+ * once, and it answers `notFound` for the same reason the role check does.
+ * `join.ts` calls it separately, because joining is the one path that reaches an
+ * event without a membership.
+ *
+ * It is a no-op on every deployment that has not opted in: with the demo
+ * variables unset — or expired — `isDemoAddress` is `false` for everybody.
+ */
+export function assertDemoConfinement(user: Doc<"users">, event: Doc<"events">): void {
+  if (!isDemoAddress(user.email)) return;
+  if (event.isDemo === true) return;
+  throw notFound("That event");
+}
+
+/** Non-throwing form, for the join path, which reports refusals as values. */
+export function demoConfinementAllows(user: Doc<"users">, event: Doc<"events">): boolean {
+  return !isDemoAddress(user.email) || event.isDemo === true;
+}
+
+/**
+ * {@link requireEventActor}, with its refusal rewritten to the caller's subject.
+ *
+ * Every handler that looks a **media row** up by id and *then* resolves its
+ * event had two distinguishable refusals for one question: `notFound("That
+ * photo")` for an id that does not exist, and `notFound("That event")` for a
+ * real row in a party the caller is not in. Media ids are stable and are handed
+ * out as `MediaView.id`, so the pair let an authenticated user confirm that an
+ * id belongs to a party they were never invited to — which is exactly what
+ * `requireEventActor` answering `notFound` rather than `forbidden` exists to
+ * prevent. Rewriting the message here restores it in one place for
+ * `media.withdraw` and `moderation.report` alike.
+ *
+ * Only the `notFound` refusal is rewritten. An unauthenticated caller still
+ * learns they are signed out, because that is actionable and discloses nothing.
+ */
+export async function requireEventActorFor(
+  ctx: ReadCtx,
+  eventId: Id<"events">,
+  subject: string,
+): Promise<EventActor> {
+  try {
+    return await requireEventActor(ctx, eventId);
+  } catch (error) {
+    if (isAppError(error) && error.data.code === "notFound") throw notFound(subject);
+    throw error;
+  }
 }
 
 /**

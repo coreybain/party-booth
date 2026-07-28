@@ -49,7 +49,9 @@ const overviewValidator = v.object({
   }),
   /** Sum of the byte sizes on the record — originals **and** derivatives. */
   storageBytes: v.number(),
+  /** Distinct submitters. `0` for a global admin — see the handler. */
   contributorCount: v.number(),
+  /** Per-guest leaderboard. **Empty for a global admin** — see the handler. */
   topContributors: v.array(
     v.object({
       userId: v.id("users"),
@@ -103,9 +105,27 @@ export const overview = query({
       perUser.set(row.uploaderUserId, bucket);
     }
 
-    const ranked = [...perUser.entries()]
-      .sort(([, a], [, b]) => b.approved - a.approved || b.total - a.total)
-      .slice(0, input.contributorLimit ?? 10);
+    /*
+     * The contributor leaderboard is **host information**, and an admin is not a
+     * host.
+     *
+     * `event.viewStats` is in the `globalAdmin` capability set and `eventGate`
+     * returns true in every state, so an admin resolving through
+     * `requireEventActor` without any membership was enough to read a per-guest
+     * breakdown — names, ids, and how much each person photographed — of a
+     * stranger's private party. PLAN.md scopes the admin console to "accounts /
+     * events / asset counts / storage" with "no media access", and who
+     * photographed how much is guest-level personal data rather than an asset
+     * count. The aggregate figures the console genuinely needs are untouched;
+     * `recentSubmissions` is already split off for the same reason.
+     */
+    const isHost = actor.role === "owner" || actor.role === "cohost";
+
+    const ranked = isHost
+      ? [...perUser.entries()]
+          .sort(([, a], [, b]) => b.approved - a.approved || b.total - a.total)
+          .slice(0, input.contributorLimit ?? 10)
+      : [];
 
     const topContributors = [];
     for (const [userId, counts] of ranked) {
@@ -131,7 +151,11 @@ export const overview = query({
       byType,
       byState,
       storageBytes,
-      contributorCount: perUser.size,
+      // Zero rather than the real figure for an admin: "how many different
+      // people photographed at this private party" is the same kind of fact as
+      // the list itself, and the console's own columns are accounts, events,
+      // assets and storage.
+      contributorCount: isHost ? perUser.size : 0,
       topContributors,
     };
   },

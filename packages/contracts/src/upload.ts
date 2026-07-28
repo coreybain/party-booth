@@ -16,6 +16,7 @@ import {
   type MediaType,
 } from "./media";
 import { captureIdSchema, checksumSchema } from "./schemas";
+import { TERMS_NOT_ACCEPTED_MESSAGE } from "./terms";
 import { storageRegionSchema, type StorageRegion } from "./storage";
 
 /**
@@ -268,6 +269,50 @@ export function matchesGrant(
 }
 
 /* -------------------------------------------------------------------------- */
+/* A capture's file facts, which are immutable once recorded                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything a `media` row records about the bytes of its **original**.
+ *
+ * These are set once, from the grant that created the row, and after that they
+ * are the record: `matchesGrant` binds a completion against them, `projectMedia`
+ * renders from them, and the organiser's storage figure sums them. A second
+ * grant for the same capture that describes a different file is therefore not a
+ * retry — it is an offer to attach bytes to a record of something else.
+ */
+export interface CaptureFileFacts {
+  readonly mediaType: MediaType;
+  readonly mimeType: string;
+  readonly byteSize: number;
+  readonly checksum: string;
+  readonly durationSeconds?: number | undefined;
+}
+
+/**
+ * Do these two describe the same file?
+ *
+ * Used twice on the resume path and once on the derivative path, which is why it
+ * is here rather than in the mutation: the whole point is that grant time and
+ * completion time apply the *same* comparison, so a request that survives the
+ * first cannot drift past the second.
+ *
+ * MIME types are normalised (`image/jpeg` vs `image/jpeg; charset=…`) because
+ * that difference is a client's serialisation, not a different body. Duration is
+ * compared including its absence — a photo has none, and a video that has lost
+ * one has changed.
+ */
+export function describesSameFile(a: CaptureFileFacts, b: CaptureFileFacts): boolean {
+  return (
+    a.mediaType === b.mediaType &&
+    normaliseMime(a.mimeType) === normaliseMime(b.mimeType) &&
+    a.byteSize === b.byteSize &&
+    a.checksum === b.checksum &&
+    (a.durationSeconds ?? null) === (b.durationSeconds ?? null)
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Whether a grant may be issued at all                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -313,6 +358,41 @@ export const UPLOAD_REJECTION_REASONS = [
   "derivativeMetadataNotStripped",
   /** That role already has a different file. One capture, one object per role. */
   "duplicateDerivative",
+  /**
+   * A derivative whose bytes are byte-for-byte the capture's own — the same
+   * checksum as the original, or as a derivative already attached.
+   *
+   * A genuine re-encode never reproduces its source. This is the one cheap
+   * server-side corroboration of the re-encode claim that needs no image
+   * pipeline, and it closes the bypass the claim was protecting: without it a
+   * guest whose original is withheld from third parties
+   * (`sourceCarriesNoLocation: false` — every `apps/web` library import) could
+   * re-upload the identical GPS-bearing file under `fileRole: "preview"` and have
+   * it served to the whole gallery as `previewUrl`.
+   */
+  "derivativeNotDistinct",
+  /**
+   * A grant for a capture that already exists, describing a **different file**
+   * from the one that capture was started as.
+   *
+   * A retry re-uses the `captureId` and re-sends the same body, which is what
+   * makes resuming a stranded upload safe. Changing the media type, MIME type,
+   * byte size, checksum or duration underneath a row that has already recorded
+   * them is not a retry: it attaches bytes to a record that describes something
+   * else, and every downstream renderer and storage figure believes the record.
+   */
+  "captureFactsChanged",
+  /**
+   * The account has not agreed to the current user terms.
+   *
+   * Play's UGC policy asks for accepted terms that define and prohibit
+   * objectionable content **before** a user creates any, and the acceptance is
+   * taken at onboarding — so this is the two cases onboarding does not cover: an
+   * account that predates the terms, and every account after `TERMS_VERSION`
+   * moves. Not permanent in the "give up" sense and not retryable on a timer
+   * either: the fix is a tap, and both clients surface the rules and the button.
+   */
+  "termsNotAccepted",
 ] as const;
 
 export type UploadRejectionReason = (typeof UPLOAD_REJECTION_REASONS)[number];
@@ -331,6 +411,9 @@ export const UPLOAD_REJECTION_MESSAGES: Record<UploadRejectionReason, string> = 
   derivativeWithoutOriginal: "Send the original first.",
   derivativeMetadataNotStripped: "A preview has to be re-encoded before it is sent.",
   duplicateDerivative: "That preview has already been uploaded.",
+  derivativeNotDistinct: "A preview has to be a re-encode, not the original file again.",
+  captureFactsChanged: "That capture was started as a different file. Take it again.",
+  termsNotAccepted: TERMS_NOT_ACCEPTED_MESSAGE,
 };
 
 export const UPLOAD_THROTTLED_MESSAGE = "Slow down a moment — too many uploads at once.";
@@ -363,6 +446,12 @@ export const PERMANENT_UPLOAD_REJECTIONS = [
   "captureWithdrawn",
   "derivativeMetadataNotStripped",
   "duplicateDerivative",
+  "derivativeNotDistinct",
+  "captureFactsChanged",
+  // Permanent in the sense that matters to a retry loop: no amount of waiting
+  // fixes it, and a durable queue that keeps trying is a queue that never
+  // surfaces the sheet with the button on it.
+  "termsNotAccepted",
 ] as const satisfies readonly UploadRejectionReason[];
 
 export function isPermanentRejection(reason: UploadRejectionReason): boolean {
@@ -465,12 +554,31 @@ export function checkGrantEligibility(input: GrantEligibilityInput): GrantEligib
    * about a process, and a derivative that is not a re-encode is not a derivative
    * we produced. The location half is the read path's question, not this one's.
    */
-  if (isDerivativeRole(input.file.fileRole ?? "original") && !metadataClaimOf(input).reEncoded) {
-    return {
-      ok: false,
-      reason: "derivativeMetadataNotStripped",
-      message: UPLOAD_REJECTION_MESSAGES.derivativeMetadataNotStripped,
-    };
+  if (isDerivativeRole(input.file.fileRole ?? "original")) {
+    const claim = metadataClaimOf(input);
+    /*
+     * **Both** halves, on a derivative.
+     *
+     * `reEncoded` is the process claim and was always required here. The
+     * location half joins it in the same breath because `projectMedia` now reads
+     * it back off the stored derivative before it serves one to a third party
+     * (`mayServeDerivative` in `packages/backend/convex/lib/media.ts`), and a
+     * derivative that has to be withheld at read time is a derivative that should
+     * never have been stored: refusing it before the grant exists costs the guest
+     * a retry, storing it costs everybody a private object nobody may look at.
+     *
+     * Both first-party clients already send `sourceMetadataStripped: true` and
+     * nothing for the location half, and an absent location half inherits the
+     * re-encode claim — so this refuses only a client that goes out of its way to
+     * say the bytes still carry a fix.
+     */
+    if (!claim.reEncoded || !claim.carriesNoLocation) {
+      return {
+        ok: false,
+        reason: "derivativeMetadataNotStripped",
+        message: UPLOAD_REJECTION_MESSAGES.derivativeMetadataNotStripped,
+      };
+    }
   }
 
   return { ok: true };

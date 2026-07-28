@@ -9,6 +9,7 @@
  * are one tap from this screen rather than behind a web view.
  */
 
+import { TERMS_PATH } from "@partybooth/contracts/terms";
 import { useMutation, useQuery } from "convex/react";
 import Constants from "expo-constants";
 import { Image } from "expo-image";
@@ -48,6 +49,17 @@ import { colors, radius, spacing, typography } from "@/theme";
  * can notice a 404: `docs/store/ios-submission.md` §3.1.
  */
 const PRIVACY_PATH = "/privacy";
+
+/**
+ * Where the user terms live.
+ *
+ * Same argument as the privacy path above, plus one of its own: Play's UGC
+ * policy asks for terms that define and prohibit objectionable content, that a
+ * user can reach, and that the user has accepted. Onboarding takes the
+ * acceptance; this is the reachable half, and it is deliberately in the same
+ * card so somebody looking for "the legal stuff" finds both.
+ */
+const TERMS_PATH_IN_APP = TERMS_PATH;
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -186,7 +198,14 @@ export default function SettingsScreen() {
             label="Privacy policy"
             variant="secondary"
             icon="shield-checkmark-outline"
-            onPress={() => void openPrivacyPolicy()}
+            onPress={() => void openLegalPage(PRIVACY_PATH, "settings.privacyPolicy")}
+            disabled={appConfig.status !== "ready"}
+          />
+          <Button
+            label="Terms of use"
+            variant="secondary"
+            icon="document-text-outline"
+            onPress={() => void openLegalPage(TERMS_PATH_IN_APP, "settings.terms")}
             disabled={appConfig.status !== "ready"}
           />
         </Card>
@@ -211,19 +230,19 @@ export default function SettingsScreen() {
 }
 
 /**
- * Open the policy in the system browser sheet.
+ * Open a public legal page in the system browser sheet.
  *
  * `expo-web-browser` rather than `Linking.openURL`: it presents in-app (SFSafari
  * / Custom Tabs), so a guest reading the policy does not lose the app, and it is
  * imported on demand because nothing else on this screen needs it.
  */
-async function openPrivacyPolicy(): Promise<void> {
+async function openLegalPage(path: string, scope: string): Promise<void> {
   if (appConfig.status !== "ready") return;
   try {
     const WebBrowser = await import("expo-web-browser");
-    await WebBrowser.openBrowserAsync(`${appConfig.siteUrl}${PRIVACY_PATH}`);
+    await WebBrowser.openBrowserAsync(`${appConfig.siteUrl}${path}`);
   } catch (error) {
-    captureHandledError(error, { scope: "settings.privacyPolicy" });
+    captureHandledError(error, { scope });
   }
 }
 
@@ -318,16 +337,20 @@ function BlockedSection() {
  *
  * - **Access is revoked immediately.** The account moves to `deletionScheduled`
  *   and this device signs out. There is no grace period on *access*.
- * - **The data is purged after thirty days**, and until then the deletion can be
- *   undone by asking. PLAN.md's lifecycle states ship at launch; the purge job
- *   itself is post-launch (P1), which is why the copy says "after 30 days" and
- *   not "in 30 days exactly".
- * - **Photographs are kept and anonymised, not deleted.** They belong to the
- *   party as much as to the person who took them — a guest deleting their
- *   account should not silently delete other people's memories of the night. The
- *   attribution goes (`uploaderNameFor` returns "Former guest" on the read path)
- *   and the picture stays. This is the part a guest is most likely to be
- *   surprised by, so it is said before the button, not after.
+ * - **Everything is erased after thirty days**, and until then the deletion can
+ *   be undone by asking. The worker is `convex/deletion.ts`, run daily by
+ *   `convex/crons.ts`: media and stored objects, memberships, blocks, push
+ *   devices and the Better Auth credential — the Apple grant included. It ships
+ *   *with* the button, because a delete button whose worker is post-launch is
+ *   indefinite deactivation with a deletion label on it, which is neither what
+ *   Apple's guideline asks for nor what the copy said.
+ * - **Photographs are anonymised at once and erased with the rest.** For the
+ *   thirty days a restore is still possible the attribution goes
+ *   (`uploaderNameFor` returns "Former guest") and the picture stays, so a host
+ *   mid-party does not lose the evening; after that both go. Retention was a
+ *   defensible answer for the restore window and was never a defensible answer
+ *   to "delete my data". This is the part a guest is most likely to be surprised
+ *   by, so it is said before the button, not after.
  *
  * Withdrawing individual items is a separate, genuinely destructive control in
  * "My media", and the copy points at it — somebody who wants their photographs
@@ -365,8 +388,9 @@ function DeleteAccountSection({ onSignedOut }: { onSignedOut: () => void }) {
       <Card>
         <Text style={styles.sectionLabel}>Delete account</Text>
         <MutedText>
-          Closes your PartyBooth account and signs you out of every device. You can ask us to
-          restore it within 30 days; after that it is gone for good.
+          Closes your PartyBooth account and signs you out of every device. Everything you sent is
+          erased 30 days later. You can ask us to restore it before then; after that it is gone for
+          good.
         </MutedText>
         <Button
           label="Delete my account"
@@ -387,12 +411,14 @@ function DeleteAccountSection({ onSignedOut }: { onSignedOut: () => void }) {
           You will be signed out straight away and will lose access to every party you have joined.
         </MutedText>
         <MutedText>
-          Your account is fully deleted after 30 days. Until then, email us and we can put it back.
+          After 30 days everything goes: your photos and videos, the files behind them, the parties
+          you joined, your blocks, and your sign-in with Apple or Google. Until then, email us and
+          we can put it back.
         </MutedText>
         <MutedText>
-          Photos and videos you sent to a party stay with that party, but your name comes off them.
-          If you want something removed, take it back from “My media” first — that deletes it for
-          good, for everyone.
+          For those 30 days your photos stay with the party but your name comes off them, so a host
+          mid-event does not lose the night. If you want something gone now, take it back from “My
+          media” — that deletes it immediately, for everyone.
         </MutedText>
       </Notice>
 

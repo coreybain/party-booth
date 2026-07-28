@@ -205,6 +205,13 @@ export const serverVars = {
     "Fixed six-digit code the reviewer demo account accepts instead of a real emailed OTP.",
     { secret: true },
   ),
+  DEMO_LOGIN_EXPIRES_AT: envVar(
+    z
+      .string()
+      .refine((value) => !Number.isNaN(Date.parse(value)), "must be an ISO 8601 date-time")
+      .optional(),
+    "When the reviewer demo login stops working, ISO 8601 (e.g. 2026-09-01T00:00:00Z). Required alongside the other two — the bypass is off without it, and off again once the date passes, so a forgotten variable expires instead of lingering. Set it about six weeks out to cover a resubmission.",
+  ),
 
   /* --- Universal links / App Links -------------------------------------- */
   /**

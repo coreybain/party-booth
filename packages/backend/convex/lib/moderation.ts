@@ -80,6 +80,11 @@ export async function applyModeration(
     state: transition.next,
     moderatedAt: now,
     moderatedByUserId: actor.user._id,
+    // The slideshow reads approvals in *approval* order, not capture order, so
+    // an item approved out of order still reaches the television immediately.
+    // Only an approval moves it; a decline and a revoke leave it, because the
+    // row leaves the index the moment its state does.
+    ...(transition.next === "approved" ? { approvedAt: now } : {}),
     updatedAt: now,
   });
   await applyCountChange(ctx, media.eventId, media.state, transition.next, now);

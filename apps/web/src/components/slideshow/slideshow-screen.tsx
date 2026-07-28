@@ -100,7 +100,17 @@ function ActiveEventSlideshowLive() {
     );
   }
 
-  return <SlideshowStage eventId={active.id} eventName={active.name} />;
+  /*
+   * Keyed on the event, which is the whole fix and not a nicety.
+   *
+   * `SlideshowStage` holds the accumulated playlist, the cursor, the refresh
+   * timer and the reducer, and none of them are scoped to an event id. Without
+   * the key, switching the active event in the switcher kept every one of them:
+   * one party's photographs — and their still-valid signed URLs, good for the
+   * rest of their ten minutes — carried on playing under the next party's name,
+   * with that party's title across the top of the screen.
+   */
+  return <SlideshowStage key={active.id} eventId={active.id} eventName={active.name} />;
 }
 
 function SlideshowStage({
@@ -120,10 +130,13 @@ function SlideshowStage({
 
   /* -- the playlist ------------------------------------------------------ */
 
+  // `reconciled`, not `appended`: the hook prunes items a host has declined or
+  // revoked out of `feed.items`, and the reducer has to take them off the
+  // playlist rather than keep playing them for the rest of the party.
   const feedKey = feed.items.map((item) => item.id).join(",");
   useEffect(() => {
     dispatch({
-      type: "appended",
+      type: "reconciled",
       ids: feedKey === "" ? [] : feedKey.split(","),
       rng: systemRng,
     });

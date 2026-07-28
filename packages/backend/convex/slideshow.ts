@@ -2,6 +2,7 @@ import { encodeMediaCursor, decodeMediaCursor, isAfterCursor } from "@partybooth
 import { slideshowInputSchema } from "@partybooth/contracts/schemas";
 import { v } from "convex/values";
 
+import type { Doc } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { isHiddenByBlock, loadBlockedUserIds } from "./lib/blocks";
 import { requireEventActor, requirePermission, toPermissionActor } from "./lib/guards";
@@ -21,17 +22,58 @@ import { mediaViewValidator, projectMedia, type MediaView } from "./lib/media";
  * a 200-photo party turns into 200 signed URLs a second by midnight.
  *
  * So the client asks for what it does not have. `after` is a
- * {@link encodeMediaCursor} string — `createdAt:id`, total ordering, ties broken
- * by id — and the answer is the items strictly after it plus a `nextCursor` to
- * ask with next time. A re-run with a full cursor returns an empty page, which
- * is cheap, and the client appends rather than rebuilds, which is what keeps the
+ * {@link encodeMediaCursor} string — total ordering, ties broken by id — and the
+ * answer is the items strictly after it plus a `nextCursor` to ask with next
+ * time. A re-run with a full cursor returns an empty page, which is cheap, and
+ * the client appends rather than rebuilds, which is what keeps the
  * currently-displayed photo on screen instead of restarting the show.
  *
- * **Chronological, always.** Shuffle is a client-side concern: the server's
- * order has to be stable for the cursor to mean anything, and a shuffle that the
- * server did would re-order the whole show every time a photo was approved.
- * PLAN.md's "chronological or shuffle" is one query and two clients.
+ * ## The cursor runs on **approval** time, not capture time
+ *
+ * It used to run on `createdAt`, and that was the wrong clock. `createdAt` is
+ * when the photograph was taken; the cursor's job is to describe *what the
+ * client has already been sent*, which advances in the order things are
+ * **approved**. The two diverge the moment a host works through a backlog: a
+ * photo taken at eight and approved at midnight sorts hours behind a cursor that
+ * has long since passed it, so it was silently excluded until the five-minute
+ * full refresh swept it up. "Approve it and it is on the wall" was true only for
+ * items approved in the order they were taken.
+ *
+ * `media.approvedAt` is stamped by the two things that can approve — a host's
+ * decision and `automatic` mode's settle — and `by_event_state_and_approved` is
+ * the index over it.
+ *
+ * ## …and the page is only half the answer
+ *
+ * A cursor can only ever *add*. It cannot say that a host has just declined,
+ * revoked or hidden something, and until it could, the client's playlist was
+ * append-only: an item taken off the wall mid-party kept cycling on the
+ * television for the rest of the session, holding a signed URL that stayed live
+ * for its full ten minutes. That is precisely the remedy `resolveReport` and
+ * `moderate` exist to provide, so `approvedIds` is returned alongside the page —
+ * the authoritative set, for this viewer, right now — and the client prunes
+ * anything absent from it.
+ *
+ * It is cheap because it is the same scan `total` already did. It is capped at
+ * {@link MAX_APPROVED_IDS} so a very large party degrades into "no pruning"
+ * rather than into a payload that grows without bound; `approvedIdsComplete`
+ * says which of the two the client is holding, and the client only prunes when
+ * it is `true`.
+ *
+ * **Chronological display, always.** Shuffle is a client-side concern, and so is
+ * the display order: the server's order has to be stable for the cursor to mean
+ * anything, and every item carries `createdAt` for a client that wants to sort
+ * by it.
  */
+
+/**
+ * How many approved ids one page will carry.
+ *
+ * Well past any party this product is built for (PLAN.md: 10–50 guests, and the
+ * post-launch load target is 1,000 assets). A party larger than this loses live
+ * *removal* — never live addition — and the five-minute refresh still catches up.
+ */
+const MAX_APPROVED_IDS = 2_000;
 
 const slideshowPageValidator = v.object({
   items: v.array(mediaViewValidator),
@@ -45,6 +87,15 @@ const slideshowPageValidator = v.object({
   hasMore: v.boolean(),
   /** Approved items in the event, ignoring the cursor. For "12 of 240". */
   total: v.number(),
+  /**
+   * Every approved id this viewer may see, ignoring the cursor.
+   *
+   * The client reconciles against it: anything it has accumulated that is not in
+   * here has been declined, revoked or blocked since, and comes off the wall.
+   */
+  approvedIds: v.array(v.id("media")),
+  /** `false` when the list above was truncated, in which case do not prune. */
+  approvedIdsComplete: v.boolean(),
 });
 
 export const feed = query({
@@ -68,31 +119,26 @@ export const feed = query({
     });
 
     const cursor = decodeMediaCursor(input.after);
+    const blocked = await loadBlockedUserIds(ctx, actor.user._id);
 
-    // Indexed on `(eventId, state, createdAt)` and ordered by it, so the scan
-    // starts at the cursor rather than at the beginning of the party.
-    const rows = await ctx.db
-      .query("media")
-      .withIndex("by_event_state_and_created", (q) =>
-        cursor === undefined
-          ? q.eq("eventId", args.eventId).eq("state", "approved")
-          : q
-              .eq("eventId", args.eventId)
-              .eq("state", "approved")
-              .gte("createdAt", cursor.createdAt),
-      )
-      .collect();
+    // One scan, two answers: the authoritative approved set (which the client
+    // prunes against) and the page after the cursor. Indexed on
+    // `(eventId, state, approvedAt)` and ordered by it.
+    const approved = (
+      await ctx.db
+        .query("media")
+        .withIndex("by_event_state_and_approved", (q) =>
+          q.eq("eventId", args.eventId).eq("state", "approved"),
+        )
+        .collect()
+    ).filter((row) => !isHiddenByBlock(row, actor.user._id, blocked));
 
     // The index gets us to the right millisecond; `isAfterCursor` breaks the tie
-    // inside it. Both are needed: the range is `gte` because an item sharing the
-    // cursor's timestamp but sorting after it by id is still ahead of us.
-    const blocked = await loadBlockedUserIds(ctx, actor.user._id);
-    const ahead = rows
-      .filter((row) => isAfterCursor({ createdAt: row.createdAt, id: row._id }, cursor))
-      .filter((row) => !isHiddenByBlock(row, actor.user._id, blocked))
-      .sort((a, b) =>
-        a.createdAt === b.createdAt ? (a._id < b._id ? -1 : 1) : a.createdAt - b.createdAt,
-      );
+    // inside it. Both are needed: an item sharing the cursor's timestamp but
+    // sorting after it by id is still ahead of us.
+    const ahead = approved
+      .filter((row) => isAfterCursor(cursorFor(row), cursor))
+      .sort((a, b) => compareApproval(a, b));
 
     const limit = input.limit ?? 60;
     const page = ahead.slice(0, limit);
@@ -108,21 +154,38 @@ export const feed = query({
     }
 
     const last = page.at(-1);
-    const nextCursor =
-      last === undefined
-        ? input.after
-        : encodeMediaCursor({ createdAt: last.createdAt, id: last._id });
+    const nextCursor = last === undefined ? input.after : encodeMediaCursor(cursorFor(last));
 
-    const total = await ctx.db
-      .query("media")
-      .withIndex("by_event_and_state", (q) => q.eq("eventId", args.eventId).eq("state", "approved"))
-      .collect();
+    const approvedIdsComplete = approved.length <= MAX_APPROVED_IDS;
+    const approvedIds = approved.slice(0, MAX_APPROVED_IDS).map((row) => row._id);
 
     return {
       items,
       ...(nextCursor === undefined ? {} : { nextCursor }),
       hasMore: ahead.length > page.length,
-      total: total.length,
+      total: approved.length,
+      approvedIds,
+      approvedIdsComplete,
     };
   },
 });
+
+/**
+ * The cursor position of a row.
+ *
+ * `approvedAt` falls back to `createdAt` for the one shape that can lack it — a
+ * row approved before the column existed. Such a row sorts before every stamped
+ * one in the index too (Convex orders an absent field first), so the fallback
+ * agrees with the scan rather than fighting it, and a cursorless first page
+ * carries it regardless.
+ */
+function cursorFor(row: Doc<"media">): { createdAt: number; id: string } {
+  return { createdAt: row.approvedAt ?? row.createdAt, id: row._id };
+}
+
+function compareApproval(a: Doc<"media">, b: Doc<"media">): number {
+  const left = a.approvedAt ?? a.createdAt;
+  const right = b.approvedAt ?? b.createdAt;
+  if (left !== right) return left - right;
+  return a._id < b._id ? -1 : 1;
+}

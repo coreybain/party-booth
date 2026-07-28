@@ -26,4 +26,6 @@ export * from "./schemas";
 export * from "./scrub";
 export * from "./state-machine";
 export * from "./storage";
+export * from "./terms";
 export * from "./upload";
+export * from "./video";

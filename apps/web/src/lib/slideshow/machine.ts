@@ -96,6 +96,16 @@ export type Rng = () => number;
 export type SlideshowAction =
   /** A page from `slideshow.feed`. Ids already seen are ignored. */
   | { readonly type: "appended"; readonly ids: readonly string[]; readonly rng: Rng }
+  /**
+   * The **whole** playlist, authoritatively: add what is new, drop what is gone.
+   *
+   * `appended` cannot express removal, which meant a photograph a host declined
+   * or revoked mid-party kept cycling on the television for the rest of the
+   * session. Reconciling is how a host's takedown reaches the wall — and if the
+   * item being removed is the one on screen, the index lands on whatever
+   * followed it, so the show steps forward rather than stalling on a gap.
+   */
+  | { readonly type: "reconciled"; readonly ids: readonly string[]; readonly rng: Rng }
   | { readonly type: "setOrder"; readonly order: SlideOrder; readonly rng: Rng }
   /** Flip between the two orders without having to know which one is current. */
   | { readonly type: "toggleOrder"; readonly rng: Rng }
@@ -158,6 +168,56 @@ export function slideshowReducer(state: SlideshowState, action: SlideshowAction)
       }
 
       return { ...state, source, playlist, index: indexOfOr(playlist, current, state.index) };
+    }
+
+    case "reconciled": {
+      const authorised = new Set(action.ids);
+      const removed = state.source.some((id) => !authorised.has(id));
+      if (!removed) {
+        // Nothing to take away — this is an ordinary page, so it is exactly
+        // `appended` and shares its shuffle-insertion behaviour.
+        return slideshowReducer(state, { type: "appended", ids: action.ids, rng: action.rng });
+      }
+
+      const known = new Set(state.source);
+      const fresh = action.ids.filter((id) => !known.has(id) && !state.broken.has(id));
+      const source = [...state.source.filter((id) => authorised.has(id)), ...fresh];
+
+      // Broken ids are pruned too. They are a per-session skip list, and an id
+      // that has left the party has no business keeping a slot in it — nor in
+      // barring itself if the host approves it again later.
+      const broken = new Set([...state.broken].filter((id) => authorised.has(id)));
+
+      const current = currentId(state);
+      const survives = current !== undefined && authorised.has(current);
+
+      const playlist =
+        state.order === "chronological"
+          ? source
+          : [...state.playlist.filter((id) => authorised.has(id)), ...fresh];
+
+      /*
+       * Where to stand once the ground has moved.
+       *
+       * If what was on screen is still approved, follow it — a removal
+       * elsewhere in the playlist must not cut away from the room's photograph.
+       * If it has gone, count the survivors that were ahead of it: that lands
+       * exactly on whatever came next, so the show advances instead of jumping.
+       */
+      const index = survives
+        ? indexOfOr(playlist, current, state.index)
+        : Math.min(
+            state.playlist.slice(0, state.index).filter((id) => authorised.has(id)).length,
+            Math.max(0, playlist.length - 1),
+          );
+
+      const settled: SlideshowState = { ...state, source, playlist, broken, index };
+      // The landing spot can itself be a slide that failed to load earlier.
+      const at = settled.playlist[settled.index];
+      if (at !== undefined && settled.broken.has(at)) {
+        return { ...settled, index: stepIndex(settled, 1) };
+      }
+      return settled;
     }
 
     case "setOrder": {

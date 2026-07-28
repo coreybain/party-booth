@@ -1,4 +1,4 @@
-import type { RandomBytes } from "@partybooth/contracts";
+import { TERMS_VERSION, type RandomBytes } from "@partybooth/contracts";
 import { resetEnvCache } from "@partybooth/env";
 import { serverEnv } from "@partybooth/env/server";
 import { convexTest, type TestConvex } from "convex-test";
@@ -19,6 +19,7 @@ import {
   type FakeStorageOptions,
 } from "./lib/storage/fake";
 import type * as blocks from "./blocks";
+import type * as deletion from "./deletion";
 import type * as demo from "./demo";
 import type * as emails from "./emails";
 import type * as events from "./events";
@@ -78,6 +79,7 @@ export function makeTest(): T {
  */
 type FullApi = ApiFromModules<{
   blocks: typeof blocks;
+  deletion: typeof deletion;
   demo: typeof demo;
   emails: typeof emails;
   events: typeof events;
@@ -130,6 +132,8 @@ export interface SeedUserOptions {
   isOrganiser?: boolean;
   isGlobalAdmin?: boolean;
   isPrivateRelayEmail?: boolean;
+  /** `null` seeds an account that has **not** accepted the terms. */
+  acceptedTermsVersion?: string | null;
 }
 
 export async function seedUser(t: T, over: SeedUserOptions): Promise<Id<"users">> {
@@ -148,6 +152,15 @@ export async function seedUser(t: T, over: SeedUserOptions): Promise<Id<"users">
       ...(over.isPrivateRelayEmail === undefined
         ? {}
         : { isPrivateRelayEmail: over.isPrivateRelayEmail }),
+      // Accepted by default, because onboarding takes it and a fixture that has
+      // not onboarded is not the thing most suites are about. The suite that
+      // *is* about the gate passes `acceptedTermsVersion: undefined`.
+      ...(over.acceptedTermsVersion === null
+        ? {}
+        : {
+            acceptedTermsVersion: over.acceptedTermsVersion ?? TERMS_VERSION,
+            acceptedTermsAt: now,
+          }),
       createdAt: now,
       updatedAt: now,
     }),
@@ -404,29 +417,38 @@ export async function seedMedia(
 /**
  * The App Review demo login, on and off.
  *
- * Both variables together or neither: that pairing *is* the gate, so a helper
- * that could set one without the other would let a suite assert a state the
- * product cannot be in.
+ * All **three** variables together or none: that grouping *is* the gate, so a
+ * helper that could set some without the others would let a suite assert a state
+ * the product cannot be in. `DEMO_LOGIN_EXPIRES_AT` joined the pair in Sprint 4
+ * so the bypass switches itself off on a date rather than when somebody
+ * remembers to unset it.
  */
 export const DEMO_EMAIL = "review@partybooth.test";
 export const DEMO_OTP = "424242";
+/** Far enough out that no suite has to think about the clock. */
+export const DEMO_EXPIRES_AT = "2099-01-01T00:00:00.000Z";
+/** In the past, for the suite that pins "an expired window is a closed door". */
+export const DEMO_EXPIRED_AT = "2020-01-01T00:00:00.000Z";
 
-export function setDemoLogin(enabled: boolean): void {
+export function setDemoLogin(enabled: boolean, expiresAt: string = DEMO_EXPIRES_AT): void {
   if (enabled) {
     process.env["DEMO_LOGIN_EMAIL"] = DEMO_EMAIL;
     process.env["DEMO_LOGIN_OTP"] = DEMO_OTP;
+    process.env["DEMO_LOGIN_EXPIRES_AT"] = expiresAt;
   } else {
     delete process.env["DEMO_LOGIN_EMAIL"];
     delete process.env["DEMO_LOGIN_OTP"];
+    delete process.env["DEMO_LOGIN_EXPIRES_AT"];
   }
   resetEnvCache(serverEnv);
 }
 
-/** Only one half set — the misconfiguration that must fail closed. */
-export function setPartialDemoLogin(half: "email" | "otp"): void {
+/** Only one part set — the misconfiguration that must fail closed. */
+export function setPartialDemoLogin(half: "email" | "otp" | "expiry"): void {
   setDemoLogin(false);
   if (half === "email") process.env["DEMO_LOGIN_EMAIL"] = DEMO_EMAIL;
-  else process.env["DEMO_LOGIN_OTP"] = DEMO_OTP;
+  else if (half === "otp") process.env["DEMO_LOGIN_OTP"] = DEMO_OTP;
+  else process.env["DEMO_LOGIN_EXPIRES_AT"] = DEMO_EXPIRES_AT;
   resetEnvCache(serverEnv);
 }
 

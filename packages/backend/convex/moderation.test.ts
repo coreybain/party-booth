@@ -469,7 +469,11 @@ describe("moderation.report", () => {
       .withIdentity({ subject: "other" })
       .mutation(api.moderation.report, { mediaId, reason: "nudityOrSexual" });
 
-    expect(result).toMatchObject({ created: true, reportCount: 1 });
+    // No tally for a guest: `reportCount` is host-only, exactly as it is in
+    // `projectMedia`. Repeating the call would otherwise let any guest poll how
+    // many other people have reported the photograph next to theirs.
+    expect(result).toMatchObject({ created: true });
+    expect(result.reportCount).toBeUndefined();
     const after = await row(f, mediaId);
     expect(after?.flaggedAt).toBeGreaterThan(0);
     // A report is not a decision. Auto-hiding would hand any guest a veto over
@@ -490,7 +494,8 @@ describe("moderation.report", () => {
       .withIdentity({ subject: "other" })
       .mutation(api.moderation.report, args);
 
-    expect(second).toMatchObject({ created: false, reportCount: 1 });
+    expect(second).toMatchObject({ created: false });
+    expect(second.reportCount).toBeUndefined();
     expect(await f.t.run(async (ctx) => ctx.db.query("mediaReports").collect())).toHaveLength(1);
   });
 
@@ -922,6 +927,79 @@ describe("an account on its way out", () => {
 
     await expect(
       f.t.withIdentity({ subject: "guest" }).mutation(api.users.requestAccountDeletion, {}),
+    ).rejects.toThrow();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The flagged panel, and who may read it                                     */
+/* -------------------------------------------------------------------------- */
+
+describe("moderation.flagged", () => {
+  it("drops an item once its last report is resolved", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+    const { reportId } = await f.t
+      .withIdentity({ subject: "other" })
+      .mutation(api.moderation.report, { mediaId, reason: "other" });
+
+    const before = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.moderation.flagged, { eventId: f.eventId });
+    expect(before).toHaveLength(1);
+
+    await f.t
+      .withIdentity({ subject: "owner" })
+      .mutation(api.moderation.resolveReport, { reportId, status: "dismissed" });
+
+    // Grouping *every* report meant the card stayed in the panel for ever with
+    // no buttons on it: `flaggedAt` had been cleared, so `resolveReport` had
+    // nothing left to offer.
+    const after = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.moderation.flagged, { eventId: f.eventId });
+    expect(after).toEqual([]);
+  });
+
+  it("refuses a host whose account is on its way out", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+    await f.t
+      .withIdentity({ subject: "other" })
+      .mutation(api.moderation.report, { mediaId, reason: "other" });
+
+    await f.t.run(async (ctx) => ctx.db.patch(f.ownerId, { accountState: "deletionScheduled" }));
+
+    // A bare role check routed around `accountStateAllows` — so a host on their
+    // way out kept freshly minted ten-minute signed URLs to the *originals* of
+    // every reported item. PLAN.md: those accounts "lose access" immediately.
+    await expect(
+      f.t.withIdentity({ subject: "owner" }).query(api.moderation.flagged, { eventId: f.eventId }),
+    ).rejects.toThrow();
+  });
+
+  it("refuses the same host's report resolutions", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+    const { reportId } = await f.t
+      .withIdentity({ subject: "other" })
+      .mutation(api.moderation.report, { mediaId, reason: "other" });
+
+    await f.t.run(async (ctx) => ctx.db.patch(f.ownerId, { accountState: "locked" }));
+
+    await expect(
+      f.t
+        .withIdentity({ subject: "owner" })
+        .mutation(api.moderation.resolveReport, { reportId, status: "actioned" }),
     ).rejects.toThrow();
   });
 });

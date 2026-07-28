@@ -1,4 +1,5 @@
 import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
+import { TERMS_VERSION } from "@partybooth/contracts/terms";
 import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
@@ -145,6 +146,10 @@ export const seedDemoEvent = internalMutation({
       state: "live",
       // `manual`, so the reviewer's first action can be a moderation decision.
       moderationMode: "manual",
+      // The demo identity is confined to events carrying this flag; see
+      // `assertDemoConfinement`. Without it the published reviewer credentials
+      // are usable in any real party whose code leaks.
+      isDemo: true,
       storageRegion: "pdx1",
       startsAt: now,
       timeZone: "Europe/London",
@@ -207,6 +212,11 @@ export const seedDemoEvent = internalMutation({
         // would be empty when they signed in as anybody but the host.
         sourceMetadataStripped: true,
         fromLibrary: false,
+        // The slideshow's cursor runs on approval time, so a seeded approved row
+        // needs one or it sorts before every real approval for ever.
+        ...(item.state === "approved"
+          ? { approvedAt: now - (DEMO_MEDIA.length - index) * 60_000 }
+          : {}),
         // Spread over the evening, so the slideshow's chronological order and
         // its cursor have something to be chronological about.
         capturedAt: now - (DEMO_MEDIA.length - index) * 60_000,
@@ -243,17 +253,25 @@ export const seedDemoEvent = internalMutation({
 });
 
 /**
- * A `users` row, created if it is not there.
+ * A `users` row, created if it is not there and marked as seeded.
  *
- * The demo accounts exist **only** in our mirror table, not in Better Auth's —
- * the reviewer's Better Auth user is created by their first OTP sign-in, and the
- * `user.onCreate` trigger then finds this row by `authId`… or rather it does
- * not, and inserts a second one. That is the one rough edge in the demo seed and
- * it is deliberate: pre-creating rows inside the auth component from a mutation
- * would mean reaching into another system's tables, and the failure mode here is
- * a duplicate mirror row in a throwaway party rather than anything a real guest
- * can reach. The fictional guests never sign in at all, so it never applies to
- * them.
+ * The demo accounts exist **only** in our mirror table, not in Better Auth's:
+ * pre-creating rows inside the auth component from a mutation would mean
+ * reaching into another system's tables. The reviewer's Better Auth user is
+ * created by their first OTP sign-in, with a provider-generated id that cannot
+ * be predicted here.
+ *
+ * That used to be "the one rough edge in the demo seed", and it was worse than
+ * it looked: `onCreate` found no row for the new `authId` and inserted a
+ * **second** one, so the reviewer signed into an account with no membership of
+ * the party this function had just built and rejected the build for incomplete
+ * functionality having done everything right.
+ *
+ * `seeded: true` is what closes it. The trigger in `auth.ts` adopts a *seeded*
+ * row with the same normalised address — patching the real `authId` onto it —
+ * and inserts only when there is none. Confining adoption to seeded rows is the
+ * whole safety argument: adopting any matching address would let whoever next
+ * signs up with it claim an existing account.
  */
 async function ensureUser(
   ctx: Parameters<typeof writeAuditEvent>[0],
@@ -280,6 +298,11 @@ async function ensureUser(
     accountState: "active",
     isOrganiser: params.isOrganiser,
     isGlobalAdmin: false,
+    // The reviewer has to be able to upload without first being sent through an
+    // onboarding screen they have already passed.
+    acceptedTermsVersion: TERMS_VERSION,
+    acceptedTermsAt: params.now,
+    seeded: true,
     createdAt: params.now,
     updatedAt: params.now,
   });

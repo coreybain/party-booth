@@ -14,8 +14,21 @@ import Link from "next/link";
 export function SiteFooter({ note }: { readonly note?: string }) {
   return (
     <>
-      Private beta · 18+{note === undefined ? "" : ` · ${note}`} · <PrivacyLink />
+      Private beta · 18+{note === undefined ? "" : ` · ${note}`} · <TermsLink /> · <PrivacyLink />
     </>
+  );
+}
+
+/**
+ * Both stores' UGC policies want the terms reachable, not merely published.
+ * Same argument as the privacy link beside it, same footer, same absence of
+ * options.
+ */
+export function TermsLink({ className }: { readonly className?: string }) {
+  return (
+    <Link href="/terms" className={className ?? "underline underline-offset-2 hover:text-muted"}>
+      Terms
+    </Link>
   );
 }
 

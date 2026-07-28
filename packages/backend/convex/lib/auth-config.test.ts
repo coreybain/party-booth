@@ -29,6 +29,7 @@ const KEYS = [
   "ADMIN_EMAIL_ALLOWLIST",
   "DEMO_LOGIN_EMAIL",
   "DEMO_LOGIN_OTP",
+  "DEMO_LOGIN_EXPIRES_AT",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "APPLE_CLIENT_ID",
@@ -256,7 +257,7 @@ describe("social providers", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("demo login", () => {
-  it("does not exist unless both variables are set", () => {
+  it("does not exist unless all three variables are set", () => {
     clearEnv();
     expect(demoLogin()).toBeUndefined();
 
@@ -264,11 +265,42 @@ describe("demo login", () => {
     expect(demoLogin()).toBeUndefined();
 
     setEnv({ DEMO_LOGIN_OTP: "424242" });
+    // Still off: the expiry is required, not optional. A bypass whose only
+    // off-switch is somebody remembering to unset a variable is a published
+    // password with a reminder attached.
+    expect(demoLogin()).toBeUndefined();
+
+    setEnv({ DEMO_LOGIN_EXPIRES_AT: "2099-01-01T00:00:00Z" });
     expect(demoLogin()).toEqual({ email: "review@partybooth.test", code: "424242" });
   });
 
+  it("switches itself off once the expiry has passed", () => {
+    setEnv({
+      DEMO_LOGIN_EMAIL: "review@partybooth.test",
+      DEMO_LOGIN_OTP: "424242",
+      DEMO_LOGIN_EXPIRES_AT: "2020-01-01T00:00:00Z",
+    });
+    expect(demoLogin()).toBeUndefined();
+    expect(isDemoLogin("review@partybooth.test", "424242")).toBe(false);
+  });
+
+  it("fails closed on an expiry it cannot parse", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    setEnv({
+      DEMO_LOGIN_EMAIL: "review@partybooth.test",
+      DEMO_LOGIN_OTP: "424242",
+      DEMO_LOGIN_EXPIRES_AT: "next tuesday",
+    });
+    expect(demoLogin()).toBeUndefined();
+    expect(error.mock.calls.flat().join(" ")).toContain("DEMO_LOGIN_EXPIRES_AT");
+  });
+
   it("matches the reviewer's fixed code, and nothing else", () => {
-    setEnv({ DEMO_LOGIN_EMAIL: "Review@PartyBooth.test", DEMO_LOGIN_OTP: "424242" });
+    setEnv({
+      DEMO_LOGIN_EMAIL: "Review@PartyBooth.test",
+      DEMO_LOGIN_OTP: "424242",
+      DEMO_LOGIN_EXPIRES_AT: "2099-01-01T00:00:00Z",
+    });
     expect(isDemoLogin("review@partybooth.test", "424242")).toBe(true);
     expect(isDemoLogin("REVIEW@partybooth.test", "424242")).toBe(true);
     expect(isDemoLogin("review@partybooth.test", "424243")).toBe(false);
@@ -282,7 +314,11 @@ describe("demo login", () => {
 
   it("rejects a code that is not six digits, so a typo cannot become a bypass", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    setEnv({ DEMO_LOGIN_EMAIL: "review@partybooth.test", DEMO_LOGIN_OTP: "42" });
+    setEnv({
+      DEMO_LOGIN_EMAIL: "review@partybooth.test",
+      DEMO_LOGIN_OTP: "42",
+      DEMO_LOGIN_EXPIRES_AT: "2099-01-01T00:00:00Z",
+    });
     expect(demoLogin()).toBeUndefined();
     expect(error.mock.calls.flat().join(" ")).toContain("DEMO_LOGIN_OTP");
   });

@@ -281,3 +281,20 @@ export const OTP_RESEND_COOLDOWN_SECONDS: number = Math.round(OTP_POLICY.resendC
 
 /** Digits in the printed event join code. Same six digits as the OTP, different thing. */
 export const JOIN_CODE_LENGTH: number = EVENT_CODE_LENGTH;
+
+/**
+ * The user terms.
+ *
+ * The rules and the version live in the contract so this page, the acceptance
+ * prompt on both clients and the report sheet cannot drift; the prose lives at
+ * `/terms`. See `packages/contracts/src/terms.ts`.
+ */
+export {
+  COMMUNITY_RULES,
+  hasAcceptedTerms,
+  PROHIBITED_CONTENT,
+  TERMS_ACCEPTANCE_PROMPT,
+  TERMS_PATH,
+  TERMS_VERSION,
+  type ProhibitedContentRule,
+} from "@partybooth/contracts/terms";

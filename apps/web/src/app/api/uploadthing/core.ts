@@ -353,6 +353,25 @@ export const partyBoothFileRouter = {
         checksum: metadata.checksum,
         ...(typeof metadata.width === "number" ? { width: metadata.width } : {}),
         ...(typeof metadata.height === "number" ? { height: metadata.height } : {}),
+        /*
+         * The client's duration, forwarded **as a claim** and not as a check.
+         *
+         * This used to be described as the "landed-object duration" that made
+         * the 60-second cap real a second time, and it never was: it is
+         * `ticket.durationSeconds`, copied out of the client-authored upload
+         * ticket by `callbackMetadataFor` above, so Convex re-reading it was
+         * reading the same claim twice. A modified client could declare eight
+         * seconds and store a ten-minute recording under the 250 MB ceiling.
+         *
+         * It is preserved rather than clamped, because it is what the recorder
+         * believed and a host seeing "8s" on a ten-minute file is a useful
+         * discrepancy. What actually enforces the cap is
+         * `media.verifyVideoDuration`, scheduled by `completeUpload`, which
+         * fetches the stored object's own header and reads the container's
+         * duration — the one number in this path with a server on the other side
+         * of it. It overwrites this value on the row when it agrees, and deletes
+         * the object when it does not.
+         */
         ...(typeof metadata.durationSeconds === "number"
           ? { durationSeconds: metadata.durationSeconds }
           : {}),

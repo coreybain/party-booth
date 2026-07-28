@@ -12,9 +12,13 @@ import {
   setDemoLogin,
   setPartialDemoLogin,
   useFakeStorage,
+  seedEvent,
+  seedMembership,
+  seedUser,
 } from "./testing.helpers";
 import { demoLogin, isDemoAddress, isDemoLogin, resetConfigWarnings } from "./lib/config";
 import { demoOtpFor, emailOtpPolicyOptions } from "./lib/otp";
+import { mirrorAuthUser } from "./lib/user-mirror";
 
 /**
  * The App Review demo login.
@@ -253,5 +257,139 @@ describe("demo.seedDemoEvent", () => {
       .withIdentity({ subject: "demo-reviewer" })
       .query(api.media.eventMedia, { eventId });
     expect(seen.length).toBeGreaterThan(0);
+  });
+
+  it("marks the party as the demo party, which is what confines the identity", async () => {
+    const t = makeTest();
+    const { eventId } = await t.mutation(internal.demo.seedDemoEvent, {});
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event?.isDemo).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The reviewer signs in for real                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The end-to-end shape the seed exists for, with a **provider-generated** auth
+ * id rather than the seed's placeholder.
+ *
+ * This is the failure the seed used to have: the seeded owner carried
+ * `authId: "demo-reviewer"`, Better Auth minted its own id on the reviewer's
+ * first sign-in, and the `user.onCreate` trigger inserted a *second* mirror row
+ * under that id. The reviewer signed into an account with no membership of the
+ * party that had just been built for them — an empty shell, and a rejection for
+ * incomplete functionality having done everything right.
+ */
+describe("the reviewer's first real sign-in", () => {
+  beforeEach(() => setDemoLogin(true));
+
+  it("adopts the seeded row instead of creating a second account", async () => {
+    const t = makeTest();
+    const seeded = await t.mutation(internal.demo.seedDemoEvent, {});
+
+    // What Better Auth actually produces: an opaque, unpredictable id.
+    const providerAuthId = "k57f2q8m3n1p4r6s9t0v2w4x";
+    const userId = await t.run(async (ctx) =>
+      mirrorAuthUser(ctx, {
+        authId: providerAuthId,
+        email: DEMO_EMAIL,
+        emailVerified: true,
+        providerName: null,
+        now: Date.now(),
+      }),
+    );
+
+    expect(userId).toEqual(seeded.ownerUserId);
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", DEMO_EMAIL))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.authId).toBe(providerAuthId);
+    // Claimable exactly once.
+    expect(rows[0]?.seeded).toBeUndefined();
+    // And the deliberate seeded name survives the provider's silence.
+    expect(rows[0]?.displayName).toBe("App Review");
+
+    // The point of all of it: the identity the reviewer actually signs in as
+    // owns the seeded party.
+    const seen = await t
+      .withIdentity({ subject: providerAuthId })
+      .query(api.media.eventMedia, { eventId: seeded.eventId });
+    expect(seen.length).toBeGreaterThan(0);
+  });
+
+  it("never adopts an ordinary account that happens to share an address", async () => {
+    const t = makeTest();
+    const realId = await seedUser(t, { authId: "real-person", email: "sam@partybooth.test" });
+
+    const mirrored = await t.run(async (ctx) =>
+      mirrorAuthUser(ctx, {
+        authId: "someone-else-entirely",
+        email: "sam@partybooth.test",
+        emailVerified: true,
+        providerName: "Sam",
+        now: Date.now(),
+      }),
+    );
+
+    // Adoption is confined to seeded rows. Matching on address alone would mean
+    // any mirror row could be claimed by whoever next signs up with it.
+    expect(mirrored).not.toEqual(realId);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Confinement                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The reviewer credential is published, deliberately enabled against the
+ * deployment Apple reviews, and on 5 August that is the deployment the real
+ * party runs on. "It unlocks a party with no real people in it" was true only
+ * for as long as nobody handed it a code — an absence, not a control.
+ */
+describe("the demo identity is confined to the demo party", () => {
+  beforeEach(() => setDemoLogin(true));
+
+  it("cannot read a real party it has been made a member of", async () => {
+    const t = makeTest();
+    await t.mutation(internal.demo.seedDemoEvent, {});
+
+    const hostId = await seedUser(t, { authId: "host", email: "host@partybooth.test" });
+    const realEventId = await seedEvent(t, hostId, { state: "live" });
+    const reviewerId = await t.run(
+      async (ctx) =>
+        (
+          await ctx.db
+            .query("users")
+            .withIndex("by_email", (q) => q.eq("email", DEMO_EMAIL))
+            .unique()
+        )?._id,
+    );
+    if (!reviewerId) throw new Error("the seeded reviewer is missing");
+    await seedMembership(t, realEventId, reviewerId, "guest");
+
+    // A membership is not enough. The confinement runs before the role is even
+    // resolved, and it answers `notFound` like every other event refusal.
+    await expect(
+      t.withIdentity({ subject: "demo-reviewer" }).query(api.media.eventMedia, {
+        eventId: realEventId,
+      }),
+    ).rejects.toThrow(/could not be found/);
+  });
+
+  it("leaves every other account untouched", async () => {
+    const t = makeTest();
+    const hostId = await seedUser(t, { authId: "host", email: "host@partybooth.test" });
+    const realEventId = await seedEvent(t, hostId, { state: "live" });
+    await expect(
+      t.withIdentity({ subject: "host" }).query(api.media.eventMedia, { eventId: realEventId }),
+    ).resolves.toEqual([]);
   });
 });

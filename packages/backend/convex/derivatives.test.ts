@@ -11,6 +11,7 @@ import {
   auditActions,
   CALLBACK_SECRET,
   clearFakeStorage,
+  internal,
   makeTest,
   runScheduled,
   seedEvent,
@@ -420,7 +421,7 @@ describe("video", () => {
     durationSeconds: 12,
   };
 
-  it("takes a poster and a preview clip for one capture", async () => {
+  it("takes a poster for one capture, and refuses a preview clip outright", async () => {
     const f = await fixture();
     const original = await grant(f, videoGrant);
     await complete(f, original.secret, { byteSize: 5_000_000, durationSeconds: 12 });
@@ -436,19 +437,26 @@ describe("video", () => {
     });
     await complete(f, poster.secret, { fileKey: "ut_poster_0001", byteSize: 30_000 });
 
-    const clip = await grant(f, {
-      ...videoGrant,
-      fileRole: "preview",
-      byteSize: 900_000,
-      checksum: PREVIEW_CHECKSUM,
-      durationSeconds: 12,
-      sourceMetadataStripped: true,
-    });
-    await complete(f, clip.secret, { fileKey: "ut_clip_0001", byteSize: 900_000 });
+    // A video has no `preview`. The slot used to carry 25 MiB and the original's
+    // own containers, which corroborated nothing, and no client ever produced
+    // one — so it is refused before a grant exists rather than left open.
+    const clip = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        ...videoGrant,
+        fileRole: "preview",
+        byteSize: 900_000,
+        checksum: PREVIEW_CHECKSUM,
+        durationSeconds: 12,
+        sourceMetadataStripped: true,
+      });
+    expect(clip).toMatchObject({ outcome: "rejected", reason: "unsupportedFileRole" });
 
     const row = await mediaRow(f);
     expect(row?.posterKey).toBe("ut_poster_0001");
-    expect(row?.previewKey).toBe("ut_clip_0001");
+    expect(row?.previewKey).toBeUndefined();
   });
 
   it("refuses an over-long video at the grant", async () => {
@@ -599,5 +607,287 @@ describe("the mayServeOriginal seam, now that there is a derivative", () => {
     for (const field of ["storageKey", "previewKey", "posterKey"]) {
       expect(json).not.toContain(field);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The derivative slot is not a way around `mayServeOriginal`                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The bypass these suites close.
+ *
+ * `checkGrantEligibility` requires a derivative to *claim* a re-encode, and the
+ * 2 MiB cap corroborates it as far as a size can — "a small image can still
+ * carry GPS", as ADR 0008 concedes. Nothing compared the derivative's bytes with
+ * the original's, and `projectMedia` minted `previewUrl` for every viewer with no
+ * read-time check at all. So a guest whose original was withheld from third
+ * parties (`sourceCarriesNoLocation: false` — every `apps/web` library import)
+ * could take a second grant for the same capture with `fileRole: "preview"`,
+ * upload the byte-identical GPS-bearing file, and be served it back to the whole
+ * gallery. The "serve nothing" branch was bypassable by exactly the actor it
+ * defends against.
+ */
+describe("a derivative must not be its own source", () => {
+  it("refuses a preview grant whose checksum is the original's", async () => {
+    const f = await fixture();
+    const original = await grant(f);
+    await complete(f, original.secret);
+
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        mediaType: "photo" as const,
+        ...previewArgs({ checksum: CHECKSUM, byteSize: 2048 }),
+      });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "derivativeNotDistinct" });
+  });
+
+  it("refuses it before the original's completion has even landed", async () => {
+    const f = await fixture();
+    await grant(f); // original granted, never completed
+
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        mediaType: "photo" as const,
+        ...previewArgs({ checksum: CHECKSUM, byteSize: 2048 }),
+      });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "derivativeNotDistinct" });
+  });
+
+  it("withholds a derivative from a third party when it cannot promise no location", async () => {
+    const f = await fixture();
+    const original = await grant(f, { sourceMetadataStripped: false });
+    await complete(f, original.secret);
+    const row = await mediaRow(f);
+    // A derivative that landed before the location half was carried across, or
+    // one a future client marks honestly. The submitter and the hosts still get
+    // it; a fellow guest does not.
+    await f.t.run(async (ctx) =>
+      ctx.db.patch(row!._id, {
+        state: "approved",
+        previewKey: "ut_preview_0001",
+        previewByteSize: 40_000,
+        previewChecksum: PREVIEW_CHECKSUM,
+        previewCarriesNoLocation: false,
+      }),
+    );
+
+    const [asGuest] = await f.t
+      .withIdentity({ subject: "other" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(asGuest?.previewUrl).toBeUndefined();
+    expect(asGuest?.url).toBeUndefined();
+
+    const [asHost] = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.media.eventMedia, { eventId: f.eventId });
+    expect(asHost?.previewUrl).toMatch(/ut_preview_0001/);
+  });
+
+  it("refuses a derivative grant that says the bytes still carry a location", async () => {
+    const f = await fixture();
+    const original = await grant(f);
+    await complete(f, original.secret);
+
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        mediaType: "photo" as const,
+        ...previewArgs({ sourceCarriesNoLocation: false }),
+      });
+    expect(result).toMatchObject({
+      outcome: "rejected",
+      reason: "derivativeMetadataNotStripped",
+    });
+  });
+
+  it("refuses a derivative whose media type disagrees with the row", async () => {
+    const f = await fixture();
+    const original = await grant(f);
+    await complete(f, original.secret);
+
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        // The capture landed as a photo. Claiming `video` here is what used to
+        // route a photo's preview through the video ceilings and containers.
+        mediaType: "video" as const,
+        ...previewArgs({ mimeType: "video/mp4", durationSeconds: 8 }),
+      });
+    expect(result).toMatchObject({ outcome: "rejected" });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* A retry is the same file, or it is not a retry                             */
+/* -------------------------------------------------------------------------- */
+
+describe("resuming a stranded capture", () => {
+  it("allows a retry that describes the same file", async () => {
+    const f = await fixture();
+    await grant(f);
+    await f.t.run(async (ctx) => {
+      const grants = await ctx.db.query("uploadGrants").collect();
+      for (const row of grants) await ctx.db.patch(row._id, { status: "expired" });
+    });
+    // The row exists in `processing` with no file — a grant that ran out
+    // mid-upload. Refusing this would strand the photograph on the phone.
+    await f.t.run(async (ctx) =>
+      ctx.db.insert("media", {
+        eventId: f.eventId,
+        uploaderUserId: f.guestId,
+        captureId: CAPTURE,
+        state: "processing",
+        mediaType: "photo",
+        storageRegion: "pdx1",
+        byteSize: 2048,
+        mimeType: "image/jpeg",
+        checksum: CHECKSUM,
+        fromLibrary: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const retry = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        mediaType: "photo" as const,
+        byteSize: 2048,
+        mimeType: "image/jpeg",
+        checksum: CHECKSUM,
+      });
+    expect(retry).toMatchObject({ outcome: "granted" });
+  });
+
+  it("refuses a retry that describes a different file", async () => {
+    const f = await fixture();
+    await f.t.run(async (ctx) =>
+      ctx.db.insert("media", {
+        eventId: f.eventId,
+        uploaderUserId: f.guestId,
+        captureId: CAPTURE,
+        state: "processing",
+        mediaType: "photo",
+        storageRegion: "pdx1",
+        byteSize: 2048,
+        mimeType: "image/jpeg",
+        checksum: CHECKSUM,
+        fromLibrary: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // A 200 MB clip offered against a row that records a 2 kB photograph. The
+    // row is never rewritten, so this used to attach video bytes to a record
+    // saying `photo` / `image/jpeg` / 2048 — and every renderer believes the row.
+    const swap = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        mediaType: "video" as const,
+        byteSize: 5_000_000,
+        mimeType: "video/mp4",
+        checksum: "e".repeat(64),
+        durationSeconds: 30,
+      });
+    expect(swap).toMatchObject({ outcome: "rejected", reason: "captureFactsChanged" });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The duration check that is finally independent of the client               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The cap was enforced twice and independently zero times.
+ *
+ * Both existing points read a client-supplied number: the grant judged the
+ * client's estimate, and the completion callback forwards
+ * `metadata.durationSeconds`, which `apps/web`'s route handler copies straight
+ * off the client-authored upload ticket. So Convex was re-reading the same claim
+ * rather than checking it. `media.verifyVideoDuration` measures the stored
+ * object; these pin what the measurement does once it has one.
+ */
+describe("verified video duration", () => {
+  const videoGrant = {
+    mediaType: "video" as const,
+    byteSize: 5_000_000,
+    mimeType: "video/mp4",
+    durationSeconds: 8,
+  };
+
+  async function landedVideo(): Promise<{ f: Fixture; mediaId: Id<"media"> }> {
+    const f = await fixture();
+    const original = await grant(f, videoGrant);
+    await complete(f, original.secret, {
+      fileKey: "ut_video_0001",
+      byteSize: 5_000_000,
+      durationSeconds: 8,
+    });
+    const row = await mediaRow(f);
+    if (!row) throw new Error("the video row is missing");
+    return { f, mediaId: row._id };
+  }
+
+  it("keeps a clip the file itself agrees is short, and takes the file's figure", async () => {
+    const { f, mediaId } = await landedVideo();
+    await f.t.mutation(internal.media.recordVideoDurationVerdict, {
+      mediaId,
+      verdict: "withinCap",
+      measuredSeconds: 8.4,
+    });
+
+    const row = await mediaRow(f);
+    expect(row?.state).not.toBe("deleted");
+    expect(row?.durationVerified).toBe(true);
+    // The measurement replaces the phone's estimate.
+    expect(row?.durationSeconds).toBeCloseTo(8.4);
+  });
+
+  it("deletes the ten-minute recording that claimed to be eight seconds", async () => {
+    const { f, mediaId } = await landedVideo();
+    const fake = useFakeStorage();
+    fake.put("ut_video_0001", 5_000_000);
+
+    await f.t.mutation(internal.media.recordVideoDurationVerdict, {
+      mediaId,
+      verdict: "overCap",
+      measuredSeconds: 600,
+    });
+
+    const row = await mediaRow(f);
+    expect(row?.state).toBe("deleted");
+    await runScheduled(f.t);
+    expect(fake.has("ut_video_0001")).toBe(false);
+    expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.uploadDiscarded);
+  });
+
+  it("keeps a clip it could not measure, and says so rather than guessing", async () => {
+    const { f, mediaId } = await landedVideo();
+    await f.t.mutation(internal.media.recordVideoDurationVerdict, {
+      mediaId,
+      verdict: "unverifiable",
+    });
+
+    const row = await mediaRow(f);
+    // An unrecognised container is a gap in the check, not evidence against the
+    // guest. Deleting a real fifty-five-second clip is the worse failure.
+    expect(row?.state).not.toBe("deleted");
+    expect(row?.durationVerified).toBe(false);
   });
 });

@@ -192,7 +192,13 @@ export async function settleAfterProcessing(
   // Throws `InvalidTransitionError` on an illegal move rather than writing one.
   mediaStateMachine.assertTransition(media.state, next);
 
-  await ctx.db.patch(media._id, { state: next, updatedAt: now });
+  await ctx.db.patch(media._id, {
+    state: next,
+    // The slideshow's cursor. `automatic` mode approves here, with no host and
+    // no decision row, so this is the only place that timestamp can come from.
+    ...(next === "approved" ? { approvedAt: now } : {}),
+    updatedAt: now,
+  });
   await applyCountChange(ctx, media.eventId, media.state, next, now);
   return next;
 }
@@ -234,7 +240,16 @@ export type DerivativeAttachment = "attached" | "duplicate" | "conflict";
 export async function attachDerivative(
   ctx: MutationCtx,
   media: Doc<"media">,
-  params: { role: DerivativeFileRole; fileKey: string; byteSize: number; now: number },
+  params: {
+    role: DerivativeFileRole;
+    fileKey: string;
+    byteSize: number;
+    /** The grant's checksum, kept so a later derivative cannot repeat this body. */
+    checksum: string;
+    /** The grant's location claim, read back by {@link mayServeDerivative}. */
+    carriesNoLocation: boolean;
+    now: number;
+  },
 ): Promise<DerivativeAttachment> {
   const existing = params.role === "preview" ? media.previewKey : media.posterKey;
   if (existing === params.fileKey) return "duplicate";
@@ -243,8 +258,20 @@ export async function attachDerivative(
   await ctx.db.patch(
     media._id,
     params.role === "preview"
-      ? { previewKey: params.fileKey, previewByteSize: params.byteSize, updatedAt: params.now }
-      : { posterKey: params.fileKey, posterByteSize: params.byteSize, updatedAt: params.now },
+      ? {
+          previewKey: params.fileKey,
+          previewByteSize: params.byteSize,
+          previewChecksum: params.checksum,
+          previewCarriesNoLocation: params.carriesNoLocation,
+          updatedAt: params.now,
+        }
+      : {
+          posterKey: params.fileKey,
+          posterByteSize: params.byteSize,
+          posterChecksum: params.checksum,
+          posterCarriesNoLocation: params.carriesNoLocation,
+          updatedAt: params.now,
+        },
   );
   return "attached";
 }
@@ -436,6 +463,38 @@ function mayServeOriginal(media: Doc<"media">, viewer: { isOwn: boolean; role: R
 }
 
 /**
+ * May this viewer be served a **derivative**?
+ *
+ * There used to be no read-time check on a derivative at all: `projectMedia`
+ * minted `previewUrl` and `posterUrl` unconditionally, for every viewer, and the
+ * only gate anywhere was the client-asserted re-encode claim that
+ * `checkGrantEligibility` required at grant time. That made the derivative slot
+ * the way around {@link mayServeOriginal} — upload the withheld original a second
+ * time under `fileRole: "preview"` and it is served to the whole gallery.
+ *
+ * Two things close it, and this is the second of them. The first is
+ * `checkDerivativeIsDistinct` in `media.ts`, which refuses a derivative whose
+ * bytes are the original's; a genuine re-encode never reproduces its source. This
+ * one carries the *location* half of the claim onto the derivative row and asks
+ * the same question of it that `mayServeOriginal` asks of the original, so a
+ * derivative that cannot promise it carries no location is withheld from third
+ * parties instead of being trusted on the strength of `reEncoded` alone.
+ *
+ * A row that predates the column answers `undefined`, which inherits the
+ * original's claim — so nothing already stored changes visibility.
+ */
+function mayServeDerivative(
+  media: Doc<"media">,
+  role: DerivativeFileRole,
+  viewer: { isOwn: boolean; role: Role },
+): boolean {
+  if (viewer.isOwn || viewer.role === "owner" || viewer.role === "cohost") return true;
+  const claimed =
+    role === "preview" ? media.previewCarriesNoLocation : media.posterCarriesNoLocation;
+  return claimed ?? originalIsServableToThirdParties(media);
+}
+
+/**
  * The name to show for an uploader.
  *
  * An account on its way out is anonymised on the **read path** rather than by
@@ -463,17 +522,18 @@ export async function projectMedia(
   const isOwn = media.uploaderUserId === options.viewerUserId;
   const isHost = options.viewerRole === "owner" || options.viewerRole === "cohost";
 
-  const originalKey = mayServeOriginal(media, { isOwn, role: options.viewerRole })
-    ? media.storageKey
-    : undefined;
+  const viewer = { isOwn, role: options.viewerRole };
+  const originalKey = mayServeOriginal(media, viewer) ? media.storageKey : undefined;
+  const previewKey = mayServeDerivative(media, "preview", viewer) ? media.previewKey : undefined;
+  const posterKey = mayServeDerivative(media, "poster", viewer) ? media.posterKey : undefined;
 
   const [original, preview, poster] = await Promise.all([
     safeUrl(media.storageRegion, originalKey, ttl),
     // A photo with no preview yet falls back to its poster only because a video
     // that has a poster and no clip should still render *something*; a photo has
     // no poster, so this is a no-op for photos.
-    safeUrl(media.storageRegion, media.previewKey ?? media.posterKey, ttl),
-    safeUrl(media.storageRegion, media.posterKey, ttl),
+    safeUrl(media.storageRegion, previewKey ?? posterKey, ttl),
+    safeUrl(media.storageRegion, posterKey, ttl),
   ]);
 
   return {

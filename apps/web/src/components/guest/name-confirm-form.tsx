@@ -1,12 +1,13 @@
 "use client";
 
 import { useMutation } from "convex/react";
+import Link from "next/link";
 import { type FormEvent, useCallback, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/text-field";
 import { appErrorMessage } from "@/lib/app-errors";
-import { displayNameSchema } from "@/lib/contracts";
+import { displayNameSchema, TERMS_ACCEPTANCE_PROMPT, TERMS_VERSION } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
 
 export interface NameConfirmFormProps {
@@ -63,7 +64,11 @@ export function NameConfirmForm({
       setPending(true);
       setError(undefined);
       try {
-        await updateProfile({ displayName: parsed.data });
+        // Acceptance travels with the confirmation, because this is the one
+        // screen every account passes through before it can post anything and
+        // Play's UGC policy asks for agreement *before* content is created. The
+        // server records it only if it matches the version it publishes.
+        await updateProfile({ displayName: parsed.data, acceptedTermsVersion: TERMS_VERSION });
         onConfirmed(parsed.data);
       } catch (caught) {
         setError(appErrorMessage(caught));
@@ -103,6 +108,35 @@ export function NameConfirmForm({
       <Button type="submit" size="lg" fullWidth loading={pending || busy}>
         {submitLabel}
       </Button>
+
+      {/*
+        The acceptance, next to the button that gives it.
+        Play's UGC policy asks for terms that define and prohibit objectionable
+        content *and* for the user to have agreed to them; a link in a footer is
+        the first half only. Both links open in a new tab so a guest halfway
+        through joining a party does not lose their place reading them.
+      */}
+      <p className="text-center text-xs leading-relaxed text-faint">
+        {TERMS_ACCEPTANCE_PROMPT.replace(/\.$/, "")} —{" "}
+        <Link
+          href="/terms"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          terms
+        </Link>{" "}
+        and{" "}
+        <Link
+          href="/privacy"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          privacy
+        </Link>
+        .
+      </p>
     </form>
   );
 }

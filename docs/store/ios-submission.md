@@ -10,7 +10,9 @@ party on the 5th plans around the app **not** being approved. The guaranteed gue
 is mobile web; TestFlight external is the middle option.
 
 > If you read one thing: §4 (demo account) is the single most common reason a social app
-> is rejected on the first submission, and §7 (age rating) is the second.
+> is rejected on the first submission, and §7 (age rating) is the second. §7 was rewritten
+> against the **current** questionnaire in Sprint 4 — the 4+/9+/13+/16+/18+ ladder with its
+> capability questions, not the retired 17+ form.
 
 ---
 
@@ -199,7 +201,8 @@ The party host approves or declines every submission before it appears in the sh
 gallery (this is the default "manual" mode). Hosts also see reported items flagged.
 
 AGE RATING
-The app is 17+/18+ and invitation-only. It is not directed at children.
+The app is 18+ and invitation-only, with published terms at `/terms` that say so and a
+recorded acceptance at onboarding. It is not directed at children.
 
 CONTACT
 <YOUR NAME>, <YOUR EMAIL> — happy to answer anything or jump on a call.
@@ -299,39 +302,94 @@ party,photos,camera,event,wedding,shared,album,gallery,guests,private,video,qr
 
 ## 7. Age rating questionnaire
 
-**App Information → Age Rating → Edit.** PLAN.md fixes the beta as **18+**. Apple's ladder
-gives you 17+ via content answers and 18+ only via the explicit gate, so answer as below.
+**App Information → Age Rating → Edit.**
 
-| Question                                         | Answer              |
-| ------------------------------------------------ | ------------------- |
-| Cartoon or Fantasy Violence                      | None                |
-| Realistic Violence                               | None                |
-| Prolonged Graphic or Sadistic Realistic Violence | None                |
-| Profanity or Crude Humor                         | None                |
-| Mature/Suggestive Themes                         | None                |
-| Horror/Fear Themes                               | None                |
-| Medical/Treatment Information                    | None                |
-| Alcohol, Tobacco, or Drug Use or References      | **Infrequent/Mild** |
-| Simulated Gambling                               | None                |
-| Sexual Content or Nudity                         | None                |
-| Graphic Sexual Content and Nudity                | None                |
-| Contests                                         | None                |
-| **Unrestricted Web Access**                      | **No**              |
-| **Gambling and Contests**                        | **No**              |
-| **Made for Kids**                                | **No**              |
+> **Rewritten in Sprint 4's audit.** The table that used to be here answered the _old_
+> questionnaire — the one whose top rung was 17+ — and claimed an 18+ restriction the app
+> did not enforce. Apple's current questionnaire uses **4+ / 9+ / 13+ / 16+ / 18+**, asks
+> its content questions on a three-point frequency scale, and adds capability questions
+> that did not exist. Answering the old form from memory is how a submission comes back
+> with "the age rating does not reflect the app".
 
-Then the two that actually set the rating:
+### 7.1 Frequency questions
 
-- **"Does your app contain user-generated content?" → Yes.** Saying no here is the
-  rejection that comes with a request for moderation evidence. Follow-ups confirm you
-  have: content filtering (host moderation), reporting, blocking, and a published contact
-  — all four exist, which is why §4.4 names where each one is.
-- **"Is your app restricted to users 18 years or older?" → Yes.** This is what produces
-  the 18+ rating rather than 17+.
+Each is **None**, **Infrequent or Mild**, or **Frequent or Intense**.
 
-Alcohol is **Infrequent/Mild** and not None because this is a party app and the photos
-will contain drinks. Answering None on a party app is the kind of small dishonesty that
-gets the whole questionnaire re-examined.
+| Question                                              | Answer                 |
+| ----------------------------------------------------- | ---------------------- |
+| Cartoon or Fantasy Violence                           | None                   |
+| Realistic Violence                                    | None                   |
+| Prolonged Graphic or Sadistic Realistic Violence      | None                   |
+| Profanity or Crude Humor                              | **Infrequent or Mild** |
+| Mature/Suggestive Themes                              | None                   |
+| Horror/Fear Themes                                    | None                   |
+| Medical/Treatment Information                         | None                   |
+| Alcohol, Tobacco, or Drug Use or References           | **Infrequent or Mild** |
+| Simulated Gambling                                    | None                   |
+| Sexual Content or Nudity                              | None                   |
+| Graphic Sexual Content and Nudity                     | None                   |
+| Violent Themes (sexual violence, kidnapping, torture) | None                   |
+
+Alcohol is **Infrequent or Mild** and not None because this is a party app and the photos
+will contain drinks. Profanity is the same answer for the same reason — guests type names
+and report details, and a party's captions are not sanitised. Answering None on a party
+app is the kind of small dishonesty that gets the whole questionnaire re-examined.
+
+### 7.2 Capability questions
+
+These are yes/no and they are what actually move the rating.
+
+| Question                                                    | Answer  |
+| ----------------------------------------------------------- | ------- |
+| Does your app contain **user-generated content**?           | **Yes** |
+| Does your app have **in-app controls to restrict** UGC?     | **Yes** |
+| Does your app include **messaging or chat** between users?  | No      |
+| Does your app include **unrestricted web access**?          | No      |
+| Does your app include **gambling**?                         | No      |
+| Does your app include **contests**?                         | No      |
+| Is your app **made for kids**?                              | No      |
+| Does your app contain **medical or treatment information**? | No      |
+
+**Saying yes to UGC is not optional and not a negotiation.** The follow-ups ask what you
+do about it, and all four answers exist and are named in §4.4: host moderation before
+anything is shown to the party, in-app reporting on every item, in-app blocking, and a
+published contact. This is also the question the whole of Sprint 4's App Review work was
+for.
+
+**"In-app controls to restrict UGC" is Yes** because a host approves or declines every
+item before a guest sees it (`manual` mode is the default), guests can block, and guests
+can withdraw their own submissions.
+
+### 7.3 The 18+ question, and what has to be true before you answer it
+
+Apple offers an override that pins the app to 18+ regardless of the content answers. It
+is legitimate **only when the app actually restricts itself to adults**, and reviewers do
+check: an override with no gate behind it is a rejection, and it is the specific thing the
+previous version of this document claimed without implementing.
+
+What now exists, and is what you are attesting to:
+
+- **Terms of use** at `https://<your-domain>/terms`, which state the beta is 18+ and set
+  out what may not be posted. They are the document Apple's guideline 1.2 and Play's UGC
+  policy both ask for.
+- **Recorded acceptance.** Onboarding sends `TERMS_VERSION` with the name confirmation and
+  the server records it; an account with no accepted version is refused an upload grant
+  (`termsNotAccepted`). The acceptance is versioned, so changing the rules asks everybody
+  again.
+- **The footer on every screen** says "Private beta · 18+", including the sign-in screen a
+  reviewer sees first.
+
+Answer **"Is your app restricted to users 18 years or older?" → Yes**, and in the review
+notes point at `/terms` and at the acceptance step. Attach the terms URL in the **License
+Agreement** field if you want the strongest version of the claim — Apple's standard EULA
+does not carry an age restriction, so a custom EULA is what turns "we say 18+" into a
+contract term. Not doing that is defensible; claiming the restriction with _neither_ the
+terms nor the acceptance was not.
+
+If you would rather not defend the override at all, remove it: with the answers in §7.1
+the app rates **16+** on content plus UGC, which is a perfectly shippable rating for a
+private beta and is one fewer thing to argue about. Do **not** leave the override set and
+the restriction unimplemented — that is the state this section used to describe.
 
 ---
 

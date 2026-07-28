@@ -157,15 +157,30 @@ export default function PrivacyPage() {
 
           <Section title="Deleting your account">
             <p>
-              You can delete your account from inside the app, in Settings. It takes effect at once:
-              you lose access immediately and the account is scheduled for permanent removal.
+              You can delete your account from inside the app, in Settings — or on the web, at{" "}
+              <Link href="/account/deletion" className="underline underline-offset-2">
+                partybooth.app/account/deletion
+              </Link>
+              . Either way it takes effect at once: you lose access immediately and the account is
+              scheduled for permanent erasure thirty days later.
             </p>
             <p>
-              Photos you already added to a party are kept and the attribution is removed — they
-              show as coming from a former guest. That is a deliberate trade: the pictures belong to
-              the evening as much as to whoever pressed the shutter, and deleting one person's
-              account should not tear holes in everyone else's memories. If you want a specific
-              photo gone as well, withdraw it before you delete your account.
+              When those thirty days are up, a scheduled job erases the lot: your photos and videos
+              and the stored files behind them, your memberships, your blocks, your notification
+              devices, and your sign-in with Google or Apple. What survives is an anonymous
+              placeholder that nothing can sign into, because our security records and a
+              host&rsquo;s moderation history refer to it and a record that points at nothing is
+              worse for everybody than one that points at &ldquo;a former guest&rdquo;.
+            </p>
+            <p>
+              Until the thirty days are up, your photos stay in the party with the attribution
+              removed — they show as coming from a former guest — so that a host who is mid-event
+              does not lose the evening. During that window you can also change your mind: ask us
+              and the deletion is cancelled. After it, nothing can be brought back.
+            </p>
+            <p>
+              If you host a party and delete your account, the party is <em>archived</em> rather
+              than erased. Your guests&rsquo; photographs are not yours to delete.
             </p>
           </Section>
 
@@ -180,8 +195,9 @@ export default function PrivacyPage() {
                 is recorded.
               </li>
               <li>
-                <Strong>Deleted accounts</Strong> are purged after thirty days. Access ends the
-                moment you ask, not thirty days later.
+                <Strong>Deleted accounts</Strong> are erased after thirty days — the account, its
+                media, the stored files, the relationships and the sign-in credential. Access ends
+                the moment you ask, not thirty days later.
               </li>
               <li>
                 <Strong>Security records</Strong> are kept longer than the rest, because their whole

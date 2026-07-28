@@ -6,22 +6,32 @@ import {
   isFileRoleAllowed,
   MEDIA_STATES,
   mediaStateMachine,
+  metadataClaimOf,
   VIDEO_MAX_DURATION_SECONDS,
   type DerivativeFileRole,
   type MediaState,
 } from "@partybooth/contracts/media";
 import { DENIAL_MESSAGES, explainCan } from "@partybooth/contracts/permissions";
+import { hasAcceptedTerms } from "@partybooth/contracts/terms";
 import type { Role } from "@partybooth/contracts/roles";
 import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
 import {
+  judgeVideoDuration,
+  readIsoBmffDuration,
+  VIDEO_DURATION_VERDICTS,
+  type VideoDurationVerdict,
+} from "@partybooth/contracts/video";
+import {
   accountGrantKey,
   checkGrantEligibility,
+  describesSameFile,
   fileRoleOf,
   grantRejected,
   grantSizeCap,
   grantThrottled,
   matchesGrant,
   normaliseMime,
+  type CaptureFileFacts,
   type GrantResult,
   type UploadCompletionOutcome,
   type UploadRejectionReason,
@@ -42,6 +52,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalAction,
   internalMutation,
+  internalQuery,
   mutation,
   query,
   type MutationCtx,
@@ -52,6 +63,7 @@ import { forbidden, notFound, unauthenticated } from "./lib/errors";
 import {
   requireActiveUser,
   requireEventActor,
+  requireEventActorFor,
   requirePermission,
   toPermissionActor,
   type EventActor,
@@ -78,7 +90,13 @@ import {
   linkGrantToMedia,
 } from "./lib/upload-grants";
 import { checkUploadThrottle, recordGrantIssued } from "./lib/upload-throttle";
-import { mediaFileRole, mediaState, mediaType, storageRegion } from "./lib/validators";
+import {
+  literalUnion,
+  mediaFileRole,
+  mediaState,
+  mediaType,
+  storageRegion,
+} from "./lib/validators";
 
 /**
  * The upload spine.
@@ -148,6 +166,19 @@ const mediaFunctions = internal.media as unknown as {
     "mutation",
     "internal",
     { mediaId: Id<"media">; attempts: number; requested: number; deleted: number },
+    null
+  >;
+  verifyVideoDuration: FunctionReference<"action", "internal", { mediaId: Id<"media"> }, null>;
+  mediaForDurationProbe: FunctionReference<
+    "query",
+    "internal",
+    { mediaId: Id<"media"> },
+    { storageKey?: string; storageRegion: Doc<"media">["storageRegion"]; state: MediaState } | null
+  >;
+  recordVideoDurationVerdict: FunctionReference<
+    "mutation",
+    "internal",
+    { mediaId: Id<"media">; verdict: VideoDurationVerdict; measuredSeconds?: number },
     null
   >;
 };
@@ -229,6 +260,28 @@ export const requestUploadGrant = mutation({
     const input = parseInput(uploadGrantRequestSchema, args);
     const now = Date.now();
 
+    /*
+     * Terms before content.
+     *
+     * Play's UGC policy asks for accepted terms defining and prohibiting
+     * objectionable content *before* a user creates any, and Apple's guideline
+     * 1.2 reads the same way. Acceptance is taken at onboarding, so in practice
+     * this catches the two cases onboarding cannot: an account that predates the
+     * terms, and every account after `TERMS_VERSION` moves.
+     *
+     * A value rather than an exception, like every other refusal on this path —
+     * the throttle write above it has to commit — and audited, because "nobody
+     * could upload for twenty minutes" has to be answerable afterwards.
+     */
+    if (!hasAcceptedTerms(actor.user)) {
+      return await rejectGrant(ctx, {
+        actor,
+        captureId: input.captureId,
+        reason: "termsNotAccepted",
+        now,
+      });
+    }
+
     // The role gate first — a global admin has no `media.*` capability at all —
     // but `explainCan` rather than `requirePermission`, for the same reason
     // `events.create` uses it: a refusal because the *event* is paused is an
@@ -275,6 +328,14 @@ export const requestUploadGrant = mutation({
       });
     }
 
+    const requested: CaptureFileFacts = {
+      mediaType: input.mediaType,
+      mimeType: input.mimeType,
+      byteSize: input.byteSize,
+      checksum: input.checksum,
+      durationSeconds: input.durationSeconds,
+    };
+
     const existing = await findMediaByCapture(ctx, actor.event._id, input.captureId);
     const refusal = isDerivativeRole(input.fileRole)
       ? await checkDerivativeGrant(ctx, {
@@ -282,9 +343,11 @@ export const requestUploadGrant = mutation({
           eventId: actor.event._id,
           captureId: input.captureId,
           role: input.fileRole,
+          mediaType: input.mediaType,
+          checksum: input.checksum,
           existing,
         })
-      : checkOriginalGrant(actor.user._id, existing);
+      : checkOriginalGrant(actor.user._id, existing, requested);
 
     if (refusal !== undefined) {
       return await rejectGrant(ctx, {
@@ -380,6 +443,7 @@ export const requestUploadGrant = mutation({
 function checkOriginalGrant(
   userId: Id<"users">,
   existing: Doc<"media"> | null,
+  requested: CaptureFileFacts,
 ): UploadRejectionReason | undefined {
   if (existing === null) return undefined;
 
@@ -389,7 +453,26 @@ function checkOriginalGrant(
   // expired mid-upload leaves a `processing` row with no file, and refusing the
   // retry would strand the guest's photo on their phone for ever.
   const isResumable = isOwn && existing.state === "processing" && existing.storageKey === undefined;
-  if (isResumable) return undefined;
+  if (isResumable) {
+    /*
+     * …and only for the **same file**.
+     *
+     * The row was created from the first grant and every fact on it — media
+     * type, MIME type, byte size, checksum, duration — is the record from that
+     * moment on. `ensureMediaRow` returns this row unchanged for the retry, so a
+     * second grant describing something else does not correct the record; it
+     * attaches bytes to a record of something else. A 200 MB clip lands on a row
+     * that says `photo` / `image/jpeg` / 900 kB, `storedBytesOf` under-reports
+     * the party by two orders of magnitude, and every renderer downstream
+     * believes the row.
+     *
+     * Both first-party clients retry from the draft they already encoded, so the
+     * facts are stable across a retry by construction. A client that genuinely
+     * produced different bytes has produced a different capture and needs a
+     * `captureId` to match.
+     */
+    return describesSameFile(existing, requested) ? undefined : "captureFactsChanged";
+  }
 
   return isOwn && existing.state === "deleted" ? "captureWithdrawn" : "duplicateCapture";
 }
@@ -423,6 +506,10 @@ async function checkDerivativeGrant(
     eventId: Id<"events">;
     captureId: string;
     role: DerivativeFileRole;
+    /** What the request says this capture is. Corroborated, never believed. */
+    mediaType: Doc<"media">["mediaType"];
+    /** The derivative's own checksum, which must differ from the original's. */
+    checksum: string;
     existing: Doc<"media"> | null;
   },
 ): Promise<UploadRejectionReason | undefined> {
@@ -436,8 +523,9 @@ async function checkDerivativeGrant(
     // The row is the authority on what this capture *is*: a client asking for a
     // poster against a capture that landed as a photo has drifted, whatever its
     // own request said the media type was.
+    if (existing.mediaType !== params.mediaType) return "captureFactsChanged";
     if (!isFileRoleAllowed(existing.mediaType, params.role)) return "unsupportedFileRole";
-    return undefined;
+    return checkDerivativeIsDistinct(params.checksum, existing, params.role);
   }
 
   // No media row yet, so the original's own completion has not arrived. Accept
@@ -458,7 +546,45 @@ async function checkDerivativeGrant(
   const foreign = grants.some((grant) => grant.userId !== params.userId);
   if (foreign) return "duplicateCapture";
 
-  return isFileRoleAllowed(ownOriginal.mediaType, params.role) ? undefined : "unsupportedFileRole";
+  if (ownOriginal.mediaType !== params.mediaType) return "captureFactsChanged";
+  if (!isFileRoleAllowed(ownOriginal.mediaType, params.role)) return "unsupportedFileRole";
+  if (ownOriginal.checksum === params.checksum) return "derivativeNotDistinct";
+
+  // A sibling derivative already granted under this capture with the same body
+  // is the same re-upload by another name.
+  const sibling = grants.some(
+    (grant) => isDerivativeRole(fileRoleOf(grant)) && grant.checksum === params.checksum,
+  );
+  return sibling ? "derivativeNotDistinct" : undefined;
+}
+
+/**
+ * A derivative must not be its own source.
+ *
+ * The re-encode claim (`derivativeMetadataNotStripped`) is a client's word, and
+ * the 2 MiB cap is corroboration rather than proof — the ADR 0008 comment
+ * concedes that "a small image can still carry GPS". This is the check that
+ * turns the claim into something a server can falsify without an image pipeline:
+ * a decode/re-encode round trip never reproduces its input byte for byte, so a
+ * derivative whose checksum equals the original's is the original, re-labelled.
+ *
+ * That matters because `projectMedia` hands `previewUrl` and `posterUrl` to
+ * **every** viewer. Without this, a guest whose original was deliberately
+ * withheld from third parties could re-upload the identical GPS-bearing file
+ * under `fileRole: "preview"` and be served it back to the whole gallery — the
+ * "serve nothing" branch bypassed by exactly the actor it defends against.
+ */
+function checkDerivativeIsDistinct(
+  checksum: string,
+  media: Doc<"media">,
+  role: DerivativeFileRole,
+): UploadRejectionReason | undefined {
+  if (media.checksum === checksum) return "derivativeNotDistinct";
+  // The **other** role only. A second grant carrying the same body for the *same*
+  // role is a client retrying a slow upload, which is ordinary and is settled by
+  // `attachDerivative` as a duplicate rather than treated as a swap attempt.
+  const sibling = role === "preview" ? media.posterChecksum : media.previewChecksum;
+  return sibling === checksum ? "derivativeNotDistinct" : undefined;
 }
 
 /**
@@ -723,6 +849,25 @@ export const completeUpload = mutation({
     }
     const media = row.media;
 
+    /*
+     * The grant against the row it is about to fill, a second time.
+     *
+     * `checkOriginalGrant` refused a retry that described a different file, but
+     * that ran when the grant was minted and this runs when the bytes have
+     * landed — and the row can have been created by a *different* grant in
+     * between (two grants in flight for one capture is exactly what a flaky
+     * retry produces). `ensureMediaRow` returns the existing row untouched, so
+     * without this the second grant's bytes attach to the first grant's record.
+     */
+    if (!row.created && media.storageKey === undefined && !grantDescribesRow(grant, media)) {
+      return await discard(ctx, {
+        grant,
+        fileKey: input.fileKey,
+        reason: "captureFactsChanged",
+        now,
+      });
+    }
+
     if (media.state === "deleted") {
       // The submitter withdrew while the bytes were still in flight. Withdrawal
       // is permanent, so the late arrival is deleted rather than attached.
@@ -774,6 +919,29 @@ export const completeUpload = mutation({
     const settled = await ctx.db.get(media._id);
     const state = await settleAfterProcessing(ctx, settled ?? media, event, now);
 
+    /*
+     * The duration check that is finally independent of the client.
+     *
+     * The two that existed both read a number the *client* supplied — the grant
+     * carried the client's estimate and the completion callback forwards
+     * `metadata.durationSeconds`, which is copied verbatim off the upload
+     * ticket. So a modified client could declare eight seconds and upload a
+     * ten-minute recording; as long as it fitted under the 250 MB ceiling
+     * nothing anywhere disagreed, and "≤ 60 s" was a suggestion with two
+     * enforcement points pointing at the same claim.
+     *
+     * A mutation has no network, so this is scheduled: `verifyVideoDuration`
+     * fetches the object's own first bytes and reads the duration out of the
+     * container. It runs *after* the row settles rather than before, because
+     * making every guest wait on a round trip to storage before their photo
+     * appears is the wrong trade at a party — the window in which an over-long
+     * clip is visible is seconds, and what closes it is a real measurement
+     * rather than an earlier reading of the same lie.
+     */
+    if (grant.mediaType === "video") {
+      await ctx.scheduler.runAfter(0, mediaFunctions.verifyVideoDuration, { mediaId: media._id });
+    }
+
     await writeAuditEvent(ctx, {
       action: AUDIT_ACTIONS.uploadCompleted,
       subjectType: "media",
@@ -794,6 +962,11 @@ export const completeUpload = mutation({
     return { outcome: "registered", mediaId: media._id, state };
   },
 });
+
+/** Does this grant describe the same file the row already records? */
+function grantDescribesRow(grant: Doc<"uploadGrants">, media: Doc<"media">): boolean {
+  return describesSameFile(grant, media);
+}
 
 /** Is a reported video duration outside the launch cap? */
 function overVideoDuration(durationSeconds: number | undefined): boolean {
@@ -853,10 +1026,44 @@ async function registerDerivative(
     return await discard(ctx, { grant, fileKey: params.fileKey, reason: "withdrawn", now });
   }
 
+  /*
+   * The row is the authority on what this capture is, and it is re-read here
+   * rather than trusted from grant time.
+   *
+   * A grant issued before the original's completion landed was checked against
+   * *another grant*; by now there is a row, and the row may say something else.
+   * A `poster` grant minted under `mediaType: "video"` against a capture that
+   * landed as a photo would otherwise attach video-shaped bytes to a photo's
+   * `posterKey`, which is precisely the "type and role do not match the
+   * authoritative row" case.
+   */
+  if (grant.mediaType !== media.mediaType || !isFileRoleAllowed(media.mediaType, params.role)) {
+    return await discard(ctx, {
+      grant,
+      fileKey: params.fileKey,
+      reason: "captureFactsChanged",
+      now,
+    });
+  }
+
+  // A derivative that is byte-for-byte the original is the original. See
+  // `checkDerivativeIsDistinct` — this is the same rule applied against the row
+  // that exists now rather than the grants that existed then.
+  if (checkDerivativeIsDistinct(grant.checksum, media, params.role) !== undefined) {
+    return await discard(ctx, {
+      grant,
+      fileKey: params.fileKey,
+      reason: "derivativeNotDistinct",
+      now,
+    });
+  }
+
   const attachment = await attachDerivative(ctx, media, {
     role: params.role,
     fileKey: params.fileKey,
     byteSize: params.byteSize,
+    checksum: grant.checksum,
+    carriesNoLocation: metadataClaimOf(grant).carriesNoLocation,
     now,
   });
 
@@ -998,7 +1205,10 @@ export const withdraw = mutation({
     const media = await ctx.db.get(args.mediaId);
     if (!media) throw notFound("That photo");
 
-    const actor = await requireEventActor(ctx, media.eventId);
+    // Same refusal for "no such photo" and "a photo in a party you are not in":
+    // media ids are stable and handed out, so two messages would confirm that an
+    // id belongs to somebody else's party. See `requireEventActorFor`.
+    const actor = await requireEventActorFor(ctx, media.eventId, "That photo");
 
     requirePermission(toPermissionActor(actor.user, actor.role), "media.withdrawOwn", {
       kind: "media",
@@ -1156,6 +1366,200 @@ export const purgeStoredFile = internalAction({
         requested: args.keys.length,
       });
     }
+    return null;
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* The video duration probe                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How much of a video to read before giving up on finding its `moov`.
+ *
+ * A recording written for streaming puts `moov` first, and every clip either
+ * client produces is one. A recording that puts it last is read from the tail
+ * instead, which is the second range request below. 512 KiB comfortably covers
+ * both headers without pulling a meaningful fraction of a 250 MB file.
+ */
+const DURATION_PROBE_BYTES = 512 * 1024;
+
+/**
+ * Measure a stored video and refuse it if it is over the cap.
+ *
+ * This is the only duration check in the product with a **server-observed**
+ * number on one side. `checkGrantEligibility` judged the client's estimate
+ * before the file existed, and `completeUpload` judged the completion
+ * callback's — which the route handler copies straight off the client-authored
+ * upload ticket, so the "landed object" check was reading the same claim a
+ * second time. A modified client declaring eight seconds could store a
+ * ten-minute recording and nothing disagreed.
+ *
+ * The measurement is arithmetic on twenty bytes of the file's own header
+ * (`@partybooth/contracts/video`), which is the most a Convex isolate can do —
+ * it has no native modules and therefore no decoder — and it is enough, because
+ * the container states its own duration.
+ *
+ * **Three verdicts, three different actions**, and the third is the one worth
+ * being careful about:
+ *
+ * - `overCap` — the object is deleted and the row is tombstoned. The bytes are
+ *   real, they exceed a limit the product states, and no retry changes that.
+ * - `withinCap` — the measured duration replaces the claimed one on the row, so
+ *   the figure a host sees is the file's rather than the phone's.
+ * - `unverifiable` — an unrecognised container (WebM, from a browser's library
+ *   import) or a header we could not reach. The file is **kept**, the row records
+ *   that the check did not run, and an audit line says so. Deleting a guest's
+ *   fifty-five-second clip because a parser did not recognise its container is a
+ *   worse failure at a party than the one this exists to prevent.
+ */
+export const verifyVideoDuration = internalAction({
+  args: { mediaId: v.id("media") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const media = await ctx.runQuery(mediaFunctions.mediaForDurationProbe, {
+      mediaId: args.mediaId,
+    });
+    if (media === null || media.storageKey === undefined) return null;
+
+    let measured: number | undefined;
+    try {
+      measured = await measureStoredDuration(media.storageRegion, media.storageKey);
+    } catch (error) {
+      // Storage was unreachable. That is not evidence about the file, so it is
+      // reported and the row records `unverifiable` rather than being punished.
+      await reportError({
+        scope: "media.verifyVideoDuration",
+        error,
+        level: "warning",
+        extra: { mediaId: args.mediaId },
+      });
+    }
+
+    const verdict = judgeVideoDuration(measured, VIDEO_MAX_DURATION_SECONDS);
+    await ctx.runMutation(mediaFunctions.recordVideoDurationVerdict, {
+      mediaId: args.mediaId,
+      verdict,
+      ...(measured === undefined ? {} : { measuredSeconds: measured }),
+    });
+    return null;
+  },
+});
+
+/**
+ * Fetch enough of the object to find its `moov`, front first and then back.
+ *
+ * Two range requests at most. The front covers every file either client
+ * produces; the back covers a recorder that wrote `moov` last, which is legal
+ * and common for something captured rather than published.
+ */
+async function measureStoredDuration(
+  region: Doc<"media">["storageRegion"],
+  key: string,
+): Promise<number | undefined> {
+  const signed = await resolveStorageAdapter(region).createReadUrl(key, { expiresInSeconds: 120 });
+
+  const head = await fetchRange(signed.url, `bytes=0-${DURATION_PROBE_BYTES - 1}`);
+  const fromHead = head === undefined ? undefined : readIsoBmffDuration(head);
+  if (fromHead !== undefined) return fromHead.seconds;
+
+  const tail = await fetchRange(signed.url, `bytes=-${DURATION_PROBE_BYTES}`);
+  // A tail read starts mid-box, so the walker will usually refuse it — which is
+  // correct, and answers `unverifiable` rather than a number read out of frames.
+  return tail === undefined ? undefined : readIsoBmffDuration(tail)?.seconds;
+}
+
+async function fetchRange(url: string, range: string): Promise<Uint8Array | undefined> {
+  const response = await fetch(url, { headers: { Range: range } });
+  if (!response.ok) return undefined;
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+/** The two fields the probe needs. Never a signed URL, never anything else. */
+export const mediaForDurationProbe = internalQuery({
+  args: { mediaId: v.id("media") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      storageKey: v.optional(v.string()),
+      storageRegion,
+      state: mediaState,
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const media = await ctx.db.get(args.mediaId);
+    if (!media || media.mediaType !== "video" || media.state === "deleted") return null;
+    return {
+      ...(media.storageKey === undefined ? {} : { storageKey: media.storageKey }),
+      storageRegion: media.storageRegion,
+      state: media.state,
+    };
+  },
+});
+
+export const recordVideoDurationVerdict = internalMutation({
+  args: {
+    mediaId: v.id("media"),
+    verdict: literalUnion(VIDEO_DURATION_VERDICTS),
+    measuredSeconds: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const media = await ctx.db.get(args.mediaId);
+    if (!media || media.state === "deleted") return null;
+    const now = Date.now();
+
+    if (args.verdict === "overCap") {
+      // Tombstone the row and take every object with it, exactly as a withdrawal
+      // does — `deleted` is terminal, the counters follow, and any unspent grant
+      // for the capture is expired so nothing can attach afterwards.
+      const keys = storageKeysOf(media);
+      await ctx.db.patch(media._id, {
+        state: "deleted",
+        deletedAt: now,
+        durationVerified: false,
+        ...(args.measuredSeconds === undefined ? {} : { durationSeconds: args.measuredSeconds }),
+        updatedAt: now,
+      });
+      await applyCountChange(ctx, media.eventId, media.state, "deleted", now);
+      await expireGrantsForCapture(ctx, media.eventId, media.captureId, now);
+      if (keys.length > 0) {
+        await ctx.scheduler.runAfter(0, mediaFunctions.purgeStoredFile, {
+          region: media.storageRegion,
+          keys,
+          mediaId: media._id,
+        });
+      } else {
+        await ctx.db.patch(media._id, { storageDeletedAt: now });
+      }
+
+      await writeAuditEvent(ctx, {
+        action: AUDIT_ACTIONS.uploadDiscarded,
+        subjectType: "media",
+        subjectId: media._id,
+        actor: { userId: media.uploaderUserId },
+        eventId: media.eventId,
+        metadata: {
+          captureId: media.captureId,
+          reason: "tooLong",
+          claimedSeconds: media.durationSeconds ?? null,
+          measuredSeconds: args.measuredSeconds ?? null,
+          limitSeconds: VIDEO_MAX_DURATION_SECONDS,
+        },
+        now,
+      });
+      return null;
+    }
+
+    await ctx.db.patch(media._id, {
+      durationVerified: args.verdict === "withinCap",
+      // The file's own figure replaces the phone's, so the duration a host sees
+      // and the one the storage report counts are the measured ones.
+      ...(args.verdict === "withinCap" && args.measuredSeconds !== undefined
+        ? { durationSeconds: args.measuredSeconds }
+        : {}),
+      updatedAt: now,
+    });
     return null;
   },
 });

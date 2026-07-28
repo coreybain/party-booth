@@ -268,4 +268,29 @@ describe("stats.recentSubmissions", () => {
         .query(api.stats.recentSubmissions, { eventId: f.eventId }),
     ).rejects.toThrow();
   });
+
+  it("does not hand an admin the per-guest leaderboard for a party they are not in", async () => {
+    const f = await fixture();
+    setAllowlist(ADMIN_EMAIL);
+    await seedUser(f.t, { authId: "admin", email: ADMIN_EMAIL, isGlobalAdmin: true });
+    await seedMedia(f.t, f.eventId, f.guestId, { state: "approved" });
+
+    const asAdmin = await f.t
+      .withIdentity({ subject: "admin" })
+      .query(api.stats.overview, { eventId: f.eventId });
+    // Aggregates yes — that is what the console's asset and storage columns are.
+    expect(asAdmin.total).toBe(1);
+    expect(asAdmin.storageBytes).toBeGreaterThan(0);
+    // Who photographed how much at a stranger's private party is guest-level
+    // personal data, not an asset count. PLAN.md: "no media access".
+    expect(asAdmin.topContributors).toEqual([]);
+    expect(asAdmin.contributorCount).toBe(0);
+
+    // The host, whose party it is, still gets both.
+    const asHost = await f.t
+      .withIdentity({ subject: "owner" })
+      .query(api.stats.overview, { eventId: f.eventId });
+    expect(asHost.topContributors.length).toBeGreaterThan(0);
+    expect(asHost.contributorCount).toBeGreaterThan(0);
+  });
 });

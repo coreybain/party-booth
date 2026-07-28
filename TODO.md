@@ -81,6 +81,31 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 >
 > **Reconciliation worth flagging:** the demo-login variables are `DEMO_LOGIN_EMAIL` / `DEMO_LOGIN_OTP`, not the `DEMO_ACCOUNT_EMAIL` / `DEMO_FIXED_OTP` some planning notes use. The implemented names have been validated in `packages/env` and documented in `.env.example` since Sprint 1; renaming them on submission day would be churn against a working, tested path. `.env.example` now says so explicitly, and also documents `APPLE_ID`, `ASC_APP_ID` and `GOOGLE_SERVICE_ACCOUNT_KEY_PATH`, which `eas.json` referenced but nothing described.
 
+> **Sprint 4 audit fixes (applied on `feat/sprint4`).** Six findings shared one shape — a control
+> reading a value the controlled party supplied — and they are recorded together in
+> [ADR 0009](docs/adr/0009-verified-uploads-and-real-deletion.md): the 60-second video cap is now
+> **measured** from the stored file's own header rather than re-read off the client's ticket; a
+> derivative whose checksum equals its original's is refused (that was the way around
+> `mayServeOriginal`) and its location claim is read at read time; a retry may not change what file
+> a capture is; the video `preview` role — never produced by either client, 25 MiB, original's
+> containers — is withdrawn; the slideshow cursors on **approval** time and the client reconciles
+> against the authoritative approved set, so an item a host revokes leaves the television at once;
+> and the reviewer credential is confined to the demo party and expires on a date
+> (`DEMO_LOGIN_EXPIRES_AT` — **a third variable, required**).
+>
+> Two store-policy gaps closed with them, and both were claimed as done and were not: **account
+> deletion now actually deletes** — `convex/deletion.ts` on a daily cron erases media, objects,
+> memberships, blocks, devices and the Better Auth credential thirty days out, and the in-app,
+> privacy and store copy says what the code does — and **terms of use now exist** at `/terms`, are
+> accepted at onboarding on both clients (versioned, recorded), and are required before an upload
+> grant is issued. `/account/deletion` is the web deletion route Play's policy requires and
+> `android-internal.md` declares. `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO` are gone from the Android
+> manifest — the system photo picker needs neither — and the iOS age-rating section is rewritten
+> against the current 4+/9+/13+/16+/18+ questionnaire.
+>
+> **New owner-action item:** set `DEMO_LOGIN_EXPIRES_AT` alongside the other two demo variables, or
+> the reviewer login does not exist. See `.env.example`.
+
 **RC4:** run a fake mini-party solo: phone uploads photo + video → approve on laptop → both appear on the TV slideshow live. iOS build shows "Waiting for Review".
 > **Mobile status (Sprint 4).** `apps/mobile` is code-complete for its Sprint 4 lines: video capture and playback, the client half of the derivative step (photo `preview` and video `poster`, each its own grant under the same `captureId`), the three App Review flows, the store-readiness pass, and the two submission checklists in `docs/store/`. **389 mobile tests** (was 289); `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm format:check` and `expo export --platform all` all pass with an **empty** environment.
 >

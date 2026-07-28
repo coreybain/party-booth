@@ -19,6 +19,7 @@ import { forbidden, notFound } from "./lib/errors";
 import {
   requireActiveUser,
   requireEventActor,
+  requireEventActorFor,
   requirePermission,
   toPermissionActor,
 } from "./lib/guards";
@@ -197,7 +198,16 @@ export const report = mutation({
   returns: v.object({
     reportId: v.id("mediaReports"),
     created: v.boolean(),
-    reportCount: v.number(),
+    /**
+     * How many members have reported this item. **Hosts only**, exactly as
+     * `projectMedia` does it: a guest learning that three other people reported
+     * the photo next to theirs is a leak, and a guest who can poll the tally by
+     * pressing the button again can watch it tick up the moment a particular
+     * person looks at their phone. At a party of thirty that is a meaningful step
+     * towards identifying a reporter, which is the one property the whole design
+     * protects. The report sheet only ever needed the confirmation.
+     */
+    reportCount: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
@@ -206,7 +216,12 @@ export const report = mutation({
     const media = await ctx.db.get(args.mediaId);
     if (!media) throw notFound("That photo");
 
-    const actor = await requireEventActor(ctx, media.eventId);
+    // Both refusals say the same thing. `requireEventActor` answers `notFound`
+    // for an event the caller has no relationship with precisely so event ids
+    // cannot be probed; letting its message through here would undo that one
+    // layer up, because a media id the caller holds could then be confirmed to
+    // belong to a party they were never invited to.
+    const actor = await requireEventActorFor(ctx, media.eventId, "That photo");
     const isOwn = media.uploaderUserId === user._id;
 
     // The gate refuses `isOwn` — reporting your own upload is meaningless, and
@@ -232,11 +247,13 @@ export const report = mutation({
       )
       .unique();
 
+    const isHost = actor.role === "owner" || actor.role === "cohost";
+
     if (existing) {
       return {
         reportId: existing._id,
         created: false,
-        reportCount: media.reportCount ?? 1,
+        ...(isHost ? { reportCount: media.reportCount ?? 1 } : {}),
       };
     }
 
@@ -276,7 +293,7 @@ export const report = mutation({
       now,
     });
 
-    return { reportId, created: true, reportCount };
+    return { reportId, created: true, ...(isHost ? { reportCount } : {}) };
   },
 });
 
@@ -303,6 +320,14 @@ export const resolveReport = mutation({
 
     const actor = await requireEventActor(ctx, report_.eventId);
     if (actor.role !== "owner" && actor.role !== "cohost") throw forbidden();
+    // The gate `moderate` already has, and this is the same kind of write: a
+    // host whose account is `locked` or `deletionScheduled` must not keep
+    // resolving other people's reports. `requireEventActor` resolves through
+    // `requireUser`, not `requireActiveUser`, deliberately — so the state has to
+    // be checked here or not at all.
+    if (actor.user.accountState !== "active") {
+      throw forbidden("This account cannot moderate right now.");
+    }
 
     const now = Date.now();
     if (report_.status === "open") {
@@ -372,9 +397,35 @@ export const flagged = query({
     const actor = await requireEventActor(ctx, args.eventId);
     if (actor.role !== "owner" && actor.role !== "cohost") throw forbidden();
 
+    /*
+     * The same gate `pending` applies, and for the same reason.
+     *
+     * A bare role check routes around `accountStateAllows`, which is the only
+     * thing that makes `locked` and `deletionScheduled` mean anything. Without
+     * it a host on their way out of the product kept full read access to every
+     * reported item — including freshly minted ten-minute signed URLs to the
+     * **originals**, because `projectMedia` with `viewerRole: "owner"` bypasses
+     * `mayServeOriginal`. PLAN.md: those accounts "lose access" immediately.
+     */
+    requirePermission(toPermissionActor(actor.user, actor.role), "media.viewPending", {
+      kind: "media",
+      state: "pending",
+      isOwn: false,
+      event: { state: actor.event.state },
+    });
+
+    /*
+     * Open reports only, and indexed on `(event, status)` rather than filtered
+     * after the fact.
+     *
+     * Grouping every report the event has ever had meant an item stayed in the
+     * flagged panel for ever once its last report was resolved: `flaggedAt` was
+     * cleared, so `resolveReport` had nothing left to offer, and the card sat
+     * there with no buttons on it for the rest of the party.
+     */
     const reports = await ctx.db
       .query("mediaReports")
-      .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
+      .withIndex("by_event_and_status", (q) => q.eq("eventId", args.eventId).eq("status", "open"))
       .collect();
 
     const byMedia = new Map<Id<"media">, Doc<"mediaReports">[]>();

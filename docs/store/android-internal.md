@@ -96,17 +96,17 @@ in a browser first.**
 Must agree with the iOS App Privacy answers (§3.2 of `ios-submission.md`) — they describe
 the same app, and a discrepancy is a policy problem on both stores.
 
-| Question                      | Answer                                               |
-| ----------------------------- | ---------------------------------------------------- |
-| Does your app collect data?   | Yes                                                  |
-| Is it encrypted in transit?   | Yes                                                  |
-| Can users request deletion?   | **Yes** — Settings → Delete account, and a web route |
-| Personal info → Name          | Collected, App functionality, not shared             |
-| Personal info → Email address | Collected, Account management, not shared            |
-| Photos and videos             | Collected, App functionality, not shared             |
-| App activity → Other actions  | Collected, Analytics + App functionality, not shared |
-| Crash logs / Diagnostics      | Collected, Analytics, not shared                     |
-| **Location**                  | **Not collected** — see below                        |
+| Question                      | Answer                                                           |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Does your app collect data?   | Yes                                                              |
+| Is it encrypted in transit?   | Yes                                                              |
+| Can users request deletion?   | **Yes** — Settings → Delete account, **and** the web route below |
+| Personal info → Name          | Collected, App functionality, not shared                         |
+| Personal info → Email address | Collected, Account management, not shared                        |
+| Photos and videos             | Collected, App functionality, not shared                         |
+| App activity → Other actions  | Collected, Analytics + App functionality, not shared             |
+| Crash logs / Diagnostics      | Collected, Analytics, not shared                                 |
+| **Location**                  | **Not collected** — see below                                    |
 
 Location is genuinely not collected: `blockedPermissions` in `app.config.ts` strips
 `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` from anything an autolinked library
@@ -131,10 +131,25 @@ Category: **Social Networking / Communication**.
 | Shares personal info with third parties | No                        |
 | Digital purchases                       | No                        |
 
-Answering **Yes** to user interaction is what triggers the UGC follow-ups. All of them are
-satisfied: host moderation before anything reaches the shared gallery, in-app reporting,
-in-app blocking, and a published contact address. Expect PEGI 12 / IARC "Teen"; the app's
-own 18+ gate is stricter and is stated in the listing.
+Answering **Yes** to user interaction is what triggers the UGC follow-ups.
+
+> **Corrected in Sprint 4's audit.** This paragraph used to claim all the follow-ups were
+> satisfied while the repository contained **no terms of use and no acceptance**, which is
+> two of the four. Play's UGC policy asks for accepted terms that define and prohibit
+> objectionable content and behaviour — not only for the tools to deal with it afterwards.
+
+All five now exist, and here is where each one lives:
+
+| Follow-up                                   | Where it is                                                                                                                                                                             |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Published terms defining prohibited content | `https://<your-domain>/terms` — `apps/web/src/app/terms/page.tsx`, with the rules themselves in `@partybooth/contracts/terms` so both clients and the report sheet share one definition |
+| **Accepted** terms, recorded                | Onboarding on both clients sends `TERMS_VERSION` with the name confirmation; the server records it and refuses an upload grant without it (`termsNotAccepted`)                          |
+| Content moderation                          | Host approves or declines every item before the party sees it; `manual` is the default mode                                                                                             |
+| In-app reporting                            | Every item that is not yours, on both clients                                                                                                                                           |
+| In-app blocking                             | Long-press or the "…" menu, plus Settings → Blocked people                                                                                                                              |
+
+Expect PEGI 12 / IARC "Teen"; the app's own 18+ gate is stricter and is stated in the
+listing and in the terms.
 
 ### 3.4 Target audience and content
 
@@ -150,8 +165,59 @@ own 18+ gate is stricter and is stated in the listing.
 - **Government app:** No.
 - **Financial features:** None.
 - **Health:** None.
-- **Data deletion URL:** `https://<your-domain>/account/deletion` if it exists, otherwise
-  point at the privacy policy section describing in-app deletion.
+- **Data deletion URL:** `https://<your-domain>/account/deletion`.
+
+  **This route exists** — `apps/web/src/app/account/deletion/page.tsx` — and it has to,
+  because current Play policy requires a _web_ resource from which a user can request
+  deletion of their account and its associated data, and Play checks that the URL you
+  declare resolves. The previous version of this document declared the URL and there was
+  no such route; the privacy page pointed at the in-app control and nothing else.
+
+  What it does: explains what is removed immediately and what is erased after thirty days,
+  then — for a signed-in visitor — offers the deletion control itself. The sign-in _is_ the
+  identity verification, deliberately: `users.requestAccountDeletion` acts on the
+  signed-in account and takes no subject, so there is no field on the page naming somebody
+  else's address and therefore no way to aim it at a stranger.
+
+  Completion is real rather than promised: `convex/deletion.ts`, run daily by
+  `convex/crons.ts`, erases the account, its media and stored objects, its memberships,
+  blocks and push devices, and its Better Auth credentials — including the Google grant.
+  **Verify the URL loads before you submit the form.**
+
+---
+
+### 3.6 Permissions in the merged manifest — check them, do not assume them
+
+The release build declares exactly three:
+
+```
+android.permission.CAMERA
+android.permission.RECORD_AUDIO
+android.permission.POST_NOTIFICATIONS
+```
+
+`READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` used to be declared and were **removed in
+Sprint 4's audit**. They are the pair Play restricts to apps needing broad, persistent
+access to a device's whole media library, and PartyBooth needs neither: library import is
+a _single_ image chosen through `expo-image-picker`, which routes through the Android
+system photo picker and returns one URI with no permission at all, and there is no
+video-library import anywhere in the product. Declaring them bought nothing and put the
+release in the path of a policy rejection with a declaration form attached.
+
+They are now listed under `blockedPermissions` rather than merely omitted, because the
+failure mode is an autolinked library adding them back. **`app.config.ts` is not the thing
+to check** — the merged release manifest is:
+
+```bash
+cd apps/mobile
+eas build --profile production --platform android --local   # or download the AAB
+# then, from the Android SDK build-tools:
+aapt2 dump permissions <path-to>.aab | sort
+```
+
+Anything beyond the three above is a finding, not a detail. `ACCESS_FINE_LOCATION`,
+`ACCESS_COARSE_LOCATION`, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` are blocked
+for the same reason and their absence is what §3.2's "Location: not collected" rests on.
 
 ---
 
