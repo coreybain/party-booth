@@ -10,7 +10,14 @@
  * When `convex dev` runs against a real deployment and codegen becomes precise,
  * `client-api.ts` collapses to a re-export and neither this file nor any call
  * site changes.
+ *
+ * The Sprint 5 `cohosts` and `admin` groups were written here first, while
+ * `client-api.ts` was being edited by another agent. They were moved across at
+ * integration, so this file is a seam again and nothing in `apps/web` describes
+ * a wire shape.
  */
+
+import { backendApi } from "@partybooth/backend/client-api";
 
 export {
   backendApi,
@@ -18,6 +25,7 @@ export {
   type BackendApi,
   type BlockedAccount,
   type CreateEventResult,
+  type CurrentInvite,
   type CurrentUser,
   type EventCounts,
   type EventHome,
@@ -36,6 +44,7 @@ export {
   type RefreshRolesResult,
   type ReportId,
   type ReportResult,
+  type RotateInviteResult,
   type SetEventStateResult,
   type SlideshowPage,
   type StorageStatus,
@@ -45,3 +54,31 @@ export {
   type UploadGrantRequestArgs,
   type UserId,
 } from "@partybooth/backend/client-api";
+
+/**
+ * Co-hosts and the admin console — the Sprint 5 groups.
+ *
+ * These describe `convex/cohosts.ts` and `convex/admin.ts` and live in
+ * `client-api.ts` with everything else. `AdminApi` and `CohostApi` are no longer
+ * named types: the groups are members of `BackendApi`, so there is one surface
+ * rather than one surface and two satellites.
+ */
+export type {
+  AdminAccount,
+  AdminEvent,
+  AdminJobHealth,
+  AuditEventId,
+  AuditRow,
+  CohostInvitation,
+  CohostInvitationId,
+  CohostInvitationStatus,
+  CohostList,
+  CohostMember,
+  OrganiserInvitationId,
+} from "@partybooth/backend/client-api";
+
+/** Co-host management, for the organiser console's settings page. */
+export const cohostApi = backendApi.cohosts;
+
+/** The global-admin console. */
+export const adminApi = backendApi.admin;

@@ -22,10 +22,16 @@ import {
   resolveInviteByToken,
   type ResolvedInvite,
 } from "./lib/events";
-import { demoConfinementAllows, requireActiveUser, type ReadCtx } from "./lib/guards";
+import {
+  adminPivotAllows,
+  demoConfinementAllows,
+  requireActiveUser,
+  type ReadCtx,
+} from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
 import { checkJoinThrottle, recordJoinFailure } from "./lib/join-throttle";
+import { eventIsUsable } from "./lib/lock";
 import { eventState } from "./lib/validators";
 
 /**
@@ -145,14 +151,17 @@ type CredentialVerdict = CredentialAccepted | CredentialRefused;
  *
  * The verdict keeps the *reason* internally and the callers throw it away on
  * the way out; that split is the enumeration protection, and it only works if
- * there is one place the reason is computed. `userId` is nullable because
+ * there is one place the reason is computed. `user` is nullable because
  * `previewByToken` is unauthenticated: with no account there is no membership
- * to have been revoked, and a 160-bit token has nothing to enumerate.
+ * to have been revoked, and a 160-bit token has nothing to enumerate. It is the
+ * whole document rather than an id because two of the checks below are about
+ * *who* is asking — the demo confinement and the admin pivot — and both read the
+ * address.
  */
 async function evaluateCredential(
   ctx: ReadCtx,
   input: JoinInput,
-  userId: Id<"users"> | null,
+  user: Doc<"users"> | null,
   now: number,
 ): Promise<CredentialVerdict> {
   const invite =
@@ -167,18 +176,54 @@ async function evaluateCredential(
     return { ok: false, reason: verdict.reason, eventId: invite.event._id };
   }
 
-  if (userId === null) return { ok: true, invite, membership: null };
+  /*
+   * The account-lock sweep reaches joining here.
+   *
+   * `requireEventActor` covers every other event-scoped path in the product, and
+   * joining is the one that deliberately does not go through it — you cannot be
+   * an actor for an event you have not joined yet. So a locked host's party is
+   * refused here, with `eventNotJoinable`: the same reason a paused party gets,
+   * which is right, because the guest is told the same single sentence either
+   * way and only the audit log learns which.
+   */
+  if (!(await eventIsUsable(ctx, invite.event))) {
+    return { ok: false, reason: "eventNotJoinable", eventId: invite.event._id };
+  }
+
+  if (user === null) return { ok: true, invite, membership: null };
 
   const membership = await ctx.db
     .query("memberships")
-    .withIndex("by_event_and_user", (q) => q.eq("eventId", invite.event._id).eq("userId", userId))
+    .withIndex("by_event_and_user", (q) => q.eq("eventId", invite.event._id).eq("userId", user._id))
     .unique();
 
-  // A host removed this person. A fresh scan of the same QR must not undo
-  // that — only a co-host invite or a rotation that keeps memberships does.
-  // The preview answers the same way, so "can I see it" and "can I join it"
-  // never disagree.
-  if (membership?.status === "revoked") {
+  /*
+   * A global admin cannot walk into a party off a credential the console gave
+   * them. See `adminPivotAllows`: the console is defined by having no media
+   * access, and a membership would outrank the admin role and hand it over. It
+   * is refused with `eventNotJoinable` — the same single sentence a paused party
+   * gets, because the caller learns nothing either way and the audit log records
+   * which it really was.
+   */
+  if (!adminPivotAllows(user, invite.event, membership)) {
+    return { ok: false, reason: "eventNotJoinable", eventId: invite.event._id };
+  }
+
+  /*
+   * A host removed this person. A fresh scan of the same QR must not undo that —
+   * only a co-host invite, or a rotation that keeps memberships, does. The
+   * preview answers the same way, so "can I see it" and "can I join it" never
+   * disagree.
+   *
+   * The exception is a rotation **sweep**. `keepExistingMemberships: false`
+   * revokes everybody, and TODO.md says those guests "can rejoin only via the
+   * new code" — so refusing them here would make the revoke path a permanent ban
+   * on the entire guest list, which is not what a host reprinting a sign means.
+   * They can only reach this line with an *active* invite version, which after a
+   * rotation is by definition the new one, so "holding the new code" is already
+   * proven by getting this far.
+   */
+  if (membership?.status === "revoked" && membership.revokedByRotation !== true) {
     return { ok: false, reason: "membershipRevoked", eventId: invite.event._id };
   }
 
@@ -286,7 +331,7 @@ export const join = mutation({
       return joinThrottled(throttle.retryAfterMs);
     }
 
-    const verdict = await evaluateCredential(ctx, input, user._id, now);
+    const verdict = await evaluateCredential(ctx, input, user, now);
     // The App Review demo identity may join the demo party and nothing else, and
     // it is refused with the one sentence every other rejection uses — so a
     // reviewer's account cannot be used to walk into a real party with a code
@@ -354,11 +399,30 @@ async function admit(
   if (existing) {
     membershipId = existing._id;
     if (!alreadyMember) {
-      // "left" — they walked out and came back. Same row, fresh version.
+      /*
+       * "left" — they walked out and came back — or swept away by a rotation and
+       * back with the new code. Same row, fresh version, and the sweep marker is
+       * cleared so a later *deliberate* removal is not mistaken for one.
+       *
+       * The **role is re-derived rather than inherited**, and that is the whole
+       * of what a scan may grant. A code or a QR proves one thing — that you
+       * hold the current credential — and that is worth a `guest` seat and
+       * nothing more. Carrying the row's old `role` forward meant a removed
+       * co-host who re-scanned came back *as a co-host*, with the pending queue,
+       * the moderation actions and `event.rotateInvite`, off a credential that
+       * is printed on a sign. Elevation stays exclusively with
+       * `applyVerifiedEmailMatching`, which runs a few lines below and asks a
+       * different question: did a host name this verified address?
+       */
       await ctx.db.patch(existing._id, {
+        role: invite.event.ownerUserId === user._id ? "owner" : "guest",
         status: "active",
         inviteVersionId: invite.version._id,
         joinedAt: now,
+        revokedAt: undefined,
+        revokedByUserId: undefined,
+        revokeReason: undefined,
+        revokedByRotation: undefined,
       });
     } else if (existing.inviteVersionId !== invite.version._id) {
       // Re-scanning after a rotation that kept memberships: move them onto the
@@ -507,7 +571,7 @@ export const previewByToken = query({
     const input = joinEventInputSchema.safeParse({ via: "token", token: args.token });
     if (!input.success) return null;
 
-    const verdict = await evaluateCredential(ctx, input.data, user?._id ?? null, Date.now());
+    const verdict = await evaluateCredential(ctx, input.data, user, Date.now());
     return verdict.ok ? await renderPreview(ctx, verdict) : null;
   },
 });
@@ -551,7 +615,7 @@ export const previewByCode = mutation({
       return null;
     }
 
-    const verdict = await evaluateCredential(ctx, input, user._id, now);
+    const verdict = await evaluateCredential(ctx, input, user, now);
 
     if (!verdict.ok) {
       await recordRejection(ctx, {

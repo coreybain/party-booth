@@ -27,6 +27,7 @@ import { describeError, type ErrorCopy } from "../lib/errors";
 import { describeJoinFailure, parseJoinResult, type JoinFailureCopy } from "../lib/join";
 import { captureHandledError } from "../lib/sentry";
 import { useSession } from "../providers/session";
+import { usePush } from "../push/provider";
 
 export type JoinPhase =
   | { readonly status: "idle" }
@@ -66,12 +67,27 @@ export interface JoinController {
 export function useJoinEvent(): JoinController {
   const join = useMutation(api.join.join);
   const { selectEvent } = useSession();
+  const { armPrompt } = usePush();
   const [phase, setPhase] = useState<JoinPhase>({ status: "idle" });
   /** Guards the retry against a double tap while a switch is in flight. */
   const switching = useRef(false);
 
   const landOn = useCallback(
     async (eventId: EventId, alreadyMember: boolean): Promise<JoinPhase> => {
+      /*
+       * The notification permission prompt is *earned* here and fired later.
+       *
+       * iOS gives an app one system prompt per install. Spending it on the
+       * splash screen, before a guest knows what PartyBooth is, buys a refusal
+       * that can never be revisited; spending it a beat after they have walked
+       * into a party buys the same one chance from somebody with a reason to say
+       * yes. So a join arms it, and `PushProvider` asks on the effect that
+       * follows. This runs before the active-event switch is even attempted,
+       * because the membership is what earns it — a failed switch is a
+       * navigation problem, not a "you are not really in" problem.
+       */
+      armPrompt();
+
       const outcome = await selectEvent(eventId);
       const next: JoinPhase =
         outcome.status === "ok"
@@ -89,7 +105,7 @@ export function useJoinEvent(): JoinController {
       setPhase(next);
       return next;
     },
-    [selectEvent],
+    [armPrompt, selectEvent],
   );
 
   const attempt = useCallback(

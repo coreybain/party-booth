@@ -14,6 +14,8 @@ import {
   MODERATION_ACTORS,
   MODERATION_DECISIONS,
   MODERATION_MODES,
+  PUSH_CATEGORIES,
+  PUSH_DELIVERY_STATES,
   PUSH_PLATFORMS,
   REPORT_REASONS,
   REPORT_STATUSES,
@@ -64,6 +66,8 @@ export const uploadGrantStatus = literalUnion(GRANT_STATUSES);
 export const captureState = literalUnion(CAPTURE_STATES);
 export const storageRegion = literalUnion(STORAGE_REGIONS);
 export const pushPlatform = literalUnion(PUSH_PLATFORMS);
+export const pushCategory = literalUnion(PUSH_CATEGORIES);
+export const pushDeliveryState = literalUnion(PUSH_DELIVERY_STATES);
 export const reportReason = literalUnion(REPORT_REASONS);
 export const reportStatus = literalUnion(REPORT_STATUSES);
 export const auditAction = literalUnion(AUDIT_ACTION_NAMES);
@@ -129,6 +133,10 @@ export const AUDIT_SUBJECTS = [
   "media",
   "inviteVersion",
   "organiserInvitation",
+  /** A co-host invitation that has not become a membership yet. */
+  "cohostInvitation",
+  /** A registered push token. The row id, never the token itself. */
+  "pushDevice",
   "platform",
 ] as const;
 export const auditSubject = literalUnion(AUDIT_SUBJECTS);

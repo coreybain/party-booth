@@ -247,6 +247,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         },
       ],
       [
+        "expo-notifications",
+        {
+          // The tint Android paints the small icon and the notification accent
+          // with. No custom `icon` is declared: the plugin falls back to the app
+          // icon, and a bespoke monochrome glyph is a design task, not a launch
+          // blocker. `defaultChannel` must match the channel `src/push/adapter.ts`
+          // creates, or a notification arriving before the app has ever run lands
+          // on a channel the guest cannot find in system settings.
+          color: "#FF2E88",
+          defaultChannel: "default",
+        },
+      ],
+      [
         "expo-build-properties",
         {
           ios: { deploymentTarget: IOS_DEPLOYMENT_TARGET },

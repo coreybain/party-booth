@@ -17,6 +17,7 @@ import {
   VIDEO_MAX_DURATION_SECONDS,
 } from "./media";
 import { otpPurposeSchema } from "./otp";
+import { expoPushTokenSchema, pushCategorySchema } from "./push";
 import { eventRoleSchema } from "./roles";
 import { storageRegionSchema } from "./storage";
 
@@ -209,6 +210,28 @@ export const inviteCohostInputSchema = z.object({
   email: emailSchema,
 });
 export type InviteCohostInput = z.infer<typeof inviteCohostInputSchema>;
+
+/** Withdraw an invitation that has not been accepted yet. */
+export const revokeCohostInviteInputSchema = z.object({
+  invitationId: idSchema,
+  reason: z.string().trim().max(280).optional(),
+});
+export type RevokeCohostInviteInput = z.infer<typeof revokeCohostInviteInputSchema>;
+
+/**
+ * Demote somebody who **is** a co-host.
+ *
+ * Addressed by user rather than by membership id because the owner's console
+ * lists people, not rows — and because the same address may have both a pending
+ * invitation and a live membership, in which case removing the co-host has to
+ * take the invitation with it or the next sign-in re-grants the seat.
+ */
+export const removeCohostInputSchema = z.object({
+  eventId: idSchema,
+  userId: idSchema,
+  reason: z.string().trim().max(280).optional(),
+});
+export type RemoveCohostInput = z.infer<typeof removeCohostInputSchema>;
 
 export const revokeMembershipInputSchema = z.object({
   membershipId: idSchema,
@@ -535,20 +558,69 @@ export const pushPlatformSchema = z.enum(PUSH_PLATFORMS);
 export type PushPlatform = (typeof PUSH_PLATFORMS)[number];
 
 export const registerPushDeviceInputSchema = z.object({
-  /** Expo push token, e.g. `ExponentPushToken[xxxxxxxx]`. */
-  expoPushToken: z.string().min(10).max(256),
+  /**
+   * Expo push token, e.g. `ExponentPushToken[xxxxxxxx]`.
+   *
+   * Validated against the real shape rather than as "a longish string": a
+   * simulator, a denied permission prompt or an FCM token all produce something
+   * that passes a length check and then fails on every send forever.
+   */
+  expoPushToken: expoPushTokenSchema,
   platform: pushPlatformSchema,
   deviceName: z.string().trim().max(120).optional(),
 });
 export type RegisterPushDeviceInput = z.infer<typeof registerPushDeviceInputSchema>;
 
+/**
+ * Retire one device's token — sign-out, or the app being told the token rotated.
+ *
+ * By token rather than by device id, because the client holding the token is the
+ * one signing out and it does not know our row ids.
+ */
+export const unregisterPushDeviceInputSchema = z.object({
+  expoPushToken: expoPushTokenSchema,
+});
+export type UnregisterPushDeviceInput = z.infer<typeof unregisterPushDeviceInputSchema>;
+
+/**
+ * Per-category opt-out, plus the host's pending threshold.
+ *
+ * Both fields are optional so a settings screen can send the one toggle the user
+ * moved rather than the whole object, which is what stops two phones racing each
+ * other into overwriting a preference neither of them changed.
+ */
+export const updateNotificationPreferencesInputSchema = z.object({
+  optOut: z.array(pushCategorySchema).max(8).optional(),
+  pendingThreshold: z.number().int().min(1).max(100).optional(),
+});
+export type UpdateNotificationPreferencesInput = z.infer<
+  typeof updateNotificationPreferencesInputSchema
+>;
+
 /* -------------------------------------------------------------------------- */
 /* Admin                                                                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The reason string every admin-console mutation carries.
+ *
+ * One definition, because PLAN.md's rule is "**every** action" and a per-schema
+ * `z.string().optional()` is how one of them ends up being the exception. Three
+ * characters is a deliberately low bar — it exists to stop an empty submit, not
+ * to grade prose — and the audit writer refuses a blank one regardless of what a
+ * caller sends, so this is the friendly half of a check that also exists in the
+ * one place a client cannot skip.
+ */
+export const adminReasonSchema = z
+  .string()
+  .trim()
+  .min(3, { error: "Give a reason — it goes in the audit log." })
+  .max(280, { error: "Reasons are limited to 280 characters." });
+
 export const inviteOrganiserInputSchema = z.object({
   email: emailSchema,
   note: z.string().trim().max(280).optional(),
+  reason: adminReasonSchema,
 });
 export type InviteOrganiserInput = z.infer<typeof inviteOrganiserInputSchema>;
 
@@ -558,6 +630,53 @@ export type InviteOrganiserInput = z.infer<typeof inviteOrganiserInputSchema>;
  */
 export const adminAccountActionInputSchema = z.object({
   userId: idSchema,
-  reason: z.string().trim().min(3, { error: "Give a reason — it goes in the audit log." }).max(280),
+  reason: adminReasonSchema,
 });
 export type AdminAccountActionInput = z.infer<typeof adminAccountActionInputSchema>;
+
+/** Schedule or restore the deletion of an event. */
+export const adminEventActionInputSchema = z.object({
+  eventId: idSchema,
+  reason: adminReasonSchema,
+});
+export type AdminEventActionInput = z.infer<typeof adminEventActionInputSchema>;
+
+export const ADMIN_ROTATION_MODES = ["random", "specific"] as const;
+export const adminRotationModeSchema = z.enum(ADMIN_ROTATION_MODES);
+export type AdminRotationMode = (typeof ADMIN_ROTATION_MODES)[number];
+
+/**
+ * Rotate an event's join code from the console.
+ *
+ * `specific` is first on PLAN.md's cut list, which is why the mode is explicit
+ * rather than inferred from the presence of `specificCode`: a console that has
+ * had the feature cut sends `random` and a backend that has had it cut refuses
+ * `specific`, and neither of them has to guess what an absent field meant.
+ */
+export const adminRotateCodeInputSchema = z
+  .object({
+    eventId: idSchema,
+    mode: adminRotationModeSchema.default("random"),
+    specificCode: eventCodeSchema.optional(),
+    keepExistingMemberships: z.boolean().default(true),
+    reason: adminReasonSchema,
+  })
+  .refine((value) => value.mode !== "specific" || value.specificCode !== undefined, {
+    error: "Choosing a specific code means supplying one.",
+    path: ["specificCode"],
+  });
+export type AdminRotateCodeInput = z.infer<typeof adminRotateCodeInputSchema>;
+
+export const adminRevokeMembershipInputSchema = z.object({
+  membershipId: idSchema,
+  reason: adminReasonSchema,
+});
+export type AdminRevokeMembershipInput = z.infer<typeof adminRevokeMembershipInputSchema>;
+
+/** Paging and filtering for the console's two list views. */
+export const adminListInputSchema = z.object({
+  /** Matched against email and display name (accounts) or name (events). */
+  search: z.string().trim().max(120).optional(),
+  limit: z.number().int().positive().max(200).optional(),
+});
+export type AdminListInput = z.infer<typeof adminListInputSchema>;

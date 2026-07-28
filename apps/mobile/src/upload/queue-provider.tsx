@@ -78,6 +78,7 @@ import {
   undoableItem,
 } from "./queue-reducer";
 import { parseQueue, serialiseQueue } from "./persistence";
+import { nextReportedSet, queueReportsFor, type QueueReport } from "./queue-reporting";
 import {
   DEFAULT_CAPTURE_SETTINGS,
   autoSendsFor,
@@ -208,6 +209,15 @@ export interface UploadBackend {
    */
   readonly requestGrant: (args: GrantArgs) => Promise<unknown>;
   readonly confirmUpload: (secret: string) => Promise<{ mediaId: string | null }>;
+  /**
+   * Tell the server the queue gave up on a capture, or got it through after all.
+   *
+   * Optional, because the queue works perfectly well without it — it is the
+   * *notification* trigger, not part of uploading — and because leaving it out
+   * is how the tests that predate push stay honest. When absent, nothing is
+   * reported and nothing complains.
+   */
+  readonly reportQueueEvent?: (report: QueueReport) => Promise<void>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -628,6 +638,47 @@ export function UploadQueueProvider({
   }, []);
 
   /* ---------------------------------------------------------------- */
+  /* Reporting failures and recoveries                                */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Captures a `failed` report has been sent for and not yet recovered.
+   *
+   * In memory rather than on disk, deliberately. The backend already dedupes on
+   * its own throttle row, so a relaunch that re-reports a still-failed capture
+   * notifies nobody twice; and the alternative — persisting this — means a
+   * force-quit between the write and the send loses the pairing in the *other*
+   * direction, where a recovery is never announced because the failure appears
+   * never to have happened.
+   */
+  const reportedRef = useRef<ReadonlySet<string>>(new Set<string>());
+
+  useEffect(() => {
+    if (!state.hydrated) return;
+    const report = backend?.reportQueueEvent;
+    if (report === undefined) return;
+
+    const due = queueReportsFor(state.items, reportedRef.current);
+    // Applied before the awaits, not after. Two commits can land while a report
+    // is in flight, and a set updated on completion would send the same "your
+    // upload didn't send" three times.
+    reportedRef.current = nextReportedSet(reportedRef.current, due, state.items);
+    if (due.length === 0) return;
+
+    void (async () => {
+      for (const item of due) {
+        try {
+          await report(item);
+        } catch (error) {
+          // A notification nobody gets is not worth a failed upload's worth of
+          // noise, and the queue itself is unaffected either way.
+          captureHandledError(error, { scope: "upload.reportQueueEvent", event: item.event });
+        }
+      }
+    })();
+  }, [backend, state.hydrated, state.items]);
+
+  /* ---------------------------------------------------------------- */
   /* Sweeping terminal rows                                           */
   /* ---------------------------------------------------------------- */
 
@@ -759,6 +810,7 @@ export function ConnectedUploadQueue({
 }) {
   const requestUploadGrant = useMutation(api.media.requestUploadGrant);
   const confirmUpload = useMutation(api.media.confirmUpload);
+  const reportUploadQueue = useMutation(api.push.reportUploadQueue);
 
   const backend = useMemo<UploadBackend>(
     () => ({
@@ -767,8 +819,16 @@ export function ConnectedUploadQueue({
         const result = await confirmUpload({ secret });
         return { mediaId: result.mediaId };
       },
+      reportQueueEvent: async (report) => {
+        await reportUploadQueue({
+          eventId: report.eventId,
+          captureId: report.captureId,
+          event: report.event,
+          attempts: report.attempts,
+        });
+      },
     }),
-    [requestUploadGrant, confirmUpload],
+    [requestUploadGrant, confirmUpload, reportUploadQueue],
   );
 
   const transport = useMemo(() => createUploadThingTransport({ siteUrl }), [siteUrl]);

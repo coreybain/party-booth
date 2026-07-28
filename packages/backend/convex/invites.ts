@@ -1,6 +1,7 @@
 import {
   AUDIT_ACTIONS,
   normalizeEventCode,
+  ROTATION_THROTTLED_MESSAGE,
   rotateInviteInputSchema,
   validateSpecificEventCode,
 } from "@partybooth/contracts";
@@ -8,10 +9,11 @@ import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
 import { writeEventAudit } from "./lib/audit";
-import { forbidden, invalidInput } from "./lib/errors";
+import { forbidden, invalidInput, rateLimited } from "./lib/errors";
 import { getActiveInviteVersion, isCodeTaken, mintInviteVersion } from "./lib/events";
 import { requireEventActor, requirePermission, toPermissionActor } from "./lib/guards";
 import { parseInput } from "./lib/input";
+import { checkRotationThrottle, recordRotation } from "./lib/rotation-throttle";
 
 /**
  * Invite versions: the six-digit code and the QR token, and rotating them.
@@ -48,10 +50,35 @@ export const rotate = mutation({
     const actor = await requireEventActor(ctx, args.eventId);
     const input = parseInput(rotateInviteInputSchema, args);
 
+    // A host whose own account is `locked` or `deletionScheduled` must not keep
+    // rotating. `requireEventActor` resolves through `requireUser`, deliberately
+    // — so this has to be checked here or not at all, exactly as `moderate` and
+    // `requestUploadGrant` do it.
+    if (actor.user.accountState !== "active") {
+      throw forbidden("This account cannot rotate the invite right now.");
+    }
+
     requirePermission(toPermissionActor(actor.user, actor.role), "event.rotateInvite", {
       kind: "event",
       state: actor.event.state,
     });
+
+    /*
+     * The rotation budget: five an hour, per event.
+     *
+     * Checked **after** the permission so that a stranger learns nothing from
+     * the timing, and before anything is written so a refused rotation costs
+     * nothing. It exists because the revoke path below writes one audit row per
+     * guest it removes: without a ceiling, a held-down button turns a fifty-guest
+     * party into an unbounded pile of writes during the evening the rotation is
+     * supposed to be protecting. See `ROTATION_POLICY` in
+     * `@partybooth/contracts/codes` for the arithmetic.
+     */
+    const now = Date.now();
+    const budget = await checkRotationThrottle(ctx, actor.event._id, now);
+    if (!budget.allowed) {
+      throw rateLimited(ROTATION_THROTTLED_MESSAGE, budget.retryAfterMs);
+    }
 
     let specificCode: string | undefined;
     if (input.specificCode !== undefined) {
@@ -88,7 +115,6 @@ export const rotate = mutation({
       specificCode = validated.code;
     }
 
-    const now = Date.now();
     const result = await mintInviteVersion(ctx, {
       event: actor.event,
       createdByUserId: actor.user._id,
@@ -114,9 +140,17 @@ export const rotate = mutation({
         // Never the code itself: audit rows are read in bulk and by more people
         // than the host list.
         specific: specificCode !== undefined,
+        // Which axis the rotation came from. A host rotating because the sign
+        // walked off and an admin rotating because of a complaint are the same
+        // write and very different incidents.
+        via: actor.role === "globalAdmin" ? "adminConsole" : "hostConsole",
       },
       now,
     });
+
+    // Charged only once the rotation has actually happened — the budget counts
+    // successes, so a refusal above costs the host nothing.
+    await recordRotation(ctx, actor.event._id, now);
 
     return {
       inviteVersionId: result.inviteVersionId,
@@ -133,6 +167,23 @@ export const rotate = mutation({
  *
  * Host-only, via `event.viewInviteCode` — a guest with the code can re-share
  * the party to anyone, which is the thing rotation exists to undo.
+ *
+ * **A global admin gets the code and not the token**, and the asymmetry is the
+ * point. The stated justification for putting `event.viewInviteCode` in the
+ * admin capability set is narrow — "show which code is being replaced" — and
+ * `components/admin/rotate-code-form.tsx` reads `current.code` alone. The QR
+ * `token` is something else entirely: a 160-bit bearer credential that is by
+ * itself sufficient to call `join.join` and be admitted as a `guest`, at which
+ * point `resolveEventRole` returns `guest` (a membership outranks the admin
+ * role), `media.viewApproved` succeeds and the console's "no media access"
+ * invariant is gone — signed read URLs for the whole approved gallery of a
+ * stranger's private party. `stats.overview` already withholds its contributor
+ * breakdown from admins for exactly this reason; this is the same rule applied
+ * to the credential that opens the door rather than to the data behind it.
+ *
+ * The pivot is refused at `join.ts` as well. Two independent barriers, because
+ * either one alone is a single edit away from being removed by somebody who
+ * cannot see the other.
  */
 export const current = query({
   args: { eventId: v.id("events") },
@@ -142,7 +193,8 @@ export const current = query({
       inviteVersionId: v.id("inviteVersions"),
       version: v.number(),
       code: v.string(),
-      token: v.string(),
+      /** Absent for a global admin — see the note above. */
+      token: v.optional(v.string()),
       createdAt: v.number(),
     }),
   ),
@@ -161,7 +213,7 @@ export const current = query({
       inviteVersionId: version._id,
       version: version.version,
       code: version.code,
-      token: version.token,
+      ...(actor.role === "globalAdmin" ? {} : { token: version.token }),
       createdAt: version.createdAt,
     };
   },

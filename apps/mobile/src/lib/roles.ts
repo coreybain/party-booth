@@ -8,14 +8,25 @@
  * (`Role` + `AccountState` + `Action`).
  *
  * These are **affordance** checks — "should this tab exist", "should this button be
- * rendered" — so they ask {@link hasCapability}-level questions that need no resource.
+ * rendered". Most of them ask {@link hasCapability}-level questions that need no
+ * resource; {@link hostAbilities} is the one that also takes the event's *state*,
+ * because the Host tab's controls are exactly the place where "your role may do this"
+ * and "this party is in a state where it can be done" come apart — a co-host may rotate
+ * an invite, and nobody may rotate an archived one.
+ *
  * The authoritative check always happens server-side in a Convex mutation via
  * `canAct()` with the real event/media row. Never treat a `true` from this file as
  * authorisation.
  */
 
 import type { AccountState } from "@partybooth/contracts/accounts";
-import { accountStateAllows, hasCapability, type Action } from "@partybooth/contracts/permissions";
+import type { EventState } from "@partybooth/contracts/events";
+import {
+  accountStateAllows,
+  canAct,
+  hasCapability,
+  type Action,
+} from "@partybooth/contracts/permissions";
 import type { EventRole, Role } from "@partybooth/contracts/roles";
 
 export { EVENT_ROLES, type EventRole } from "@partybooth/contracts/roles";
@@ -107,4 +118,65 @@ export function canManageEvent(ctx: RoleContext): boolean {
 /** Submit photos and videos to the active event. Any joined, unlocked member. */
 export function canSubmitMedia(ctx: RoleContext): boolean {
   return allows(ctx, "media.upload");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Host tools, against a particular party                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the Host tab may offer for **this** event, in **this** state.
+ *
+ * One function returning one record rather than six exported predicates, because
+ * the screen asks all of them at once and every one of them needs the same two
+ * inputs. It also makes the whole table one assertion in a test, which is what
+ * catches the interesting case: that a co-host and an owner differ in exactly one
+ * place (`archive`), and that a locked account differs everywhere.
+ *
+ * Every answer is `canAct` from contracts, with the real `EventResource` — so the
+ * state gates (`isEditableEventState` for rotation and the invite code, "not
+ * already archived" for archiving) are the contract's, not a second copy here.
+ */
+export interface HostAbilities {
+  /** Approve and decline what is waiting. */
+  readonly moderate: boolean;
+  /** See the six-digit code and the QR token at all. */
+  readonly viewInviteCode: boolean;
+  /** Replace them. Hosts only ever rotate to a random code. */
+  readonly rotateInvite: boolean;
+  /** Open early, pause, resume. */
+  readonly changeState: boolean;
+  /** End the party. Owner only — a co-host operates a party, it does not end it. */
+  readonly archive: boolean;
+  /** Push the finish time out without ending anything. */
+  readonly updateSchedule: boolean;
+}
+
+export function hostAbilities(ctx: RoleContext, state: EventState): HostAbilities {
+  const role = effectiveRole(ctx);
+  if (role === null) {
+    return {
+      moderate: false,
+      viewInviteCode: false,
+      rotateInvite: false,
+      changeState: false,
+      archive: false,
+      updateSchedule: false,
+    };
+  }
+
+  const actor = { role, accountState: accountState(ctx) };
+  const resource = { kind: "event", state } as const;
+
+  return {
+    // `media.moderate` needs a media resource, so it stays a capability-level
+    // question here; the per-item gate (`processing` cannot be moderated) is
+    // applied per row by the queue, and by Convex in any case.
+    moderate: allows(ctx, "media.moderate"),
+    viewInviteCode: canAct(actor, "event.viewInviteCode", resource),
+    rotateInvite: canAct(actor, "event.rotateInvite", resource),
+    changeState: canAct(actor, "event.changeState", resource),
+    archive: canAct(actor, "event.archive", resource),
+    updateSchedule: canAct(actor, "event.updateSchedule", resource),
+  };
 }

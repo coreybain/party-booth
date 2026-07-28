@@ -20,6 +20,7 @@ import type { AuthClient as ConvexCompatibleAuthClient } from "@convex-dev/bette
 import { appConfig } from "../env";
 import { getAuthClient, type AuthClient } from "../lib/auth-client";
 import { getConvexClient } from "../lib/convex";
+import { ConnectedPushProvider } from "../push/provider";
 import { ConnectedUploadQueue, OfflineUploadQueue } from "../upload/queue-provider";
 
 import { LiveSessionProvider, OfflineSessionProvider } from "./session";
@@ -74,7 +75,15 @@ function ConfiguredProviders({
                 (a grant is only issued to an authenticated member), but above
                 the router, because the queue outlives any screen — a capture
                 keeps uploading while the guest is on the Photos tab. */}
-            <ConnectedUploadQueue siteUrl={config.siteUrl}>{children}</ConnectedUploadQueue>
+            <ConnectedUploadQueue siteUrl={config.siteUrl}>
+              {/* Same three reasons, plus one of its own: a notification tap
+                  navigates, so this has to sit above the router that answers
+                  it. `projectId` undefined means the build has no EAS project
+                  and the whole subsystem stays inert. */}
+              <ConnectedPushProvider projectId={config.easProjectId}>
+                {children}
+              </ConnectedPushProvider>
+            </ConnectedUploadQueue>
           </LiveSessionProvider>
         </AuthClientContext.Provider>
       </ConvexBetterAuthProvider>

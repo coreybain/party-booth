@@ -42,12 +42,19 @@ const EXPECTED_CAPABILITIES: Record<Action, readonly Role[]> = {
 
   // -- Events --------------------------------------------------------------
   "event.view": ["globalAdmin", "owner", "cohost", "guest"],
-  "event.update": ["owner"],
+  // Settings editing joined the co-host set in Sprint 5. PLAN.md's mitigation
+  // for solo moderation is "co-hosts and `automatic` mode as a pressure valve",
+  // and a co-host who cannot reach the moderation-mode switch is not one.
+  "event.update": ["owner", "cohost"],
   "event.updateSchedule": ["owner", "cohost"],
-  "event.changeModerationMode": ["owner"],
-  "event.changeState": ["globalAdmin", "owner"],
+  "event.changeModerationMode": ["owner", "cohost"],
+  // …but `changeState` is live/paused, and `archive` — ending the party — is
+  // not a co-host's call. `events.setState` demands both for `archived`.
+  "event.changeState": ["globalAdmin", "owner", "cohost"],
   "event.archive": ["globalAdmin", "owner"],
   "event.delete": ["owner"],
+  "event.scheduleDeletion": ["globalAdmin", "owner"],
+  "event.restoreDeletion": ["globalAdmin"],
   "event.transferOwnership": ["owner"],
   "event.viewInviteCode": ["globalAdmin", "owner", "cohost"],
   "event.rotateInvite": ["globalAdmin", "owner", "cohost"],
@@ -58,6 +65,9 @@ const EXPECTED_CAPABILITIES: Record<Action, readonly Role[]> = {
   // -- Memberships ---------------------------------------------------------
   "membership.list": ["globalAdmin", "owner", "cohost"],
   "membership.inviteCohost": ["owner"],
+  "membership.revokeCohostInvite": ["owner"],
+  // A co-host holds the capability, and `membershipGate` narrows what they may
+  // point it at: guests only. See the co-host matrix test below.
   "membership.revoke": ["globalAdmin", "owner", "cohost"],
   "membership.leave": ["cohost", "guest"],
 
@@ -120,10 +130,67 @@ describe("capability matrix", () => {
     expect(cohostOnly).toEqual(["membership.leave"]);
   });
 
-  it("never lets a cohost change ownership or destroy the event", () => {
-    for (const action of ["event.delete", "event.transferOwnership", "event.update"] as const) {
+  it("never lets a cohost change ownership, destroy the event, or grow the host list", () => {
+    for (const action of [
+      "event.delete",
+      "event.scheduleDeletion",
+      "event.transferOwnership",
+      "event.archive",
+      "membership.inviteCohost",
+      "membership.revokeCohostInvite",
+      "media.delete",
+    ] as const) {
       expect(hasCapability("cohost", action)).toBe(false);
     }
+  });
+
+  it("never lets a cohost touch the admin console or anybody's account", () => {
+    for (const action of [
+      "platform.inviteOrganiser",
+      "platform.viewAdminConsole",
+      "platform.viewAccounts",
+      "platform.viewAuditLog",
+      "account.lock",
+      "account.unlock",
+      "account.scheduleDeletion",
+      "account.restoreDeletion",
+    ] as const) {
+      expect(hasCapability("cohost", action)).toBe(false);
+    }
+  });
+
+  it("lets a cohost revoke a guest and refuses them another cohost or the owner", () => {
+    const event = { state: "live" } as const;
+    expect(
+      can("cohost", "membership.revoke", {
+        kind: "membership",
+        targetRole: "guest",
+        isSelf: false,
+        event,
+      }),
+    ).toBe(true);
+
+    for (const targetRole of ["cohost", "owner"] as const) {
+      expect(
+        can("cohost", "membership.revoke", {
+          kind: "membership",
+          targetRole,
+          isSelf: false,
+          event,
+        }),
+        `a cohost must not revoke a ${targetRole}`,
+      ).toBe(false);
+    }
+
+    // …while an owner still may remove a co-host.
+    expect(
+      can("owner", "membership.revoke", {
+        kind: "membership",
+        targetRole: "cohost",
+        isSelf: false,
+        event,
+      }),
+    ).toBe(true);
   });
 });
 

@@ -169,15 +169,22 @@ describe("events.update — permission isolation", () => {
     expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.name).toBe("Test party");
   });
 
-  it("refuses a co-host renaming the party or changing moderation", async () => {
-    // Co-hosts help run the party; they do not change what it is.
+  it("lets a co-host rename the party and change the moderation mode", async () => {
+    /*
+     * This reversed in Sprint 5, deliberately, and the reason is PLAN.md risk
+     * #4: solo moderation is mitigated by "co-hosts and `automatic` mode as a
+     * pressure valve", and a co-host who cannot reach the moderation-mode switch
+     * when the owner is on the dance floor is not a pressure valve. What a
+     * co-host still cannot do is change *who owns* the party — see the co-host
+     * matrix in `permissions.test.ts` and the tests below.
+     */
     const as = t.withIdentity({ subject: "cohost" });
-    await expect(as.mutation(api.events.update, { eventId, name: "Mine" })).rejects.toThrow(
-      /permission/i,
-    );
-    await expect(
-      as.mutation(api.events.update, { eventId, moderationMode: "automatic" }),
-    ).rejects.toThrow(/permission/i);
+    await as.mutation(api.events.update, { eventId, name: "Ours" });
+    await as.mutation(api.events.update, { eventId, moderationMode: "automatic" });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event?.name).toBe("Ours");
+    expect(event?.moderationMode).toBe("automatic");
   });
 
   it("lets a co-host move the schedule", async () => {
@@ -336,13 +343,28 @@ describe("events.setState", () => {
     expect(versions[0]?.status).toBe("active");
   });
 
-  it("refuses a co-host — changing state is an owner power", async () => {
+  it("lets a co-host pause and resume, and refuses them archiving", async () => {
+    /*
+     * The Sprint 5 split. Moving between `live` and `paused` is running the
+     * party, which is what a co-host is for; `archived` ends it, which is the
+     * owner's call. `event.archive` existed in the matrix from Sprint 1 and was
+     * read by nothing until `setState` started demanding it for this one
+     * destination.
+     */
     const cohostId = await seedUser(t, { authId: "cohost", email: "co@partybooth.test" });
     await seedMembership(t, eventId, cohostId, "cohost");
     const as = t.withIdentity({ subject: "cohost" });
-    await expect(as.mutation(api.events.setState, { eventId, state: "live" })).rejects.toThrow(
+
+    await as.mutation(api.events.setState, { eventId, state: "live" });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.state).toBe("live");
+
+    await as.mutation(api.events.setState, { eventId, state: "paused" });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.state).toBe("paused");
+
+    await expect(as.mutation(api.events.setState, { eventId, state: "archived" })).rejects.toThrow(
       /permission/i,
     );
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.state).toBe("paused");
   });
 
   it("does not offer deletionScheduled at all", async () => {

@@ -12,6 +12,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { ReadCtx } from "./guards";
+import { notifyPendingThreshold } from "./notifications";
 import { resolveStorageAdapter } from "./storage";
 import { mediaState, mediaType } from "./validators";
 
@@ -200,6 +201,32 @@ export async function settleAfterProcessing(
     updatedAt: now,
   });
   await applyCountChange(ctx, media.eventId, media.state, next, now);
+
+  /*
+   * The host pending-queue ping hangs off this, and nothing else.
+   *
+   * This is the one place in the product where an item *becomes* something a
+   * host has to act on — every other route into `pending` is a host's own
+   * decision, and telling a host about a queue they just created is noise. The
+   * counters are re-read rather than incremented locally because
+   * `applyCountChange` is what maintains them and they are exact.
+   *
+   * `notifyPendingThreshold` swallows every ordinary reason not to send (no
+   * devices, opted out, still under the threshold, already pinged this burst),
+   * so this line cannot fail an upload. See `lib/notifications.ts`.
+   */
+  if (next === "pending") {
+    const fresh = await ctx.db.get(media.eventId);
+    if (fresh) {
+      await notifyPendingThreshold(ctx, {
+        event: fresh,
+        pending: fresh.counts.pending,
+        excludeUserId: media.uploaderUserId,
+        now,
+      });
+    }
+  }
+
   return next;
 }
 
@@ -522,10 +549,29 @@ export async function projectMedia(
   const isOwn = media.uploaderUserId === options.viewerUserId;
   const isHost = options.viewerRole === "owner" || options.viewerRole === "cohost";
 
+  /*
+   * A global admin is served **no file URL of any kind**, ever.
+   *
+   * PLAN.md: the admin console has "no media access", and `CAPABILITIES` gives
+   * `globalAdmin` no `media.*` action at all — so in principle no admin can
+   * reach this function, because every read path asks for a media capability
+   * first. In principle is the problem. This is the single place a signed URL is
+   * minted, so it is the single place the invariant can be made true rather than
+   * implied, and the cost of stating it here is one comparison. A future query
+   * that forgets its capability check leaks counts instead of photographs.
+   *
+   * Note this is *stricter* than `mayServeOriginal`, which would happily serve
+   * an admin a metadata-stripped original: that function answers a privacy
+   * question about the file, and this one answers a policy question about the
+   * role.
+   */
+  const isAdmin = options.viewerRole === "globalAdmin";
   const viewer = { isOwn, role: options.viewerRole };
-  const originalKey = mayServeOriginal(media, viewer) ? media.storageKey : undefined;
-  const previewKey = mayServeDerivative(media, "preview", viewer) ? media.previewKey : undefined;
-  const posterKey = mayServeDerivative(media, "poster", viewer) ? media.posterKey : undefined;
+  const originalKey = !isAdmin && mayServeOriginal(media, viewer) ? media.storageKey : undefined;
+  const previewKey =
+    !isAdmin && mayServeDerivative(media, "preview", viewer) ? media.previewKey : undefined;
+  const posterKey =
+    !isAdmin && mayServeDerivative(media, "poster", viewer) ? media.posterKey : undefined;
 
   const [original, preview, poster] = await Promise.all([
     safeUrl(media.storageRegion, originalKey, ttl),

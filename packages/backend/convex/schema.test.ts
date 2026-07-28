@@ -108,6 +108,18 @@ describe("tables", () => {
         // pure view filter — nothing about the blocked person's media changes
         // for anybody else, which is why it is not a membership status.
         "userBlocks",
+
+        /* Sprint 5 ------------------------------------------------------- */
+        // One row per notification we decided to send. A Convex mutation has no
+        // `fetch`, so the decision and the delivery are two transactions with
+        // the scheduler between them, and this is what survives the gap.
+        "pushNotifications",
+        // The debounce memory — "a burst sends one ping" needs a shared
+        // counter, for the same reason `otpChallenges` and `joinAttempts` do.
+        "notificationThrottles",
+        // The invite-rotation budget. Counts successes, per event: a held-down
+        // rotate button writes one audit row per guest it removes.
+        "rotationAttempts",
       ].sort(),
     );
   });

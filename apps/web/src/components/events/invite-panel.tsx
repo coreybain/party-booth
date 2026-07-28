@@ -10,7 +10,12 @@ import type { EventState } from "@/lib/contracts";
 
 export interface InvitePanelProps {
   readonly code: string;
-  readonly token: string;
+  /**
+   * The QR credential. **Absent for a global admin**, who is served the code and
+   * not the token — see `convex/invites.ts`. The panel degrades to the six
+   * digits rather than pretending the QR failed to render.
+   */
+  readonly token?: string | undefined;
   readonly version: number;
   readonly state: EventState;
   readonly eventName: string;
@@ -35,7 +40,7 @@ export interface InvitePanelProps {
  * they can forward.
  */
 export function InvitePanel({ code, token, version, state, eventName }: InvitePanelProps) {
-  const url = joinUrl(token);
+  const url = token === undefined ? undefined : joinUrl(token);
   const fallback = joinFallbackUrl();
   const joinable = guestsCanJoin(state);
 
@@ -52,7 +57,13 @@ export function InvitePanel({ code, token, version, state, eventName }: InvitePa
         <div className="mx-auto w-full max-w-[13rem]">
           {url === undefined ? (
             <div className="grid aspect-square place-items-center rounded-2xl border border-dashed border-line p-4 text-center text-sm text-muted">
-              Set <Code>NEXT_PUBLIC_SITE_URL</Code> to generate the QR code.
+              {token === undefined ? (
+                <>The QR is shown to the host and co-hosts only. The six digits are here.</>
+              ) : (
+                <>
+                  Set <Code>NEXT_PUBLIC_SITE_URL</Code> to generate the QR code.
+                </>
+              )}
             </div>
           ) : (
             <QrCode value={url} label={`QR code to join ${eventName}`} className="p-3" />

@@ -326,6 +326,22 @@ async function removeRelationships(
     .collect()) {
     await ctx.db.delete(row._id);
   }
+  /*
+   * The notifications go with the devices.
+   *
+   * They carry a title and a body naming parties the person was at, which is
+   * exactly the kind of trace "delete my account" is about — and every one of
+   * them points at a `pushDevices` row that has just stopped existing, so
+   * leaving them would leave dangling references as well as data. Anything still
+   * `queued` is dropped rather than sent: `queuedBatch` skips a row whose device
+   * is gone, but the row itself should not outlive the account either.
+   */
+  for (const row of await ctx.db
+    .query("pushNotifications")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect()) {
+    await ctx.db.delete(row._id);
+  }
   for (const row of await ctx.db
     .query("userEmails")
     .withIndex("by_user", (q) => q.eq("userId", userId))

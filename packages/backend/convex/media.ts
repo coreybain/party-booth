@@ -69,6 +69,7 @@ import {
   type EventActor,
 } from "./lib/guards";
 import { parseInput } from "./lib/input";
+import { eventFreeze } from "./lib/lock";
 import {
   applyCountChange,
   attachDerivative,
@@ -794,6 +795,30 @@ export const completeUpload = mutation({
 
     const grant = consumption.grant;
 
+    /*
+     * The freeze, re-asked at the one place bytes are accepted.
+     *
+     * Every other check in the upload path asks about the *caller* or about the
+     * grant, and a grant is a capability issued when the answer was still yes.
+     * `admin.lockAccount` expires outstanding grants, but a freeze whose only
+     * enforcement is an enumeration performed at lock time is a freeze that the
+     * next code path to mint a grant quietly escapes — and TODO.md's RC5 is
+     * literally "lock the organiser and watch everything freeze".
+     *
+     * So it is asked here as well, where it cannot be missed: the grant is
+     * already spent (it must not survive a refusal) and the bytes go. The same
+     * line covers a deletion-scheduled or deleted owner, because `eventFreeze`
+     * is derived from the owner's account state rather than from the lock.
+     */
+    const event = await ctx.db.get(grant.eventId);
+    if (!event) {
+      return await discard(ctx, { grant, fileKey: input.fileKey, reason: "eventGone", now });
+    }
+    const freeze = await eventFreeze(ctx, event);
+    if (freeze.frozen) {
+      return await discard(ctx, { grant, fileKey: input.fileKey, reason: freeze.reason, now });
+    }
+
     const match = matchesGrant(grant, {
       fileKey: input.fileKey,
       byteSize: input.byteSize,
@@ -913,9 +938,8 @@ export const completeUpload = mutation({
     });
     await linkGrantToMedia(ctx, grant._id, media._id, now);
 
-    const event = await ctx.db.get(grant.eventId);
-    if (!event) throw notFound("That event");
-
+    // `event` was loaded and freeze-checked above, before the grant was allowed
+    // to produce anything at all.
     const settled = await ctx.db.get(media._id);
     const state = await settleAfterProcessing(ctx, settled ?? media, event, now);
 

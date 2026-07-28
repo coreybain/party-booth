@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { EventList } from "@/components/events/event-list";
+import { OrganiserOnly } from "@/components/events/organiser-only";
 import { PlusIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
@@ -24,12 +25,17 @@ export default function DashboardPage() {
         title="Your events"
         description="Open one to see its join code, QR and status."
         actions={
-          <Link href="/events/new">
-            <Button size="sm">
-              <PlusIcon size={16} />
-              New event
-            </Button>
-          </Link>
+          // A co-host is in the console and is not an organiser, so the button
+          // is not theirs — `platform.createEvent` would refuse it. See
+          // `OrganiserOnly`.
+          <OrganiserOnly>
+            <Link href="/events/new">
+              <Button size="sm">
+                <PlusIcon size={16} />
+                New event
+              </Button>
+            </Link>
+          </OrganiserOnly>
         }
       />
       <EventList />

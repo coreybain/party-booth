@@ -90,6 +90,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     api: {
       users: { requestAccountDeletion: { name: "requestAccountDeletion" } },
       moderation: { report: { name: "report" } },
+      push: {
+        preferences: { name: "preferences" },
+        updatePreferences: { name: "updatePreferences" },
+      },
       blocks: {
         block: { name: "block" },
         unblock: { name: "unblock" },
@@ -111,6 +115,23 @@ vi.mock("@/providers/session", () => ({ useSession: () => fake.session }));
 vi.mock("@/lib/sentry", () => ({
   captureHandledError: vi.fn(),
   isSentryEnabled: () => false,
+}));
+
+// Settings gained a notifications section in Sprint 5, so it now reaches the
+// push provider — which reaches `expo-file-system` for the little bit of state
+// that survives a restart, and that is a native module jsdom cannot import.
+// Faked at the provider rather than at the filesystem, so nothing about the
+// three App Review flows below depends on push behaviour. It has its own suite
+// (`push-lifecycle.test.tsx`); `appConfig.features.push` is `false` above, so
+// this screen renders the "no Expo project" line and nothing else.
+vi.mock("@/push/provider", () => ({
+  usePush: () => ({
+    permission: "undetermined",
+    step: "idle",
+    registered: false,
+    armPrompt: vi.fn(),
+    enableNotifications: vi.fn(),
+  }),
 }));
 
 const A_TARGET = {

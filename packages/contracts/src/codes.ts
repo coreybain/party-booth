@@ -302,3 +302,134 @@ export function generateSecret(bytes = 32, randomBytes: RandomBytes = defaultRan
   if (bytes <= 0) throw new RangeError("secret length must be positive");
   return encodeCrockford(randomBytes(bytes));
 }
+
+/* -------------------------------------------------------------------------- */
+/* Rotation budget                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How often an event's join credentials may be rotated.
+ *
+ * Rotation is cheap to ask for and expensive to absorb. Every rotation kills a
+ * printed sign — which is the point — but the revoke path also writes one audit
+ * row per guest it removes, so a host holding the button, or a script holding
+ * it, turns one fifty-guest party into an unbounded pile of writes in the middle
+ * of the evening it is supposed to be protecting.
+ *
+ * Five an hour, per event. A host who genuinely needs a sixth rotation inside an
+ * hour has a problem a new six-digit code is not going to solve, and the limit
+ * is per **event** rather than per account so that one compromised party cannot
+ * stop a host rotating a different one.
+ */
+export const ROTATION_POLICY = {
+  maxPerWindow: 5,
+  windowMs: 60 * 60_000,
+} as const;
+
+export interface RotationAttemptState {
+  count: number;
+  windowStartedAt: number;
+  lastRotatedAt: number;
+}
+
+export type RotationDecision = { allowed: true } | { allowed: false; retryAfterMs: number };
+
+/** May this event be rotated again right now? */
+export function canRotateInvite(
+  state: RotationAttemptState | undefined,
+  now: number,
+): RotationDecision {
+  if (!state) return { allowed: true };
+  const elapsed = now - state.windowStartedAt;
+  if (elapsed >= ROTATION_POLICY.windowMs) return { allowed: true };
+  if (state.count < ROTATION_POLICY.maxPerWindow) return { allowed: true };
+  return { allowed: false, retryAfterMs: ROTATION_POLICY.windowMs - elapsed };
+}
+
+/**
+ * Charge a rotation to the budget.
+ *
+ * Counts **successes**, like the upload-grant throttle and unlike the join one:
+ * the rotation itself is the scarce thing, so a refused rotation costs nothing.
+ * A window that has rolled over starts a fresh one at `now` rather than sliding,
+ * which keeps the arithmetic legible in an incident.
+ */
+export function registerRotation(
+  state: RotationAttemptState | undefined,
+  now: number,
+): RotationAttemptState {
+  if (!state || now - state.windowStartedAt >= ROTATION_POLICY.windowMs) {
+    return { count: 1, windowStartedAt: now, lastRotatedAt: now };
+  }
+  return { count: state.count + 1, windowStartedAt: state.windowStartedAt, lastRotatedAt: now };
+}
+
+/** The message a host sees when the budget is spent. */
+export const ROTATION_THROTTLED_MESSAGE =
+  "That party's code has been rotated several times in the last hour. Wait a little before rotating again.";
+
+/* -------------------------------------------------------------------------- */
+/* What rotation does, in words                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The keep-or-revoke choice, and the consequences of each.
+ *
+ * Rotation is the only control in the product that can take a party away from
+ * thirty people standing in the room, and it is offered on two surfaces — the
+ * organiser console's modal and the app's Host tab. Both were written
+ * independently and said *nearly* the same thing, which is the worst outcome
+ * available: a host who read "co-hosts are kept" on a laptop last week and
+ * "every guest is removed" on a phone tonight has to guess which one is current.
+ *
+ * So the sentences live here, with the arithmetic that enforces them. The bar
+ * from `copy.ts` applies and is met: two surfaces say the same thing, and if
+ * they ever stopped saying the same thing that would be a bug.
+ *
+ * These describe the **contract**, not a UI: `keep` and `revoke` are the two
+ * values of `invites.rotate`'s `keepExistingMemberships`, and every effect below
+ * is something that mutation actually does.
+ */
+export type RotationChoice = "keep" | "revoke";
+
+export interface RotationConsequence {
+  /** The option as a host chooses it. */
+  readonly label: string;
+  /** One line, for a switch's caption or a button's subtitle. */
+  readonly summary: string;
+  /** Plain-English, present tense, in the order they happen. */
+  readonly effects: readonly string[];
+}
+
+export const ROTATION_CONSEQUENCES: Readonly<Record<RotationChoice, RotationConsequence>> = {
+  keep: {
+    label: "Keep everyone who has already joined",
+    summary: "New code, same guest list.",
+    effects: [
+      "The printed QR and the old six digits stop working immediately.",
+      "Everyone already in the party stays in and keeps uploading.",
+      "Anyone new needs the new code — show them the QR on your screen.",
+    ],
+  },
+  revoke: {
+    label: "Remove everyone and start the guest list again",
+    summary: "New code, and the room has to re-join.",
+    effects: [
+      "The printed QR and the old six digits stop working immediately.",
+      "Every guest is removed from the party and their uploads in progress are cancelled.",
+      "Co-hosts are kept — only guests are removed.",
+      "Photos already submitted stay exactly where they are; nothing is deleted.",
+      "Guests can come back by scanning the new code, so have it up before you do this.",
+    ],
+  },
+};
+
+/**
+ * The API argument each choice means.
+ *
+ * The indirection is the point: `keepExistingMemberships` is a boolean, and a
+ * boolean at a call site is how "rotate and keep" ships as "rotate and sweep".
+ */
+export function keepExistingMemberships(choice: RotationChoice): boolean {
+  return choice === "keep";
+}

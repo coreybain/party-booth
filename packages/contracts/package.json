@@ -16,6 +16,7 @@
     "./join": "./src/join.ts",
     "./media": "./src/media.ts",
     "./permissions": "./src/permissions.ts",
+    "./push": "./src/push.ts",
     "./codes": "./src/codes.ts",
     "./otp": "./src/otp.ts",
     "./analytics": "./src/analytics.ts",

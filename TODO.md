@@ -117,15 +117,235 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 
 ## Sprint 5 — Sat 2 Aug: hosts, rotation, push, admin
 
-- [ ] Co-host invites (email), co-host permission enforcement everywhere (no delete/transfer/ownership)
-- [ ] Invite rotation: new code + QR token, keep-or-revoke choice, old version rejected at join
-- [ ] Host tab (app): QR/code, rotation, pending queue, quick approve/decline
-- [ ] Expo push: tokens, upload failure/recovery, event open/close, host pending-threshold pings
-- [ ] Admin console `/admin`: distinct shell, OTP + allowlist; invite organiser; accounts/events/asset/storage overview; lock/unlock; schedule/restore deletion; rotate codes (random or collision-checked specific); revoke memberships; confirmation + reason + immutable audit on every action
-- [ ] Account lock enforcement: suspends owner/co-host access, joins, uploads, slideshows across owned events
-- [ ] Cut order if behind (pre-agreed): specific-value rotation → job-health views → deletion-scheduling UI (script fallback)
+- [x] Co-host invites (email), co-host permission enforcement everywhere (no delete/transfer/ownership)
+- [x] Invite rotation: new code + QR token, keep-or-revoke choice, old version rejected at join
+- [x] Host tab (app): QR/code, rotation, pending queue, quick approve/decline
+- [x] Expo push: tokens, upload failure/recovery, event open/close, host pending-threshold pings
+- [x] Admin console `/admin`: distinct shell, OTP + allowlist; invite organiser; accounts/events/asset/storage overview; lock/unlock; schedule/restore deletion; rotate codes (random or collision-checked specific); revoke memberships; confirmation + reason + immutable audit on every action
+- [x] Account lock enforcement: suspends owner/co-host access, joins, uploads, slideshows across owned events
+- [x] Cut order if behind (pre-agreed): specific-value rotation → job-health views → deletion-scheduling UI (script fallback) — **nothing was cut.** All three shipped: specific-value rotation is collision-checked in Convex and entropy-checked in the console, job health is a live panel on `/admin`, and deletion scheduling has console UI for both accounts and events (no script fallback needed)
 
+**Genuinely not built, and deliberate:**
+
+- **Swipe-to-moderate on the Host tab** — approve/decline are buttons. A swipe needs
+  `react-native-gesture-handler` wiring that cannot be tested under jsdom, and two 52pt targets are
+  faster in a dim room. Revisit if the Sprint 6 rehearsal disagrees.
+- **`pendingExports` in job health reads a constant zero** — ZIP exports are P2 and there is no job
+  table to count yet. The field exists so the panel does not change shape when they land.
+- **No DOM-level component tests on web** (`vitest.config.ts` is `environment: "node"`). Component
+  logic is extracted and tested beside each component; browser-level testing is Sprint 6's Playwright
+  line, per PLAN.md.
+
+**RC5 is not ticked**: it is a manual two-account, two-phone verification, and Sprint 5's own rule is
+that a sprint is done when its RC is _verified_, not when the code is written. The three demos are
+covered by suites (`convex/lock.test.ts`, `convex/rotation.test.ts`, `src/test/host-tab.test.tsx`),
+which is not the same thing as having done it.
+
+**RC5's third scenario would have failed on the phones**, and that is now fixed rather than
+discovered on the night. "Lock the organiser and watch everything freeze" was true of every *new*
+read and write and false of the uploads already authorised: `lockAccount` expired only the locked
+person's own grants, so for the two minutes of `GRANT_POLICY.ttlMs` a guest's unspent grant still
+landed a file in the suspended party, moved its counters and pinged its hosts. The sweep now covers
+every grant the account holds anywhere **and** every grant anybody holds for a party it owns, and
+`media.completeUpload` re-asks the freeze question at the one place bytes are accepted — so the
+guarantee no longer rests on an enumeration performed once. `convex/lock.test.ts` exercises it with
+genuine guest and co-host grants; the version that shipped used a grant attributed to the owner,
+which is why the suite was green over the gap.
+
+**Still owner-action, and still not ticked:** the two-account, two-phone exercise itself. The code
+gap is closed and the demos are covered offline, but nobody has yet held two phones and watched it.
 **RC5:** second account as co-host moderates from their phone; rotate the code mid-"event" and confirm the old QR is dead; lock the organiser from `/admin` and watch everything freeze.
+> **Backend status (Sprint 5).** Everything the lines above need from Convex is in and tested
+> offline — **627 backend tests**, 495 contracts tests, `pnpm typecheck` / `pnpm lint` (0 errors) /
+> `pnpm format:check` green with an **empty environment**. New surface: `convex/cohosts.ts` (invite
+> by email through the existing Resend sender, revoke the invitation, remove a co-host),
+> `convex/push.ts` + `convex/lib/push/` (device registration, per-category preferences, dispatch via
+> the scheduler, Expo HTTP behind an adapter with a fake), `convex/admin.ts` (accounts, events, job
+> health, audit log, organiser invite, lock/unlock, schedule/restore deletion for accounts *and*
+> events, code rotation random-or-specific, membership revocation) and `convex/lib/lock.ts`.
+>
+> **Nothing on the cut list was cut**: specific-value rotation, job-health figures and the deletion
+> scheduling all shipped. `pendingExports` in job health deliberately reads a constant zero — ZIP
+> exports are P2 and there is no job table to count.
+>
+> **Three findings the sprint turned up, all fixed here rather than deferred**, recorded in
+> [ADR 0010](docs/adr/0010-lock-sweep-and-push-adapter.md):
+>
+> - **Locking an account froze nothing but the account.** Every check in the product asked about the
+>   *caller*; none asked about the *party*. A locked host's co-host kept moderating, their guests
+>   kept uploading and new guests kept joining off a printed QR. The freeze is now derived from the
+>   event's owner and asserted in `requireEventActor` — the one function every event-scoped read and
+>   write passes through — plus `join.ts`, which is the only path that reaches an event without a
+>   membership. This is the RC5 demo, and it is now a suite (`convex/lock.test.ts`).
+> - **`envHas` returned `true` for unset optional variables**, because an optional zod schema parses
+>   an absent value successfully. Every `serverFeatures` flag reading an optional variable was
+>   permanently on — `sentry` with no DSN, `expoPush` with no Expo project, which in tests meant the
+>   push suite reached the real `exp.host`. One line in `packages/env`; it now asks about the value.
+> - **A revoked membership survived a rotation sweep as a permanent ban.** `keepExistingMemberships:
+>   false` revokes every guest, and the join path refused any revoked membership even on a valid new
+>   code — so "rotate and revoke" banned the whole guest list for ever. `memberships.
+>   revokedByRotation` now distinguishes a *sweep* from a host's deliberate *removal*: a removal
+>   still survives a fresh scan, a sweep does not.
+>
+> **Contract changes applied** (all in `@partybooth/contracts`, all with the permission matrix test
+> updated): co-hosts gained `event.update`, `event.changeModerationMode` and `event.changeState` —
+> PLAN.md's mitigation for solo moderation is "co-hosts and `automatic` mode as a pressure valve",
+> and a co-host who cannot reach the switch is not one — and **lost** the ability to revoke another
+> co-host or to archive the event. `event.archive` existed in the matrix since Sprint 1 and was read
+> by nothing; `events.setState` now demands it for the `archived` destination.
+>
+> **Owner-action items:** none new for the party path. Push delivery needs `EAS_PROJECT_ID` set on
+> the Convex deployment (and optionally `EXPO_ACCESS_TOKEN` for enhanced push security) — both are
+> already in `.env.example`; with neither set, notifications are queued, marked `dropped` and
+> nothing throws. `ADMIN_EMAIL_ALLOWLIST` must contain your address before `/admin` will answer.
+
+> **Mobile status (Sprint 5).** `apps/mobile` is code-complete for its two lines — the Host tab and
+> Expo push — plus the upload-queue reporting the failure/recovery ping needs. **489 mobile tests**
+> (was 390); `pnpm typecheck`, `pnpm lint`, `pnpm test` and `expo export --platform all` all pass
+> with an **empty** environment.
+>
+> The **Host tab** replaces the Sprint 2 scaffold: the six-digit code spaced for reading aloud and a
+> QR of the join URL, rotation behind a keep-or-revoke modal, the party controls (open early, pause,
+> resume, add an hour, end — the last owner-only), the live pending queue with one-tap approve and
+> decline plus "approve everything", and reported items surfaced above the queue with their reason.
+> Nothing is optimistic: every control shown is one `hostAbilities` says the contract would allow
+> for this role in this event state, and a partial refusal from `moderation.moderate` is reported
+> verbatim. A **locked** host now gets a screen that says their account is locked, rather than the
+> guest's "ask the host to add you as a co-host" — that is the RC5 demo seen from the phone.
+>
+> The QR is drawn with `View`s rather than SVG. `react-native-svg` is a native module, so adding it
+> during launch week means a new EAS build for every client that wants to see a code;
+> `src/lib/qr-view.ts` run-length-encodes `@partybooth/contracts/qr`'s matrix instead, so the phone
+> and the printed signage still go through one encoder.
+>
+> **Push** follows the current Expo docs (fetched, not remembered — `shouldShowBanner`/`shouldShowList`
+> rather than the deprecated `shouldShowAlert`, and an explicit `projectId`). `expo-notifications` is
+> reached through an adapter with a fake and is imported **dynamically**, so a build with no EAS
+> project never evaluates it and the empty-environment export stays clean. The permission prompt is
+> armed by a **successful join** and fired on the effect that follows — never at launch, because iOS
+> gives one prompt per install and spending it on the splash screen buys a refusal that cannot be
+> revisited. Sign-out gives the token back *before* the session goes (`push.unregisterDevice` is
+> authenticated), and never blocks the sign-out if it cannot. A tap switches to the party the
+> notification names and then navigates: upload trouble → My media, party opened → Camera, host
+> queue → Host tab. Settings gained per-category toggles and the threshold picker, both wired to
+> `push.preferences` / `push.updatePreferences`, with the host category hidden from somebody who
+> hosts nothing.
+>
+> **Contract-change request (applied, and it is a cross-package edit worth reviewing):**
+> `packages/backend/src/client-api.ts` had no `invites` or `push` section, so the typed client view
+> did not describe the two function groups Sprint 5 added for clients. Both were added there rather
+> than restated in each app, which is that file's own rule. **Still outstanding:** the notification
+> `data` payload (`kind` / `eventId` / `transition` / `captureId`) is written by
+> `convex/lib/notifications.ts` and parsed by `apps/mobile/src/push/routing.ts` from a restated
+> shape — it should be hoisted into `@partybooth/contracts/push` so the two halves of the routing
+> table cannot drift.
+>
+> **Owner-action item (mobile):** `EXPO_PUBLIC_EAS_PROJECT_ID` must be set in the **app's** build
+> environment as well as `EAS_PROJECT_ID` on Convex. Without it the app registers no device and
+> Settings says so in plain words; with only the Convex half set, the server queues notifications
+> for devices that were never registered.
+
+> **Web status (Sprint 5).** `apps/web` is code-complete for co-host management, rotation and the
+> **full** `/admin` console — four routes under the existing shell (`/admin`, `/admin/accounts`,
+> `/admin/events`, `/admin/audit`) rather than tabs, so an admin looking at a locked account can send
+> somebody a link. **381 web tests** (was 321). Every privileged action goes through one
+> `ConfirmAction` dialog: consequences listed before the field, confirm dead until `adminReasonSchema`
+> parses, and the typed reason survives a failure. Which buttons a row offers is read off
+> `accountStateMachine` rather than a local `switch`, and the audit viewer imports no mutation at all,
+> so it is read-only by construction. Nothing under `components/admin/` renders an image.
+>
+> **Two live bugs found and fixed, both RC5-blocking.** (1) A co-host could not open the web console
+> at all — `isOrganiserAuthorised` demanded `isOrganiser`, which accepting a co-host invitation
+> deliberately does not set, so RC5's "second account as co-host moderates" was bounced out of
+> `/media` before it started. Console access and `platform.createEvent` have consequently come apart,
+> so "New event" is now gated separately on both the dashboard button and `/events/new`. (2) Any
+> signed-in non-organiser — including every locked account — hit an infinite redirect between `/` and
+> the organiser layout; both now ask the same four-valued gate.
+
+> **Integration (Sprint 5).** Merged on `feat/sprint5` with the gate green: **2039 tests**
+> (contracts 505, backend 627, web 381, mobile 489, env 37), `pnpm typecheck`, `pnpm lint`,
+> `pnpm format:check`, plus `next build` and `expo export --platform all` with an **empty**
+> environment.
+>
+> Four duplications were reconciled into `@partybooth/contracts` rather than left to drift:
+>
+> - **The notification routing payload.** The backend wrote the `data` bag as string literals and the
+>   app parsed it from a hand-copied list of kinds. Both halves are now
+>   `uploadStatusPayload`/`eventLifecyclePayload`/`pendingThresholdPayload` and `parsePushPayload`,
+>   pinned by a builder→parser round-trip test.
+> - **The push message copy.** `contracts/push.ts` had exported `uploadFailedMessage` and four
+>   siblings since the sprint began and **nothing imported them** — the backend restated all five
+>   inline. It now calls them.
+> - **The rotation consequence copy.** `ROTATION_CONSEQUENCES` moved to `contracts/codes.ts` beside
+>   the budget it describes; the console and the Host tab now render the same sentences for the same
+>   irreversible choice.
+> - **The `cohosts` and `admin` wire shapes** moved from `apps/web/src/lib/convex-api.ts` into
+>   `packages/backend/src/client-api.ts`, which is that file's own stated rule. The web seam is a
+>   seam again and describes no wire shape.
+>
+> **One bug found while verifying the Expo API against the live docs.** `InvalidProviderToken` was
+> missing from `ExpoPushErrorCode`, and more seriously the three *project-credential* errors were
+> exempt from token pruning but **not** from the failure counter — so a rotated APNs key, which fails
+> for every device at once, would have disabled the entire push table on the third send. That is the
+> outcome the pruning list is deliberately narrow to avoid, reached slowly instead of immediately.
+
+> **Audit fixes (Sprint 5).** An audit of the merged sprint found twelve issues; all of the critical
+> and major ones and most of the minor ones are fixed on `feat/sprint5`. Grouped by what they were
+> really about:
+>
+> - **The freeze did not reach authorised uploads.** See the RC5 note above. `lockAccount` now sweeps
+>   account-wide *and* per-owned-event, `scheduleAccountDeletion` sweeps too (so the console's "access
+>   is revoked immediately, exactly as a lock does" is finally true of both routes, and the
+>   self-service deletion path inherits it), and `completeUpload` discards bytes that arrive for a
+>   frozen party.
+> - **The admin console could pivot into a stranger's gallery.** `event.viewInviteCode` served global
+>   admins the **QR token**, a 160-bit bearer credential sufficient to call `join.join`; the resulting
+>   `guest` membership outranks the admin role in `resolveEventRole`, so `media.viewApproved` would
+>   have succeeded and the console's defining "no media access" would have been one join away from
+>   false. `invites.current`, `events.home` and `admin.rotateEventCode` now serve the code and never
+>   the token, and `join`/`previewByCode` refuse an allowlisted address a **new** membership in an
+>   event it does not own — the same shape as `assertDemoConfinement`. Two barriers, because either
+>   alone is one edit from being removed.
+> - **A removed co-host could restore their own seat.** `memberships.revokedByRotation` was only ever
+>   set, never cleared or overwritten, so a row that had once been swept still read as a *sweep* after
+>   a host's deliberate *removal* — and `join.admit` inherited the row's old `role`, handing back the
+>   moderation queue and `event.rotateInvite` off a QR on a wall. The flag now means "swept and not
+>   since re-decided": matching clears it, both removal mutations write `false`, `admit` re-derives
+>   the role (a scan is worth a `guest` seat and nothing more), and a guest sitting in the swept state
+>   can now be banned at all, which they could not before.
+> - **Push retries did not exist.** Re-verified against
+>   <https://docs.expo.dev/push-notifications/sending-notifications/>: network errors, 429s and 5xx
+>   responses want exponential backoff, and so does a `MessageRateExceeded` ticket. All four now bump
+>   an attempt counter, set `nextAttemptAt` and book their own retry, bounded at five attempts; a
+>   non-retryable 4xx drops the chunk instead of retrying a request the service will always refuse.
+>   Receipt checking was one-shot and now re-books itself, retires a ticket once Expo's 24-hour
+>   receipt window elapses, and walks `sent` rows by send time — without retirement, permanently-stuck
+>   rows filled the sweep's window and starved newer `DeviceNotRegistered` receipts out of it.
+> - **Device health blamed the phone for things that were not the phone.** `MessageTooBig` is a defect
+>   in the copy we composed and fails identically for every device, so it no longer counts; and a
+>   later delivery success no longer clears `disabledAt`, because Expo's instruction for
+>   `DeviceNotRegistered` is to stop sending "until it re-registers with your server".
+>   `registerDevice` is now the only path that switches a token back on. Party names are also
+>   sanitised before they reach a lock screen — an event name is free text and a newline in one let
+>   its author compose what reads as a second sentence from PartyBooth.
+> - **Inviting an organiser had no confirmation step**, which contradicted both PLAN.md and this
+>   file's own claim that every privileged admin action goes through `ConfirmAction`. It does now.
+> - **Signed read URLs cannot be revoked**, so the mitigation is the clock and the copy. The three
+>   host-only surfaces that serve `pending` originals (`moderation.pending`, `moderation.flagged`,
+>   `stats.recentSubmissions`) now mint 60-second URLs instead of ten-minute ones; the approved
+>   gallery keeps the ten minutes, because there the exposure is content the member was legitimately
+>   shown and a slideshow must not blink. The removal and lock copy state the residual window rather
+>   than implying access stops instantly.
+>
+> **One finding rejected, with reasons.** `registerDevice` still reassigns a `pushDevices` row on a
+> bare token match, so anyone who learns a victim's Expo push token can take the row over. Both
+> proposed fixes are more than a fix: (a) letting two rows hold one token breaks the `by_token`
+> `.unique()` read and delivers the same device two accounts' notifications until the prune lands,
+> which is worse than the bug; (b) binding registration to an installation id needs a new field on the
+> mutation, on `pushDevices`, and a matching change in `apps/mobile`, which is a **contract change**
+> and is recorded as one below rather than smuggled into a fix pass. The message-composition half of
+> that finding *is* fixed — see the sanitising above — so the remaining exposure is silence rather
+> than attacker-controlled text.
 
 ---
 

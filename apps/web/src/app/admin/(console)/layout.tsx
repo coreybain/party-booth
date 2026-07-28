@@ -6,11 +6,8 @@ import { PreviewModeBanner } from "@/components/backend-not-configured";
 import { AppShell } from "@/components/layout/app-shell";
 import { ShieldIcon } from "@/components/icons";
 import { SignOutButton } from "@/components/sign-out-button";
-import {
-  isAuthenticated,
-  isGlobalAdminAuthorised,
-  isServerBackendConfigured,
-} from "@/lib/auth-server";
+import { AdminNav } from "@/components/admin/admin-nav";
+import { getAdminAccess, isServerBackendConfigured } from "@/lib/auth-server";
 
 /**
  * The authenticated global-admin shell.
@@ -34,6 +31,10 @@ import {
  * A non-admin gets `notFound()` rather than a redirect. A bounce to
  * `/admin/login` from a page they are already signed in for confirms that the
  * console exists and that they are simply not on the list; a 404 says nothing.
+ *
+ * A staff account that has been **locked** is the one case that is neither: it
+ * is on the list and it is not allowed in, and showing it a 404 about a console
+ * it built helps nobody. It goes to `/account/blocked`, same as an organiser.
  */
 
 /** Never prerender the admin shell. See the organiser layout for the rationale. */
@@ -42,8 +43,10 @@ export default async function AdminConsoleLayout({ children }: { readonly childr
   const previewMode = !isServerBackendConfigured;
 
   if (!previewMode) {
-    if (!(await isAuthenticated())) redirect("/admin/login");
-    if (!(await isGlobalAdminAuthorised())) notFound();
+    const access = await getAdminAccess();
+    if (access === "signedOut") redirect("/admin/login");
+    if (access === "needsInvitation") notFound();
+    if (access !== "ok") redirect("/account/blocked");
   }
 
   return (
@@ -67,6 +70,7 @@ export default async function AdminConsoleLayout({ children }: { readonly childr
         </span>
       }
       headerRight={<SignOutButton redirectTo="/admin/login" />}
+      nav={<AdminNav />}
     >
       {children}
     </AppShell>

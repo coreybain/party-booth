@@ -58,6 +58,28 @@ export const SIGNED_READ_URL_TTL_SECONDS = 10 * 60;
  */
 export const SIGNED_DOWNLOAD_URL_TTL_SECONDS = 60;
 
+/**
+ * The TTL for **host-only review surfaces**: the moderation queue, the reported
+ * list, and the organiser home's recent submissions.
+ *
+ * A signed URL cannot be revoked. Removing a co-host, revoking a membership,
+ * sweeping on rotation or locking the owner all cut every *new* read instantly —
+ * `requireEventActor` sees no membership and throws — but a URL already minted
+ * keeps resolving at the provider until it expires. The mitigation is therefore
+ * the clock, applied where the exposure is worst.
+ *
+ * These three paths are the ones that hand out **`pending` originals**: items a
+ * guest may never be shown at all, only ever visible because the viewer was a
+ * host at the moment they polled. They are also continuously polled by an open
+ * console, so a short expiry costs nothing — the next poll mints a fresh URL. A
+ * removed co-host's residual window is a minute rather than ten.
+ *
+ * The approved gallery deliberately keeps {@link SIGNED_READ_URL_TTL_SECONDS}:
+ * there the exposure is content the member was legitimately shown, and a
+ * slideshow left running on a TV must not blink every sixty seconds.
+ */
+export const SIGNED_HOST_REVIEW_URL_TTL_SECONDS = 60;
+
 export interface SignedReadUrl {
   url: string;
   /** Epoch milliseconds. Clients refresh rather than serve a dead image. */

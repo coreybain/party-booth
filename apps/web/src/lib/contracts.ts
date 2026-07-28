@@ -28,6 +28,75 @@ export {
 } from "@partybooth/contracts/codes";
 
 /**
+ * Invite rotation, Sprint 5.
+ *
+ * `canRotateInvite` and `registerRotation` are the **same** pure budget the
+ * Convex mutation charges (`convex/lib/rotation-throttle.ts` persists what they
+ * compute). Running them client-side is what lets the rotate button grey itself
+ * out with a countdown after the fifth rotation in an hour, instead of offering
+ * a control whose only outcome is a `rateLimited` error — and because it is one
+ * definition, the countdown cannot disagree with the refusal.
+ *
+ * `validateSpecificEventCode` is the admin console's collision-and-entropy check
+ * for a chosen six digits. It is deliberately **not** the whole check: only
+ * Convex can know whether another party already holds that number.
+ *
+ * `ROTATION_CONSEQUENCES` is the keep-or-revoke copy, shared with the app's Host
+ * tab. Both surfaces offer the same irreversible choice, so they describe it in
+ * the same sentences or one of them is lying.
+ */
+export {
+  canRotateInvite,
+  eventCodeSchema,
+  keepExistingMemberships,
+  registerRotation,
+  ROTATION_CONSEQUENCES,
+  ROTATION_POLICY,
+  ROTATION_THROTTLED_MESSAGE,
+  validateSpecificEventCode,
+  type RotationAttemptState,
+  type RotationChoice,
+  type RotationConsequence,
+  type RotationDecision,
+  type SpecificCodeRejection,
+} from "@partybooth/contracts/codes";
+
+/**
+ * Account lifecycle, for the admin console and the locked screens.
+ *
+ * `accountStateMachine` is what decides which of lock / unlock / schedule
+ * deletion / restore a row is offered: the console reads the legal transitions
+ * rather than hand-writing a second copy of the table that Convex would then
+ * refuse.
+ */
+export {
+  ACCOUNT_STATES,
+  accountStateMachine,
+  canAccountSignIn,
+  isAccountActive,
+  type AccountState,
+} from "@partybooth/contracts/accounts";
+
+/**
+ * The audit vocabulary the `/admin` log viewer renders and filters on.
+ *
+ * `AUDIT_ACTIONS_REQUIRING_REASON` is not decoration: the console must not offer
+ * a confirm button for one of those actions until a reason has been typed, and
+ * `writeAuditEvent` in Convex throws rather than writing a blank one. Two halves
+ * of one rule, from one list.
+ */
+export {
+  ADMIN_CONSOLE_AUDIT_ACTIONS,
+  AUDIT_ACTION_NAMES,
+  AUDIT_ACTIONS,
+  AUDIT_ACTIONS_REQUIRING_REASON,
+  auditActionRequiresReason,
+  isAuditAction,
+  type AuditAction,
+  type AuditActionKey,
+} from "@partybooth/contracts/analytics";
+
+/**
  * The QR encoder. Pure, and shared with `apps/mobile`'s host tab, so the symbol
  * on the laptop and the symbol on the phone are the same bits — see
  * `packages/contracts/src/qr.ts`. Rendering stays local: this app draws inline
@@ -74,6 +143,26 @@ export {
   hexColorSchema,
   timeZoneSchema,
   updateEventInputSchema,
+} from "@partybooth/contracts/schemas";
+
+/**
+ * The input schemas the Sprint 5 forms validate against.
+ *
+ * `adminReasonSchema` is the one that matters: PLAN.md's rule for the console is
+ * "confirmation + reason + immutable audit on **every** action", and this is the
+ * definition both the form and `parseInput` in Convex run. A reason the console
+ * accepted and the backend refused would be the worst of both.
+ */
+export {
+  ADMIN_ROTATION_MODES,
+  adminReasonSchema,
+  adminRotateCodeInputSchema,
+  emailSchema,
+  inviteCohostInputSchema,
+  inviteOrganiserInputSchema,
+  MEMBERSHIP_STATUSES,
+  type AdminRotationMode,
+  type MembershipStatus,
 } from "@partybooth/contracts/schemas";
 
 /* -------------------------------------------------------------------------- */

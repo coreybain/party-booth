@@ -108,6 +108,16 @@ export const AUDIT_ACTIONS = {
   eventDeleted: "event.deleted",
   eventOwnershipTransferred: "event.ownership_transferred",
   inviteRotated: "event.invite_rotated",
+  /**
+   * An admin queued an event for removal, and cancelled the queue.
+   *
+   * Separate from {@link AUDIT_ACTIONS.eventDeleted}, which is the owner's
+   * irreversible one. Scheduling is reversible for thirty days and the pair has
+   * to read as a pair in the log — "who took this party offline on Saturday and
+   * who put it back" is one question.
+   */
+  eventDeletionScheduled: "event.deletion_scheduled",
+  eventDeletionRestored: "event.deletion_restored",
 
   membershipCreated: "membership.created",
   membershipRevoked: "membership.revoked",
@@ -127,6 +137,15 @@ export const AUDIT_ACTIONS = {
   cohostInvited: "membership.cohost_invited",
   /** A verified email matched a pending co-host invite and was elevated. */
   cohostInviteAccepted: "membership.cohost_invite_accepted",
+  /**
+   * An owner withdrew a co-host invitation that had not been accepted yet.
+   *
+   * Distinct from {@link AUDIT_ACTIONS.membershipRevoked}, which is about a
+   * person who is already in the party. This one is about an address that never
+   * turned up — and the two have different answers to "did they ever see the
+   * photos", which is the question that gets asked.
+   */
+  cohostInviteRevoked: "membership.cohost_invite_revoked",
 
   /**
    * A short-lived upload grant was issued. Audited, not merely counted, because
@@ -191,6 +210,24 @@ export const AUDIT_ACTIONS = {
   accountDeletionRestored: "account.deletion_restored",
   accountDeleted: "account.deleted",
 
+  /* --- Push notifications ------------------------------------------------ */
+
+  /**
+   * A device registered — or de-registered — an Expo push token.
+   *
+   * Audited rather than merely counted because a push token is a capability to
+   * reach a person's lock screen, and "which devices could PartyBooth buzz on
+   * the night of the party" has to be answerable afterwards. The token itself is
+   * **never** in the row; the device id is.
+   */
+  pushDeviceRegistered: "push.device_registered",
+  pushDeviceRemoved: "push.device_removed",
+  /**
+   * A token was switched off by the delivery path rather than by its owner —
+   * Expo answered `DeviceNotRegistered`, or it failed once too often.
+   */
+  pushDeviceDisabled: "push.device_disabled",
+
   adminSignedIn: "admin.signed_in",
   adminSignInRejected: "admin.sign_in_rejected",
 
@@ -218,6 +255,14 @@ export function isAuditAction(value: unknown): value is AuditAction {
 /**
  * Audit actions the admin console must not perform without a typed reason.
  * Everything destructive or account-affecting is on this list.
+ *
+ * PLAN.md asks for "confirmation + reason + immutable audit on **every**
+ * action" in the console, so every action an admin can take from `/admin` is
+ * here — including `organiser.invited`, which is not destructive but is the one
+ * that grows the private beta and therefore the one somebody will ask about.
+ * {@link writeAuditEvent} in the backend throws rather than writing a row with a
+ * blank reason, which is what makes the requirement enforceable somewhere other
+ * than the form.
  */
 export const AUDIT_ACTIONS_REQUIRING_REASON = [
   AUDIT_ACTIONS.accountLocked,
@@ -225,10 +270,33 @@ export const AUDIT_ACTIONS_REQUIRING_REASON = [
   AUDIT_ACTIONS.accountDeletionScheduled,
   AUDIT_ACTIONS.accountDeletionRestored,
   AUDIT_ACTIONS.eventDeleted,
+  AUDIT_ACTIONS.eventDeletionScheduled,
+  AUDIT_ACTIONS.eventDeletionRestored,
   AUDIT_ACTIONS.membershipRevoked,
   AUDIT_ACTIONS.inviteRotated,
+  AUDIT_ACTIONS.organiserInvited,
 ] as const satisfies readonly AuditAction[];
 
 export function auditActionRequiresReason(action: AuditAction): boolean {
   return (AUDIT_ACTIONS_REQUIRING_REASON as readonly AuditAction[]).includes(action);
 }
+
+/**
+ * Every action the **admin console** performs, as opposed to actions an admin
+ * happens to be able to see.
+ *
+ * Exported so a test can assert the two invariants PLAN.md attaches to the
+ * console — every one of them requires a reason, and every one of them writes a
+ * row — over a list rather than over whichever mutations somebody remembered.
+ */
+export const ADMIN_CONSOLE_AUDIT_ACTIONS = [
+  AUDIT_ACTIONS.organiserInvited,
+  AUDIT_ACTIONS.accountLocked,
+  AUDIT_ACTIONS.accountUnlocked,
+  AUDIT_ACTIONS.accountDeletionScheduled,
+  AUDIT_ACTIONS.accountDeletionRestored,
+  AUDIT_ACTIONS.eventDeletionScheduled,
+  AUDIT_ACTIONS.eventDeletionRestored,
+  AUDIT_ACTIONS.inviteRotated,
+  AUDIT_ACTIONS.membershipRevoked,
+] as const satisfies readonly AuditAction[];

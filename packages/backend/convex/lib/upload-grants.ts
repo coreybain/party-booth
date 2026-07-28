@@ -213,3 +213,99 @@ export async function expireGrantsForCapture(
   }
   return expired;
 }
+
+/**
+ * Retire every unspent grant one account holds for one event.
+ *
+ * Called when a membership goes away — an invite rotation that does not keep
+ * memberships, an admin revoking a seat, a host removing a co-host. Same
+ * argument as {@link expireGrantsForCapture}, one level up: the completion path
+ * validates the grant rather than the membership, so a removal that leaves live
+ * grants behind is a removal somebody can upload through.
+ *
+ * Scoped to the event on purpose. Being thrown out of one party says nothing
+ * about the photograph you are halfway through sending to another.
+ */
+export async function expireGrantsForUser(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  userId: Id<"users">,
+  now: number,
+): Promise<number> {
+  const grants = await ctx.db
+    .query("uploadGrants")
+    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+    .collect();
+
+  let expired = 0;
+  for (const grant of grants) {
+    if (grant.eventId !== eventId) continue;
+    await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+    expired += 1;
+  }
+  return expired;
+}
+
+/**
+ * Retire every unspent grant **anybody** holds for one event.
+ *
+ * The freeze instrument, next to {@link expireGrantsForUser}'s removal
+ * instrument. Locking a host suspends the whole party, and a sweep that only
+ * expired the *locked person's own* grants left every guest's live grant intact
+ * — so for the two minutes of `GRANT_POLICY.ttlMs` a guest could still land a
+ * file in a party the console says is frozen, move its counters, and ping the
+ * hosts of an event that is supposed to be stopped. The console's own copy
+ * promises "guests stop uploading", so this is the write that makes the sentence
+ * true.
+ *
+ * There is no `by_event_and_status` index, and adding one to serve a rare admin
+ * action would cost every upload a second index write; `by_event_and_capture`
+ * covers the same rows for a scan that runs once per lock.
+ */
+export async function expireGrantsForEvent(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  now: number,
+): Promise<number> {
+  const grants = await ctx.db
+    .query("uploadGrants")
+    .withIndex("by_event_and_capture", (q) => q.eq("eventId", eventId))
+    .collect();
+
+  let expired = 0;
+  for (const grant of grants) {
+    if (grant.status !== "issued") continue;
+    await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+    expired += 1;
+  }
+  return expired;
+}
+
+/**
+ * Retire every unspent grant one account holds, in **every** event.
+ *
+ * Used when the account itself stops being allowed to do things — a lock, or a
+ * scheduled deletion. Unlike {@link expireGrantsForUser} this is deliberately
+ * not event-scoped: the premise there is "you were thrown out of one party",
+ * and the premise here is "this account may not upload anywhere", which
+ * includes the parties they are merely a guest or a co-host in.
+ *
+ * It exists because `completeUpload` validates the **grant**, not the account
+ * state — so without this, an account suspended at 1am keeps completing uploads
+ * for as long as its last grant lives.
+ */
+export async function expireGrantsForAccount(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  now: number,
+): Promise<number> {
+  const grants = await ctx.db
+    .query("uploadGrants")
+    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+    .collect();
+
+  for (const grant of grants) {
+    await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+  }
+  return grants.length;
+}

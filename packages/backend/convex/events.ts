@@ -30,6 +30,8 @@ import {
   toPermissionActor,
 } from "./lib/guards";
 import { parseInput } from "./lib/input";
+import { eventIsUsable } from "./lib/lock";
+import { notifyEventLifecycle } from "./lib/notifications";
 import { eventState, moderationMode, storageRegion } from "./lib/validators";
 
 /**
@@ -353,10 +355,34 @@ export const setState = mutation({
     const actor = await requireEventActor(ctx, args.eventId);
     const input = parseInput(setEventStateInputSchema, args);
 
+    // A host on their way out of the product must not keep opening and closing
+    // parties. `requireEventActor` resolves through `requireUser`, deliberately,
+    // so this is checked here or not at all — the same shape as `moderate`.
+    if (actor.user.accountState !== "active") {
+      throw forbidden("This account cannot change the event right now.");
+    }
+
     requirePermission(toPermissionActor(actor.user, actor.role), "event.changeState", {
       kind: "event",
       state: actor.event.state,
     });
+
+    /*
+     * Archiving is a second, narrower capability.
+     *
+     * `event.changeState` moves an event between `live` and `paused`, which is a
+     * co-host's job during a party — PLAN.md's pressure valve. Ending the party
+     * is not: `event.archive` is owner and admin only, and this is the line that
+     * makes the distinction real. Before Sprint 5, `event.archive` existed in the
+     * matrix and was checked by nothing, so `setState` accepted `archived` from
+     * anybody who could reach `changeState` at all.
+     */
+    if (input.state === "archived") {
+      requirePermission(toPermissionActor(actor.user, actor.role), "event.archive", {
+        kind: "event",
+        state: actor.event.state,
+      });
+    }
 
     // Belt and braces: the argument validator already excludes it, and the
     // contract's `HOST_SETTABLE_EVENT_STATES` is the reason why. Reaching
@@ -419,6 +445,34 @@ export const setState = mutation({
       now,
     });
 
+    /*
+     * "Event opened / closed" — PLAN.md's second push trigger.
+     *
+     * Opening is the transition **into** `live`, and closing is the transition
+     * out of it into anything that is not `live`. Deriving it from the pair
+     * rather than from the destination alone is what stops `draft → scheduled`
+     * (an organiser setting up a party nobody has been told about yet) buzzing
+     * forty phones, and what makes `paused → live` an opening even though the
+     * party has been "open" since Tuesday.
+     *
+     * Never the actor's own phone, and debounced per member, so a host who
+     * fumbles pause/resume does not send two pings. It cannot fail the state
+     * change — see `lib/notifications.ts`.
+     */
+    const opened = to === "live" && from !== "live";
+    const closed = from === "live" && to !== "live";
+    if (opened || closed) {
+      const fresh = await ctx.db.get(actor.event._id);
+      if (fresh) {
+        await notifyEventLifecycle(ctx, {
+          event: fresh,
+          transition: opened ? "opened" : "closed",
+          actorUserId: actor.user._id,
+          now,
+        });
+      }
+    }
+
     return { state: to, ...(reissuedCode === undefined ? {} : { reissuedCode }) };
   },
 });
@@ -475,6 +529,11 @@ export const myEvents = query({
       if (!event) continue;
       // An event on its way out is not on anybody's list.
       if (event.state === "deletionScheduled") continue;
+      // Nor is one whose owner has been locked. `requireEventActor` already
+      // refuses every read and write inside it (see `lib/lock.ts`); leaving it
+      // on the list would offer a co-host a party that answers "suspended" to
+      // every tap, which is a worse experience than it simply not being there.
+      if (!(await eventIsUsable(ctx, event))) continue;
       summaries.push(toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role));
     }
 
@@ -499,7 +558,7 @@ export const activeEvent = query({
 
     if (user.activeEventId) {
       const event = await ctx.db.get(user.activeEventId);
-      if (event && event.state !== "deletionScheduled") {
+      if (event && event.state !== "deletionScheduled" && (await eventIsUsable(ctx, event))) {
         const membership = await getActiveMembership(ctx, event._id, user._id);
         if (membership) {
           return toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role);
@@ -516,6 +575,7 @@ export const activeEvent = query({
     for (const membership of memberships) {
       const event = await ctx.db.get(membership.eventId);
       if (!event || event.state === "deletionScheduled") continue;
+      if (!(await eventIsUsable(ctx, event))) continue;
       const summary = toSummary(event, event.ownerUserId === user._id ? "owner" : membership.role);
       if (best === null || summary.startsAt > best.startsAt) best = summary;
     }
@@ -540,7 +600,8 @@ export const home = query({
       v.object({
         version: v.number(),
         code: v.string(),
-        token: v.string(),
+        /** Absent for a global admin — see the note below and `invites.current`. */
+        token: v.optional(v.string()),
       }),
     ),
   }),
@@ -564,7 +625,11 @@ export const home = query({
 
     // Admins get the code because `event.viewInviteCode` is in their capability
     // set — rotating a code from the admin console needs to show which one it
-    // is replacing — but they are not `isHost`, so they get no host UI.
+    // is replacing — but they are not `isHost`, so they get no host UI, and
+    // they do **not** get the QR token: it is a bearer credential that admits
+    // its holder as a `guest`, and a guest membership outranks the admin role in
+    // `resolveEventRole`, which would hand the console the media access it is
+    // defined as not having. Same rule, same words, as `invites.current`.
     const maySeeCode = canSeeInviteCode(actor.role, actor.event.state, actor.user.accountState);
     const invite = maySeeCode ? await getActiveInviteVersion(ctx, actor.event) : null;
 
@@ -574,7 +639,13 @@ export const home = query({
       memberCount: members.length,
       ...(invite === null
         ? {}
-        : { invite: { version: invite.version, code: invite.code, token: invite.token } }),
+        : {
+            invite: {
+              version: invite.version,
+              code: invite.code,
+              ...(actor.role === "globalAdmin" ? {} : { token: invite.token }),
+            },
+          }),
     };
   },
 });

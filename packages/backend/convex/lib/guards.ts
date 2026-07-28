@@ -13,6 +13,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAdminEmail, isDemoAddress } from "./config";
 import { forbidden, isAppError, notFound, unauthenticated } from "./errors";
+import { assertEventNotFrozen } from "./lock";
 
 export type ReadCtx = QueryCtx | MutationCtx;
 
@@ -157,6 +158,21 @@ export async function requireEventActor(ctx: ReadCtx, eventId: Id<"events">): Pr
   const resolved = await resolveEventRole(ctx, event, user);
   if (!resolved) throw notFound("That event");
 
+  /*
+   * The account-lock sweep, in the one place every event-scoped read and write
+   * passes through.
+   *
+   * A lock has to freeze the **party**, not merely the person who was locked:
+   * PLAN.md says it "suspends owner/co-host access, joins, uploads and
+   * slideshows across owned events", and until this line existed a locked host's
+   * co-host kept moderating and their guests kept uploading, because every check
+   * in the product asks about the caller. See `lib/lock.ts` for why this is here
+   * rather than spread across the fifteen handlers that would each have to
+   * remember. It runs **after** the role check, so a stranger still gets
+   * `notFound` and cannot use a freeze to confirm an event id exists.
+   */
+  await assertEventNotFrozen(ctx, event, { role: resolved.role, knownOwner: user });
+
   return { user, event, role: resolved.role, membership: resolved.membership };
 }
 
@@ -190,6 +206,37 @@ export function assertDemoConfinement(user: Doc<"users">, event: Doc<"events">):
 /** Non-throwing form, for the join path, which reports refusals as values. */
 export function demoConfinementAllows(user: Doc<"users">, event: Doc<"events">): boolean {
   return !isDemoAddress(user.email) || event.isDemo === true;
+}
+
+/**
+ * A global admin may not **join** a stranger's party.
+ *
+ * The console's defining constraint is "no media access, no impersonation", and
+ * it is enforced by `globalAdmin` holding no `media.*` capability. That holds
+ * only for as long as an admin stays an admin: `resolveEventRole` returns a
+ * *membership* role in preference to the allowlist, so an admin who joins an
+ * event becomes a `guest` there — and a guest may call `media.viewApproved` and
+ * receive signed read URLs for the whole gallery. The console's guarantee would
+ * then be one join away from false, for any event id `admin.events` hands over.
+ *
+ * So the pivot is closed at the door, in the same shape as
+ * {@link demoConfinementAllows}: an allowlisted address is refused a **new**
+ * membership in an event it does not own.
+ *
+ * An **existing** membership passes through, and deliberately. Being on the
+ * admin allowlist is a job, not a vow of asociality — somebody who was a guest
+ * at their friend's party before they were made an administrator keeps their
+ * seat, and re-scanning the QR at that party still works. What they cannot do is
+ * acquire a *new* seat off a credential the console handed them.
+ */
+export function adminPivotAllows(
+  user: Doc<"users">,
+  event: Doc<"events">,
+  membership: Doc<"memberships"> | null,
+): boolean {
+  if (!isAdminEmail(user.email)) return true;
+  if (event.ownerUserId === user._id) return true;
+  return membership !== null && membership.status === "active";
 }
 
 /**

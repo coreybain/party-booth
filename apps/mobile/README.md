@@ -5,8 +5,10 @@ Expo app for PartyBooth — iOS 17+ / Android 10+, **dev-client only** (never Ex
 Sprint 1 built the skeleton: navigation shell, auth wiring, providers, config.
 **Sprint 2 makes it a real client** — onboarding that saves, joining by QR or code,
 multiple memberships with a server-backed active event, and the Host tab appearing for
-whoever the backend says is a host. Camera, uploads, moderation and push land in
-Sprints 3–5.
+whoever the backend says is a host. Sprints 3–4 added the camera, the durable upload queue,
+video, the galleries and the App Review flows. **Sprint 5 finishes the host's side**: the
+Host tab is real (code, QR, rotation, party controls, the pending queue), and Expo push
+covers upload trouble, a party opening or closing, and a host's queue building up.
 
 ## Quick start
 
@@ -42,8 +44,8 @@ app/                      Expo Router routes (file-based)
   (tabs)/_layout.tsx      tab shell; renders the event header; Host tab is conditional
   (tabs)/camera.tsx       the viewfinder: CameraView, tap/hold shutter, flash/torch, undo pill, library
   (tabs)/photos.tsx       My media (queue + media.myMedia, merged) and the approved gallery
-  (tabs)/host.tsx         host scaffold, re-checks the role itself
-  (tabs)/settings.tsx     profile, blocked people, privacy policy, account deletion, sign-out
+  (tabs)/host.tsx         code + QR, rotation modal, party controls, pending queue; re-checks the role
+  (tabs)/settings.tsx     profile, notifications, blocked people, privacy policy, deletion, sign-out
   events.tsx              event switcher (modal): list, select, join another
   join/index.tsx          six-digit code entry (modal)
   join/[token].tsx        deep-link target for QR / partybooth:// / parked invite
@@ -54,6 +56,7 @@ src/
   lib/shutter.ts          the tap-vs-hold gesture, as a pure state machine
   hooks/                  useJoinEvent, useNow, useCapture, useShutter
   providers/              Convex + Better Auth + session/membership context
+  push/                   registration timing, tap routing, the expo-notifications adapter
   upload/                 the durable queue: reducer, engine, persistence, transport
   components/, theme/     presentational primitives and tokens
   test/                   jsdom screen + hook tests (react-native → react-native-web)
@@ -240,14 +243,50 @@ pipeline as party media, which Sprint 3 builds. A second ad-hoc upload path now 
 delete next week. `updateProfile` already takes `avatarKey`, so when the pipeline exists
 the only change here is passing it.
 
+### Push notifications
+
+`expo-notifications` is reached through an **adapter** (`src/push/adapter.ts`) with a fake,
+and the real one imports the native module **dynamically**. Two things fall out of that,
+both required: the registration lifecycle is testable offline with no device, and a build
+with no `EXPO_PUBLIC_EAS_PROJECT_ID` never evaluates the module at all — which is what
+keeps `expo export` green with an empty environment.
+
+The API surface was checked against the current docs rather than remembered: the
+foreground handler returns `shouldShowBanner`/`shouldShowList` (the old `shouldShowAlert`
+is deprecated and silently draws nothing on iOS), and `getExpoPushTokenAsync` is passed an
+explicit `projectId`.
+
+**The permission prompt is armed by a successful join, not by a launch.** iOS grants one
+system prompt per install; spending it on the splash screen buys a refusal from somebody
+who does not yet know what the app is, and it can never be revisited from inside the app.
+`useJoinEvent` calls `armPrompt()`, the flag is persisted, and `PushProvider` asks on the
+effect that follows. Settings offers the way back for anybody who declined.
+
+Sign-out hands the token back **before** the session is torn down — `push.unregisterDevice`
+is authenticated — through the one-slot registry in `src/push/detach.ts`, because the
+provider that holds the token is mounted below the session provider that owns `signOut`.
+It never blocks a sign-out: a stale device row goes quiet by itself on the next
+`DeviceNotRegistered`, and being unable to sign out does not.
+
 ### Testing
 
-`pnpm --filter @partybooth/mobile test` runs Vitest over `src/lib/**/*.test.ts` only —
-the pure modules with no React Native imports (deep links, join-result handling and code
-input, event state/schedule copy, profile validation, error mapping, roles, config,
-Sentry scrubbing). Rendering RN components under Vitest needs a Metro-equivalent
-transform and native mocks, which is a poor trade this week; component behaviour is
-covered by the two-physical-phone pass in Sprint 6.
+`pnpm --filter @partybooth/mobile test` runs Vitest in **two projects** (see
+`vitest.config.ts`):
+
+- **`mobile`** — plain Node, no React. `src/lib`, `src/push` and `src/upload`: deep links,
+  join-result handling, event state and schedule copy, roles and the host capability table,
+  the durable queue's reducer/engine/backoff, when to ask for notification permission, and
+  where a tapped notification goes. Everything decidable with values lives here and takes
+  `now` as an argument.
+- **`mobile-screens`** — jsdom with `react-native` aliased to `react-native-web`, so the
+  screens under test are the real screens. This project exists because of Sprint 3's
+  expensive lesson: `use-capture` was green while being imported by nothing at all, and no
+  test in the package could have noticed. It catches "the screen renders no `CameraView`",
+  "the Host tab shows a guest the invite code" and "the rotation modal does not pass the
+  host's choice to the mutation".
+
+Neither pretends to cover anything needing a real camera or a real APNs token; the
+two-physical-phone pass in Sprint 6 is what proves those.
 
 Screen logic is kept testable by being pushed _out_ of the screens: a screen should read
 as a list of states, with every decision behind a named function in `src/lib`. The join

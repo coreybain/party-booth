@@ -9,6 +9,7 @@ import {
   reportMediaInputSchema,
   resolveReportInputSchema,
 } from "@partybooth/contracts/schemas";
+import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
@@ -446,6 +447,9 @@ export const flagged = query({
         media: await projectMedia(ctx, media, {
           viewerUserId: actor.user._id,
           viewerRole: actor.role,
+          // A host-only surface serving `pending` originals: short expiry, so a
+          // co-host removed a moment ago keeps them for a minute, not ten.
+          expiresInSeconds: SIGNED_HOST_REVIEW_URL_TTL_SECONDS,
         }),
         reports: rows,
         latest: Math.max(...rows.map((row) => row.createdAt)),
@@ -519,6 +523,9 @@ export const pending = query({
         await projectMedia(ctx, row, {
           viewerUserId: actor.user._id,
           viewerRole: actor.role,
+          // See `moderation.flagged`: the queue is the other place a host is
+          // handed originals nobody else may ever see.
+          expiresInSeconds: SIGNED_HOST_REVIEW_URL_TTL_SECONDS,
         }),
       );
     }

@@ -1,4 +1,5 @@
 import { eventStatsInputSchema } from "@partybooth/contracts/schemas";
+import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { v } from "convex/values";
 
 import type { Doc } from "./_generated/dataModel";
@@ -234,6 +235,9 @@ export const recentSubmissions = query({
         media: await projectMedia(ctx, row, {
           viewerUserId: actor.user._id,
           viewerRole: actor.role,
+          // Host-only, and it includes `pending` rows. Same short expiry as the
+          // moderation queue — a removed host's residual access is a minute.
+          expiresInSeconds: SIGNED_HOST_REVIEW_URL_TTL_SECONDS,
         }),
         state: row.state,
         mediaType: row.mediaType,

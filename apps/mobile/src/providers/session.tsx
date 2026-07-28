@@ -45,6 +45,7 @@ import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from "../lib/lo
 import { EMPTY_LOCAL_PROFILE, readDisplayName, type LocalProfile } from "../lib/profile";
 import { ANONYMOUS_ROLE_CONTEXT, type EventRole, type RoleContext } from "../lib/roles";
 import { captureHandledError } from "../lib/sentry";
+import { detachPushDevice } from "../push/detach";
 
 import type { ReactNode } from "react";
 
@@ -389,6 +390,12 @@ export function LiveSessionProvider({
   );
 
   const signOut = useCallback(async () => {
+    // Before the session goes, not after: `push.unregisterDevice` is an
+    // authenticated mutation, and a token left registered would deliver this
+    // account's notifications into the hands of whoever signs in next. It never
+    // throws — see `src/push/detach.ts` — because failing to sign out is a far
+    // worse outcome than a stale device row.
+    await detachPushDevice();
     await performSignOut(authClient);
     // The next person to sign in on this phone starts with their own avatar, not the
     // last guest's. A party is exactly where a phone gets handed around.

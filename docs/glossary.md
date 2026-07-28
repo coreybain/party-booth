@@ -181,6 +181,31 @@ legitimately given. Required _in addition to_ the grant.
 and the same `captureId` can never be uploaded again. `withdrawnAt` is what distinguishes it from a
 host removal.
 
+**Category** (push) — the unit of notification opt-out: `uploadStatus`, `eventLifecycle`,
+`hostPendingThreshold`. Stored as an **opt-out list** rather than a map of booleans, so a new
+category defaults to _on_ for every account that has never seen the toggle.
+
+**Freeze** — what a locked (or deletion-scheduled) **owner's** account does to every event they own:
+suspended for everybody, not just for them. Co-host access, joining, upload grants, the slideshow
+and signed-URL issuance all stop. Derived from the event's owner at read time rather than swept over
+a list of events, so nothing can be missed. Distinct from **pause**, which is a host's own choice
+and leaves the gallery readable.
+
+**Push receipt** — Expo's second answer, read about fifteen minutes after the send. The _ticket_
+says Expo accepted the message; the receipt says whether Apple or Google took it, and it is where
+`DeviceNotRegistered` almost always arrives — which is why the receipt sweep, not the send, is what
+prunes dead tokens.
+
+**Reason** (admin) — the non-empty string every `/admin` mutation carries into its audit row. Refused
+at the schema on the way in and refused again by the audit writer, so a mutation cannot skip it by
+not being called from the console.
+
+**Sweep** (rotation) — a rotation with `keepExistingMemberships: false`, which revokes every guest
+membership. Deliberately distinguished in the row (`revokedByRotation`) from a host's **removal** of
+one person: a removal survives a fresh scan of a valid QR, because it is a judgement about that
+person; a sweep does not, because it is a judgement about the credential and everybody coming back
+is holding the replacement.
+
 ---
 
 ## Words we deliberately do not use
