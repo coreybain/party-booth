@@ -125,9 +125,32 @@ export const AUDIT_ACTIONS = {
   /** A verified email matched a pending co-host invite and was elevated. */
   cohostInviteAccepted: "membership.cohost_invite_accepted",
 
+  /**
+   * A short-lived upload grant was issued. Audited, not merely counted, because
+   * it is the only record that ties an account to a capture *before* any bytes
+   * exist — which is what an incident on party night has to reason from when the
+   * media row was never created.
+   */
+  uploadGranted: "media.upload_granted",
+  /** A grant was refused: wrong event state, library import off, over the cap. */
+  uploadRejected: "media.upload_rejected",
+  /**
+   * A grant was spent and a file attached. One row per *accepted* completion —
+   * duplicate callbacks are no-ops and deliberately leave nothing, or a provider
+   * retry storm would drown the log it is supposed to explain.
+   */
+  uploadCompleted: "media.upload_completed",
+  /**
+   * A stored object was refused or orphaned and is being deleted: a body that
+   * did not match its grant, a second file against one grant, or a callback for
+   * a capture that had already been withdrawn.
+   */
+  uploadDiscarded: "media.upload_discarded",
   mediaModerated: "media.moderated",
   mediaWithdrawn: "media.withdrawn",
   mediaDeleted: "media.deleted",
+  /** The bytes themselves left storage. Separate from the record's tombstone. */
+  mediaFilePurged: "media.file_purged",
   mediaReported: "media.reported",
 
   /** An additional address was proven by OTP (Apple private-relay path). */

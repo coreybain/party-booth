@@ -28,3 +28,51 @@ export const STORAGE_REGION_LABELS: Record<StorageRegion, string> = {
 export function isStorageRegion(value: unknown): value is StorageRegion {
   return typeof value === "string" && (STORAGE_REGIONS as readonly string[]).includes(value);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Reading a private object                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every object PartyBooth stores has a **private** ACL, so there is no such
+ * thing as "the URL of a photo" — only a signed URL that works for a while, for
+ * whoever was permission-checked when it was minted.
+ *
+ * The TTL is a compromise with how Convex reactivity works, and it is worth
+ * writing down rather than discovering. A Convex query re-runs when its *data*
+ * changes, not when the clock moves, so a URL minted inside a gallery query is
+ * as stale as the subscription is old. Too short and a slideshow left running
+ * for ten minutes serves broken images; too long and a copied URL outlives the
+ * moderation decision that should have killed it.
+ *
+ * Ten minutes is the settled answer, with `expiresAt` returned alongside every
+ * URL so a client can refresh before it bites. Withdrawal does not wait for it:
+ * the file is deleted from storage, which invalidates every outstanding URL for
+ * it immediately, whatever their expiry says.
+ */
+export const SIGNED_READ_URL_TTL_SECONDS = 10 * 60;
+
+/**
+ * The shorter TTL for a one-off fetch that is not held in a subscription — an
+ * export, a derivative job, a single "open original" tap.
+ */
+export const SIGNED_DOWNLOAD_URL_TTL_SECONDS = 60;
+
+export interface SignedReadUrl {
+  url: string;
+  /** Epoch milliseconds. Clients refresh rather than serve a dead image. */
+  expiresAt: number;
+}
+
+/**
+ * A stored object, as the server refers to it.
+ *
+ * `key` is the provider file key and is **server-only**: it names the object
+ * directly, and handing one to a client would turn a permission-checked read
+ * into a bearer token that never expires. Read paths return
+ * {@link SignedReadUrl}s; nothing returns a key.
+ */
+export interface StorageObjectRef {
+  key: string;
+  region: StorageRegion;
+}

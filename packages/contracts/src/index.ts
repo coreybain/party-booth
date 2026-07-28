@@ -12,6 +12,7 @@
 
 export * from "./accounts";
 export * from "./analytics";
+export * from "./capture";
 export * from "./codes";
 export * from "./events";
 export * from "./join";
@@ -24,3 +25,4 @@ export * from "./schemas";
 export * from "./scrub";
 export * from "./state-machine";
 export * from "./storage";
+export * from "./upload";

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { ModerationMode } from "./events";
+import type { Role } from "./roles";
 import { createStateMachine, type TransitionTable } from "./state-machine";
 
 /* -------------------------------------------------------------------------- */
@@ -12,6 +13,42 @@ export const MEDIA_TYPES = ["photo", "video"] as const;
 export type MediaType = (typeof MEDIA_TYPES)[number];
 
 export const mediaTypeSchema = z.enum(MEDIA_TYPES);
+
+/* -------------------------------------------------------------------------- */
+/* Where a capture came from                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the file reached the app.
+ *
+ * - `capture` — the camera, in our own UI. The only path that can promise the
+ *   frame was re-encoded before it left the device (see `stripsMetadata` in
+ *   `upload.ts`).
+ * - `library` — picked from the phone's photo roll. Gated per event by
+ *   `events.allowLibraryImport`, because "photos from tonight" and "any photo
+ *   you have ever taken" are different products and some hosts only want one.
+ *
+ * The database and the wire carry the boolean `fromLibrary` — it predates this
+ * enum and the `media` table is built on it — so the two are kept in step by
+ * {@link mediaSourceOf} and {@link fromLibraryOf} rather than stored twice.
+ */
+export const MEDIA_SOURCES = ["capture", "library"] as const;
+
+export type MediaSource = (typeof MEDIA_SOURCES)[number];
+
+export const mediaSourceSchema = z.enum(MEDIA_SOURCES);
+
+export function mediaSourceOf(fromLibrary: boolean): MediaSource {
+  return fromLibrary ? "library" : "capture";
+}
+
+export function fromLibraryOf(source: MediaSource): boolean {
+  return source === "library";
+}
+
+export function isLibraryImport(source: MediaSource): boolean {
+  return source === "library";
+}
 
 /* -------------------------------------------------------------------------- */
 /* Server-side media lifecycle                                                */
@@ -63,6 +100,57 @@ export function isModeratable(state: MediaState): boolean {
 
 export function isMediaVisibleToGuests(state: MediaState): boolean {
   return state === "approved";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Who may see which rows                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The states a role may see in an event listing, ignoring ownership.
+ *
+ * This is the read-path half of the privacy invariant in PLAN.md: *pending and
+ * declined media are visible only to the submitter and the hosts.* Written as
+ * data rather than as an `if` in each query, because there are three listing
+ * surfaces (my media, the moderation queue, the gallery) and a rule spelled out
+ * three times is a rule that will eventually be spelled out three ways.
+ *
+ * `deleted` is in nobody's list, ever — a withdrawal is permanent, and the row
+ * survives only for the audit trail and the purge worker.
+ *
+ * `globalAdmin` gets the empty set on purpose: admins manage accounts, events
+ * and audit, and never look at guests' photos (`CAPABILITIES` in
+ * `permissions.ts` gives them no `media.*` action at all).
+ */
+export const VISIBLE_MEDIA_STATES: Record<Role, readonly MediaState[]> = {
+  globalAdmin: [],
+  owner: ["processing", "pending", "approved", "declined"],
+  cohost: ["processing", "pending", "approved", "declined"],
+  guest: ["approved"],
+};
+
+export function visibleMediaStatesFor(role: Role): readonly MediaState[] {
+  return VISIBLE_MEDIA_STATES[role];
+}
+
+export interface MediaVisibilitySubject {
+  state: MediaState;
+  /** Whether the acting user submitted this item. */
+  isOwn: boolean;
+}
+
+/**
+ * May this role see this row at all?
+ *
+ * Ownership is additive: a guest sees every state of **their own** capture (that
+ * is the "my media" list, where a `pending` item has to show as pending), and
+ * only `approved` from anybody else. Hosts see everything either way. Nothing
+ * gets anyone to `deleted`.
+ */
+export function canSeeMedia(role: Role, subject: MediaVisibilitySubject): boolean {
+  if (subject.state === "deleted") return false;
+  if (subject.isOwn) return role !== "globalAdmin";
+  return visibleMediaStatesFor(role).includes(subject.state);
 }
 
 /**
@@ -122,6 +210,35 @@ export const captureStateMachine = createStateMachine(
   CAPTURE_STATES,
   CAPTURE_TRANSITIONS,
 );
+
+/**
+ * States from which nothing further happens on its own — the queue is done with
+ * the item and may stop watching it.
+ *
+ * Derived from the transition table rather than restated: a state with nowhere
+ * left to go *is* a terminal state, so adding one to `CAPTURE_TRANSITIONS` with
+ * an empty target list puts it here automatically instead of leaving a second
+ * list to forget.
+ */
+export const TERMINAL_CAPTURE_STATES: readonly CaptureState[] = CAPTURE_STATES.filter(
+  (state) => CAPTURE_TRANSITIONS[state].length === 0,
+);
+
+export function isTerminalCapture(state: CaptureState): boolean {
+  return TERMINAL_CAPTURE_STATES.includes(state);
+}
+
+/**
+ * Is this capture still going to change without the guest doing anything?
+ *
+ * `failed` is deliberately excluded even though `apps/mobile` retries it on a
+ * timer: what this answers is "should the UI show a spinner", and a failure that
+ * is waiting out a backoff has something to say to the guest ("couldn't send —
+ * trying again") rather than nothing.
+ */
+export function isCaptureInFlight(state: CaptureState): boolean {
+  return state === "queued" || state === "uploading";
+}
 
 /** How long the guest has to undo an auto-send after a capture. */
 export const CAPTURE_UNDO_WINDOW_MS = 15_000;

@@ -147,6 +147,47 @@ has to work early) and closes twelve hours after `endsAt` (the last guest is
 always after the official end); an event with no `endsAt` never closes on time
 alone.
 
+## Uploads
+
+`upload.ts` is the front half of the upload spine, and it is pure for the same
+reason `join.ts` is: the policy has to be testable with no deployment and no
+credentials, and the client has to be able to apply exactly the same rules
+before it wastes a guest's bandwidth.
+
+- `GRANT_POLICY` — a two-minute TTL, and sixty grants per account per five
+  minutes. The TTL is measured to the point the upload _starts_, not finishes: a
+  250 MB video on party wifi takes longer than that and is fine.
+- `canIssueGrant` / `registerGrantIssued` — the same pure-function throttle shape
+  as OTP and joining, but counting **successes**. An issued grant is the scarce
+  thing, so there is no equivalent of joining's "nothing but time returns budget"
+  argument; the window rolling over is the only reset either way.
+- `checkGrantEligibility` — event state, then the host's library-import setting,
+  then the file. The order is the point: a guest at a paused party is told the
+  party is paused, not that their photo is 21 MB, because the first sentence is
+  the one that explains why trying again smaller will not help.
+- `matchesGrant` — what a completion has to prove. `byteSize` is always checked
+  (it is the field the caps were enforced against); `checksum` only when the
+  completion carries one, because the provider does not compute ours.
+- `uploadReasonForFile` is the identity function, and that is deliberate: it
+  compiles only while every `MediaRejectionReason` is also an
+  `UploadRejectionReason`, so adding a file rejection without listing it is a
+  type error rather than a `default:` branch reporting the wrong thing.
+
+Unlike a join rejection, an upload rejection **is** returned in full. There is
+nothing to enumerate: you cannot reach the mutation without an active membership
+of the event you named, so every reason is a fact about your own file or about a
+party you are already standing in.
+
+Video is accepted here even though the capture UI is Sprint 4. `MEDIA_LIMITS`
+already knows what a video may weigh and how long it may run, and a media type
+that only becomes valid when a camera screen ships is a media type whose
+validation gets written twice.
+
+`canSeeMedia` in `media.ts` is the read-path half of the privacy invariant,
+written as data rather than as an `if` in each of the three listing surfaces:
+guests see `approved` plus every state of their **own** captures, hosts see
+everything but `deleted`, and `globalAdmin` sees nothing at all.
+
 ## OTP policy
 
 `OTP_POLICY` encodes PLAN.md's numbers — six digits, 10-minute expiry, five
