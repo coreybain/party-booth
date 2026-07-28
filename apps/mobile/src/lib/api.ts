@@ -24,16 +24,22 @@ export const api = backendApi;
 
 export type {
   BackendApi as MobileApi,
+  CurrentInvite,
   CurrentUser,
   EventCounts,
   EventId,
   EventSummary,
+  FlaggedItem,
   JoinInvite,
   JoinPreview,
   MediaId,
   MediaItem,
   MembershipId,
+  ModerationResult,
+  PushPreferences,
+  PushStatus,
   RefreshRolesResult,
+  RotateInviteResult,
   UpdateProfileResult,
   UserId,
 } from "@partybooth/backend/client-api";

@@ -43,7 +43,12 @@ export default defineConfig({
         test: {
           name: "mobile",
           environment: "node",
-          include: ["src/lib/**/*.test.ts", "src/upload/**/*.test.ts"],
+          // `src/push` joins the list for the same reason the other two are on
+          // it: when to ask for permission, where a tap goes and what survives a
+          // restart are all pure functions of a snapshot, and all three are the
+          // kind of thing you otherwise only find out about by sending yourself
+          // notifications on a real phone.
+          include: ["src/lib/**/*.test.ts", "src/push/**/*.test.ts", "src/upload/**/*.test.ts"],
         },
       },
       {
