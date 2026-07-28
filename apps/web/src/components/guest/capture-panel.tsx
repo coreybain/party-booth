@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { StatusChip } from "@/components/ui/status-chip";
-import type { MediaSource } from "@/lib/contracts";
+import { MEDIA_LIMITS, VIDEO_MAX_DURATION_SECONDS, type MediaSource } from "@/lib/contracts";
 import { CAPTURE_STATE_COPY, formatBytes } from "@/lib/media-view";
 import type { UploadItem } from "@/lib/upload/machine";
+import { formatDuration } from "@/lib/upload/video";
 import type { CaptureController } from "@/lib/use-capture-upload";
 
 /**
@@ -57,6 +58,7 @@ export function CapturePanel({
   closedReason,
 }: CapturePanelProps) {
   const cameraInput = useRef<HTMLInputElement>(null);
+  const videoInput = useRef<HTMLInputElement>(null);
   const libraryInput = useRef<HTMLInputElement>(null);
 
   const onPicked = useCallback(
@@ -84,7 +86,7 @@ export function CapturePanel({
   return (
     <section aria-labelledby="capture-heading" className="space-y-4">
       <h2 id="capture-heading" className="text-base font-semibold text-ink">
-        Add a photo
+        Add a photo or video
       </h2>
 
       <input
@@ -97,10 +99,27 @@ export function CapturePanel({
         tabIndex={-1}
         aria-hidden="true"
       />
+      {/*
+        A **separate** input for video, rather than one accepting both.
+        `accept="image/*,video/*"` with `capture` set is the one combination
+        phones disagree about: some open the camera in photo mode with no way to
+        switch, some open the picker instead. Two inputs means the guest gets the
+        mode they pressed, on every phone.
+      */}
+      <input
+        ref={videoInput}
+        type="file"
+        accept="video/*"
+        capture="environment"
+        onChange={onPicked("capture")}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
       <input
         ref={libraryInput}
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         onChange={onPicked("library")}
         className="sr-only"
         tabIndex={-1}
@@ -115,6 +134,15 @@ export function CapturePanel({
           onClick={() => cameraInput.current?.click()}
         >
           Take a photo
+        </Button>
+        <Button
+          variant="secondary"
+          size="lg"
+          fullWidth
+          disabled={controller.preparing}
+          onClick={() => videoInput.current?.click()}
+        >
+          Record a video
         </Button>
         {allowLibraryImport ? (
           <Button
@@ -131,7 +159,7 @@ export function CapturePanel({
 
       {controller.preparing ? (
         <p className="text-sm text-muted" role="status" aria-live="polite">
-          Preparing your photo…
+          Preparing your upload…
         </p>
       ) : null}
 
@@ -141,9 +169,19 @@ export function CapturePanel({
         </Callout>
       ) : null}
 
+      {/*
+        Honest about the difference between the two, because there is one.
+        A photo really is re-encoded on the device (ADR 0004 §7). A video cannot
+        be — there is no transcoder in a phone browser — so the recording is sent
+        as it came out of the camera, and only its thumbnail is re-made. Saying
+        "we strip everything" would be the easier sentence and the false one.
+      */}
       <p className="text-xs leading-relaxed text-faint">
         Photos are re-saved on your phone before they are sent, which removes the location and
-        camera details your camera stores in them. Only people at this party can see what you add.
+        camera details your camera stores in them. Videos are sent as recorded — up to{" "}
+        {VIDEO_MAX_DURATION_SECONDS} seconds and{" "}
+        {String(Math.round(MEDIA_LIMITS.video.maxBytes / (1024 * 1024)))} MB. Only people at this
+        party can see what you add.
       </p>
 
       {pending.length > 0 ? (
@@ -179,12 +217,20 @@ function PendingCapture({
 
   return (
     <div className="flex gap-3 rounded-xl border border-line bg-surface/60 p-3">
-      <MediaThumbnail url={item.previewUrl} alt="Your photo" className="w-20" />
+      <MediaThumbnail
+        url={item.previewUrl}
+        alt={item.mediaType === "video" ? "Your video" : "Your photo"}
+        className="w-20"
+      />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <StatusChip label={copy.label} tone={copy.tone} />
-          <span className="shrink-0 text-xs text-faint">{formatBytes(item.byteSize)}</span>
+          <span className="shrink-0 text-xs text-faint">
+            {item.durationSeconds === undefined
+              ? formatBytes(item.byteSize)
+              : `${formatDuration(item.durationSeconds)} · ${formatBytes(item.byteSize)}`}
+          </span>
         </div>
 
         {item.state === "uploading" ? (

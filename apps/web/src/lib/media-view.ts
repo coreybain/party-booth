@@ -194,15 +194,14 @@ function entryFor(input: {
 /* Formatting                                                                 */
 /* -------------------------------------------------------------------------- */
 
-const KIB = 1024;
-
-/** "812 KB" / "2.4 MB". Binary units, matching `MEDIA_LIMITS`. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
-  if (bytes < KIB * KIB) return `${String(Math.max(1, Math.round(bytes / KIB)))} KB`;
-  const mib = bytes / (KIB * KIB);
-  return `${mib < 10 ? mib.toFixed(1) : String(Math.round(mib))} MB`;
-}
+/**
+ * Re-exported from the contract, where `apps/mobile` now gets it too.
+ *
+ * The two apps had the same function with one difference — this one had a
+ * gigabyte tier and the app's stopped at megabytes — so a party's storage total
+ * read "4.0 GB" on a laptop and "4096 MB" on a phone.
+ */
+export { formatBytes } from "@partybooth/contracts/copy";
 
 /** "40%" — for `aria-valuetext`, where a screen reader has to say something. */
 export function formatProgress(progress: number): string {

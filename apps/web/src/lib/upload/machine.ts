@@ -29,6 +29,7 @@ import {
   isCaptureInFlight,
   isTerminalCapture,
   type CaptureState,
+  type DerivativeFileRole,
   type MediaSource,
   type MediaState,
   type MediaType,
@@ -37,6 +38,29 @@ import {
 /* -------------------------------------------------------------------------- */
 /* Items                                                                      */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A second (or third) file for the same capture, waiting for the original to
+ * land.
+ *
+ * It rides on the queue item rather than in its own queue because it is not a
+ * submission: it never settles the media row, never moves a counter and never
+ * shows the guest anything (ADR 0008). A capture whose derivative never arrives
+ * is a capture that works — the host and the submitter see the original either
+ * way, and what a missing preview costs is visibility to fellow guests.
+ *
+ * `durationSeconds` is deliberately absent from the type. A poster is a still
+ * frame and has none, and a video's preview *clip* is not producible in a
+ * browser (see `upload/video.ts`), so no derivative this client sends has one.
+ */
+export interface PendingDerivative {
+  readonly fileRole: DerivativeFileRole;
+  readonly file: File;
+  readonly byteSize: number;
+  readonly mimeType: string;
+  readonly width?: number;
+  readonly height?: number;
+}
 
 /**
  * One photo on its way out.
@@ -59,6 +83,13 @@ export interface UploadItem {
   readonly metadataStripped: boolean;
   readonly width?: number;
   readonly height?: number;
+  /**
+   * Required for a video's original — `validateMediaFile` refuses a grant
+   * without one — and never set for a photo.
+   */
+  readonly durationSeconds?: number;
+  /** Sent after the original lands, best-effort. Empty for most captures. */
+  readonly derivatives: readonly PendingDerivative[];
   /** Object URL of the local thumbnail. Revoked when the item is forgotten. */
   readonly previewUrl?: string;
   /** 0–1. Only meaningful while `uploading`. */
@@ -107,6 +138,8 @@ export interface CapturedPayload {
   readonly metadataStripped: boolean;
   readonly width?: number;
   readonly height?: number;
+  readonly durationSeconds?: number;
+  readonly derivatives?: readonly PendingDerivative[];
   readonly previewUrl?: string;
   readonly createdAt: number;
 }
@@ -151,6 +184,7 @@ export function uploadReducer(state: UploadQueue, action: UploadAction): UploadQ
       if (findItem(state, action.capture.captureId) !== undefined) return state;
       const item: UploadItem = {
         ...action.capture,
+        derivatives: action.capture.derivatives ?? [],
         state: "captured",
         progress: 0,
         retryable: false,

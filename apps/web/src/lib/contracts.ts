@@ -90,24 +90,60 @@ export {
  */
 export {
   allowedMimeTypes,
+  allowedMimeTypesForRole,
   CAPTURE_STATES,
   captureStateMachine,
   canSeeMedia,
+  DERIVATIVE_LIMITS,
+  derivativeRolesFor,
   isCaptureInFlight,
+  isDerivativeRole,
+  isFileRoleAllowed,
   isTerminalCapture,
+  MEDIA_FILE_ROLES,
   MEDIA_LIMITS,
   MEDIA_SOURCES,
   MEDIA_STATES,
   MEDIA_TYPES,
   maxBytesFor,
+  maxBytesForRole,
   mediaSourceOf,
   mediaStateSchema,
   mediaTypeSchema,
   validateMediaFile,
+  VIDEO_MAX_DURATION_SECONDS,
   type CaptureState,
+  type DerivativeFileRole,
+  type MediaFileRole,
   type MediaSource,
   type MediaState,
   type MediaType,
+} from "@partybooth/contracts/media";
+
+/**
+ * Moderation and reporting, Sprint 4.
+ *
+ * `moderationTransition` is the reason the moderation grid can grey out a button
+ * without asking Convex: it is the *same* function `moderation.moderate` runs
+ * per item, so "Revoke is not offered on a pending card" and "revoke refuses
+ * anything that is not approved" are one rule with one test, rather than a
+ * server rule and a UI guess that agree until somebody edits one of them.
+ *
+ * The bulk bar's counts come from it too — "Approve 12" counts the items that
+ * would actually move, not the items that happen to be selected, because a
+ * selection made thirty seconds ago at a live party contains things another host
+ * has already dealt with.
+ */
+export {
+  MODERATION_ACTIONS,
+  MODERATION_REFUSAL_MESSAGES,
+  moderationTransition,
+  REPORT_REASONS,
+  type ModerationActionName,
+  type ModerationRefusal,
+  type ModerationTransition,
+  type ReportReason,
+  type ReportStatus,
 } from "@partybooth/contracts/media";
 
 /* -------------------------------------------------------------------------- */
@@ -168,14 +204,35 @@ export {
 export {
   CAPTURE_ID_PREFIXES,
   DERIVATIVE_PROFILES,
+  derivativeFileName,
   fitWithin,
   isValidCaptureId,
   newCaptureId,
+  posterFrameTime,
   toHex,
+  videoContainerFor,
+  type DerivativeKind,
   type DerivativeProfile,
   type PixelSize,
   type RandomBytes,
 } from "@partybooth/contracts/capture";
+
+/**
+ * Copy and formatters that both clients show.
+ *
+ * Here for the same reason the state machines are: a report category a guest
+ * picks on their phone and a host reads on a laptop has to mean one thing, and a
+ * size or a duration rendered two ways from one number is a support question.
+ */
+export {
+  formatBytes,
+  formatDuration,
+  formatReportCount,
+  REPORT_REASON_LABELS,
+  REPORT_REASON_PROMPTS,
+  REPORT_STATUS_LABELS,
+  type ReportReasonPrompt,
+} from "@partybooth/contracts/copy";
 
 export {
   SIGNED_READ_URL_TTL_SECONDS,

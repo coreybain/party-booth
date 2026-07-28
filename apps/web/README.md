@@ -2,12 +2,13 @@
 
 The Next.js 16 (App Router) site. It hosts three audiences from one codebase:
 
-| Audience           | Routes                                                                                                               | Status                                             |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 3: `/media` reads live. Moderation Sprint 4 |
-| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                               |
-| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 3: join, capture, upload, my media          |
-| Storage            | `/api/uploadthing` (presign + provider callback)                                                                     | Sprint 3                                           |
+| Audience           | Routes                                                                                                               | Status                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 4: moderation grid, slideshow, live home numbers        |
+| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                                           |
+| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 4: join, photo **and video** capture, my media, gallery |
+| Public             | `/privacy`                                                                                                           | Sprint 4: no account needed — App Review requires the URL      |
+| Storage            | `/api/uploadthing` (presign + provider callback)                                                                     | Sprint 4: originals **and** derivatives                        |
 
 ### The join path
 
@@ -74,6 +75,23 @@ produces the same visible symptom — photos that reach storage and sit in
 `processing` for ever. `/media` says so, in those words, from
 `media.storageStatus`.
 
+**Derivatives ride the same five hops** (Sprint 4, ADR 0008). A preview or a
+poster is a _second_ single-use grant under the _same_ `captureId`, held to its
+own 2 MiB cap, sent after the original has landed and refused unless it claims
+the re-encode. Two places in `core.ts` know the difference: a derivative's media
+row is legitimately already `pending` or `approved` (the original's rule would
+refuse every one of them), and the byte cap comes from the role `confirmUpload`
+returns rather than the role the ticket claims. Failure is silent by design — a
+capture with no preview is a working capture, and the guest is told nothing about
+an artefact that is not their submission.
+
+**Video is sent as recorded.** There is no transcoder in a phone browser, so
+`lib/upload/video.ts` reads the clip's length, refuses it over 60 s or 250 MB
+before a byte moves, and draws a **poster** through the same canvas the photo
+pipeline uses. The clip's own `sourceMetadataStripped` is `false`, truthfully,
+which is why `mayServeOriginal` shows a fellow guest the poster and not the
+video. The capture panel says so in as many words.
+
 ## Run it
 
 ```bash
@@ -103,6 +121,7 @@ src/app/
   layout.tsx                  <html>, metadata, viewport, providers, skip link
   page.tsx                    organiser OTP sign-in (site root)
   (organiser)/                authenticated organiser shell + four pages
+  privacy/                    the public privacy policy — no shell, no auth
   admin/login/                admin OTP sign-in — reachable while signed out
   admin/(console)/            authenticated admin shell (distinct palette)
   (organiser)/events/         create, event home (code + QR), edit
@@ -123,7 +142,9 @@ src/components/
   join/                       token flow, code flow, preview card, refusals
   guest/capture-panel.tsx     input[capture] → derivative → grant → upload
   guest/my-media.tsx          own submissions, status chips, retry/cancel/withdraw
-  media/                      thumbnail (plain <img>, see above), organiser list
+  media/                      thumbnail + tile (poster, click-to-play), storage callouts
+  moderation/                 the grid: cards, filter bar, flagged panel
+  slideshow/                  the stage, one slide, the auto-hiding controls
   layout/                     AppShell, CentredPane, Card, nav, event switcher
   ui/                         Button, TextField, CodeField, Select, Choice, …
 
@@ -146,6 +167,14 @@ src/lib/
   sentry-options.ts           shared Sentry.init options
   cn.ts                       class-name joiner                 (tested)
   media-view.ts               status copy, server+local merge    (tested)
+  moderation/
+    filters.ts                what the grid shows, and in what order   (tested)
+    selection.ts              selection, keyboard cursor, bulk counts  (tested)
+    reports.ts                host-facing copy for a content report
+  slideshow/
+    machine.ts                order, advance, skip-on-failure          (tested)
+    use-slideshow-feed.ts     cursored feed that accumulates
+    use-wake-lock.ts          keep the television awake, re-acquired
   use-capture-upload.ts       the one capture controller
   use-now.ts                  render-safe wall clock (useSyncExternalStore)
   upload/
@@ -155,6 +184,7 @@ src/lib/
     checksum.ts               SHA-256 over the re-encoded bytes
     capture-id.ts             unguessable idempotency key              (tested)
     machine.ts                the upload queue reducer                 (tested)
+    video.ts                  duration probe + canvas poster frame     (tested)
     uploader.ts               genUploader bound to our FileRouter
     server.ts                 server-only: config + completeUpload
 ```

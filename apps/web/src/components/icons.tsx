@@ -156,6 +156,97 @@ export function UsersIcon(props: IconProps) {
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/* Sprint 4: moderation and the slideshow                                     */
+/* -------------------------------------------------------------------------- */
+
+export function PlayIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M7.5 4.8 19 12 7.5 19.2z" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function PauseIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="7" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none" />
+      <rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function SkipNextIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 5.5 15 12l-9 6.5z" fill="currentColor" stroke="none" />
+      <path d="M18 5.5v13" strokeWidth={2} />
+    </Icon>
+  );
+}
+
+export function SkipPreviousIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M18 5.5 9 12l9 6.5z" fill="currentColor" stroke="none" />
+      <path d="M6 5.5v13" strokeWidth={2} />
+    </Icon>
+  );
+}
+
+export function ShuffleIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3.5 6.5h3.2l9.6 11h4.2M3.5 17.5h3.2l3.1-3.6M14 9.9l2.3-2.4h4.2" />
+      <path d="m18.4 4.6 2.5 2.9-2.5 2.9M18.4 14.6l2.5 2.9-2.5 2.9" />
+    </Icon>
+  );
+}
+
+export function XIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m6 6 12 12M18 6 6 18" />
+    </Icon>
+  );
+}
+
+export function FlagIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 21V4" />
+      <path d="M6 4.5h11.5l-2.2 4 2.2 4H6z" />
+    </Icon>
+  );
+}
+
+export function FullscreenIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 9V4.5h4.5M20 9V4.5h-4.5M4 15v4.5h4.5M20 15v4.5h-4.5" />
+    </Icon>
+  );
+}
+
+export function SoundOnIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 9.5h3l4-3.2v11.4l-4-3.2h-3z" />
+      <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+    </Icon>
+  );
+}
+
+export function SoundOffIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 9.5h3l4-3.2v11.4l-4-3.2h-3z" />
+      <path d="m15.5 9.5 4 5M19.5 9.5l-4 5" />
+    </Icon>
+  );
+}
+
 /** The PartyBooth mark: a camera aperture with a confetti burst. */
 export function LogoMark({ size = 24, ...props }: IconProps) {
   return (

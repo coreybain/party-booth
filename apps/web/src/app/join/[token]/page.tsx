@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
+import { SiteFooter } from "@/components/layout/site-footer";
 import { JoinByToken } from "@/components/join/join-by-token";
 import { JoinRejected } from "@/components/join/join-states";
 import { isValidInviteToken, JOIN_REJECTED_MESSAGE, normalizeInviteToken } from "@/lib/contracts";
@@ -43,7 +44,7 @@ export default async function JoinByTokenPage({
   const normalised = normalizeInviteToken(token);
 
   return (
-    <CentredPane width="md" footer="Private beta · 18+ · Photos stay private to this event.">
+    <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
       <Card>
         {isValidInviteToken(normalised) ? (
           <JoinByToken token={normalised} />
