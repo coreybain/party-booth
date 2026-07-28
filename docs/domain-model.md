@@ -32,24 +32,27 @@ erDiagram
 `auditEvents` is deliberately absent from the diagram: it references everything and is written by
 every privileged action.
 
-| Entity                 | Holds                                                                                                      | Notes                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `users`                | identity, verified email, display name, avatar, `onboardedAt`, account state                               | one row per human, shared across app and web                               |
-| `organiserInvitations` | email, token, issuing admin, expiry, redemption                                                            | the only way into the private beta                                         |
-| `cohostInvitations`    | event, email, inviting host, expiry, redemption                                                            | a co-host seat offered to an address with no account yet                   |
-| `userEmails`           | user, address, status, hashed verification code, attempts                                                  | a second address proven by OTP (Apple private relay)                       |
-| `joinAttempts`         | throttle key, failure count, window, lockout                                                               | holds no code and no event id — counters only                              |
-| `events`               | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**                      | see [ADR 0002](adr/0002-storage-region-adapter.md)                         |
-| `memberships`          | user ↔ event, role, admitting `inviteVersion`, state                                                       | a guest's presence in one event                                            |
-| `inviteVersions`       | six-digit code, high-entropy QR token, version number, active flag                                         | rotation creates a new version, never mutates the old                      |
-| `media`                | event, submitter, capture id, type, byte size, checksum, `storageRegion`, storage + derivative keys, state | one row per submitted capture, **however many objects it is made of**      |
-| `moderationDecisions`  | media, decider, decision, reason, timestamp                                                                | append-only; the media row carries the current state                       |
-| `mediaReports`         | media, reporter, reason, free-text detail, open/actioned/dismissed                                         | a complaint, not a decision — see [ADR 0005](adr/0005-moderation-model.md) |
-| `userBlocks`           | blocker, blocked, where it was made                                                                        | per-account and global; a filter on the blocker's own reads                |
-| `exportJobs`           | event, requester, state, artefact key, expiry                                                              | **post-launch (P2)** — table shape reserved                                |
-| `pushDevices`          | user, Expo push token, platform, last seen                                                                 | one row per installed app instance                                         |
-| `deletionJobs`         | subject (user or event), scheduled-at, state, requester                                                    | states ship at launch, the purge worker is post-launch (P1)                |
-| `auditEvents`          | actor, action, subject, reason, before/after summary, timestamp                                            | immutable; every admin and host action writes one                          |
+| Entity                  | Holds                                                                                                      | Notes                                                                        |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `users`                 | identity, verified email, display name, avatar, `onboardedAt`, account state                               | one row per human, shared across app and web                                 |
+| `organiserInvitations`  | email, token, issuing admin, expiry, redemption                                                            | the only way into the private beta                                           |
+| `cohostInvitations`     | event, email, inviting host, expiry, redemption                                                            | a co-host seat offered to an address with no account yet                     |
+| `userEmails`            | user, address, status, hashed verification code, attempts                                                  | a second address proven by OTP (Apple private relay)                         |
+| `joinAttempts`          | throttle key, failure count, window, lockout                                                               | holds no code and no event id — counters only                                |
+| `events`                | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**                      | see [ADR 0002](adr/0002-storage-region-adapter.md)                           |
+| `memberships`           | user ↔ event, role, admitting `inviteVersion`, state                                                       | a guest's presence in one event                                              |
+| `inviteVersions`        | six-digit code, high-entropy QR token, version number, active flag                                         | rotation creates a new version, never mutates the old                        |
+| `media`                 | event, submitter, capture id, type, byte size, checksum, `storageRegion`, storage + derivative keys, state | one row per submitted capture, **however many objects it is made of**        |
+| `moderationDecisions`   | media, decider, decision, reason, timestamp                                                                | append-only; the media row carries the current state                         |
+| `mediaReports`          | media, reporter, reason, free-text detail, open/actioned/dismissed                                         | a complaint, not a decision — see [ADR 0005](adr/0005-moderation-model.md)   |
+| `userBlocks`            | blocker, blocked, where it was made                                                                        | per-account and global; a filter on the blocker's own reads                  |
+| `exportJobs`            | event, requester, state, artefact key, expiry                                                              | **post-launch (P2)** — table shape reserved                                  |
+| `pushDevices`           | user, Expo push token, platform, failure count, disabled-at + reason, last seen                            | one row per **installation** — a token is a phone, not a person              |
+| `pushNotifications`     | user, device, category, title/body, delivery state, Expo ticket id, receipt outcome                        | a mutation cannot `fetch`, so the decision and the send are two transactions |
+| `notificationThrottles` | namespaced key, last-sent-at, category memory                                                              | the debounce that makes a burst one ping                                     |
+| `rotationAttempts`      | event key, count, window                                                                                   | five rotations an hour per event; counts successes                           |
+| `deletionJobs`          | subject (user or event), scheduled-at, state, requester                                                    | states ship at launch, the purge worker is post-launch (P1)                  |
+| `auditEvents`           | actor, action, subject, reason, before/after summary, timestamp                                            | immutable; every admin and host action writes one                            |
 
 ## Roles and permissions
 
@@ -69,9 +72,12 @@ Legend: ✅ allowed · ❌ denied · — not applicable.
 | Approve / decline any media         |   ❌    |    ✅    |   ✅    |      ❌       |
 | Run the slideshow                   |   ❌    |    ✅    |   ✅    |      ❌       |
 | Rotate the invite (code + QR token) |   ❌    |    ✅    |   ✅    |      ✅       |
-| Revoke a membership                 |   ❌    |    ✅    |   ✅    |      ✅       |
-| Invite a co-host                    |   ❌    |    ❌    |   ✅    |      ❌       |
-| Edit event settings                 |   ❌    | partial  |   ✅    |      ❌       |
+| Revoke a **guest's** membership     |   ❌    |    ✅    |   ✅    |      ✅       |
+| Revoke a **co-host's** membership   |   ❌    |    ❌    |   ✅    |      ✅       |
+| Invite or un-invite a co-host       |   ❌    |    ❌    |   ✅    |      ❌       |
+| Edit event settings + moderation    |   ❌    |    ✅    |   ✅    |      ❌       |
+| Move between `live` and `paused`    |   ❌    |    ✅    |   ✅    |      ✅       |
+| Archive (end) the event             |   ❌    |    ❌    |   ✅    |      ✅       |
 | Delete or transfer the event        |   ❌    |    ❌    |   ✅    |   schedule    |
 | Invite an organiser into the beta   |   ❌    |    ❌    |   ❌    |      ✅       |
 | Lock / unlock an account            |   ❌    |    ❌    |   ❌    |      ✅       |
@@ -79,11 +85,26 @@ Legend: ✅ allowed · ❌ denied · — not applicable.
 | Read any media bytes                |   ❌    |    ❌    |   ❌    |    **❌**     |
 | Impersonate a user                  |   ❌    |    ❌    |   ❌    |    **❌**     |
 
-Two invariants worth stating loudly, because they are easy to erode:
+Three invariants worth stating loudly, because they are easy to erode:
 
-1. **A co-host is never an owner.** No delete, no transfer, no change of ownership. Ever.
+1. **A co-host is never an owner.** No delete, no transfer, no archive, and no changing who else is
+   a host — a co-host cannot invite one, withdraw an invitation to one, or revoke one. Ever.
+
+   Sprint 5 _widened_ the co-host set in one place and narrowed it in another, both deliberately.
+   Settings and moderation-mode editing moved **in**, because PLAN.md's mitigation for solo
+   moderation (risk #4) is "co-hosts and `automatic` mode as a pressure valve" and a co-host who
+   cannot reach the switch is not a pressure valve. Revoking another co-host moved **out**, because
+   two co-hosts who can each remove the other is a race, not a permission.
+
 2. **A global admin never sees media and never impersonates.** Admin power is over accounts, events
-   and codes — not over content.
+   and codes — not over content. Since Sprint 5 this is enforced in four independent places:
+   `CAPABILITIES` grants the role no `media.*` action, `canSeeMedia` refuses it every row,
+   `stats.overview` withholds the per-guest breakdown, and `projectMedia` mints no signed URL for
+   the role even if a read path were reached.
+
+3. **A lock freezes the party, not just the person.** A locked (or deletion-scheduled) **owner**
+   suspends every event they own for everybody — co-host access, joining, upload grants, slideshow
+   and signed-URL issuance alike. See [The account-lock sweep](#the-account-lock-sweep).
 
 Everything above is expressed as testable functions in
 [`packages/contracts/src/permissions.ts`](../packages/contracts/src/permissions.ts), not as scattered
@@ -345,6 +366,172 @@ Apple private-relay users are the reason `userEmails` exists: an invitation cann
 `@privaterelay.appleid.com`, so they add a real address and prove it through the same OTP
 infrastructure — same ten-minute expiry, same five-guess budget, same per-address send ceiling, code
 stored hashed.
+
+### Co-host invitations
+
+An invitation is addressed to an **email**, not to a person, because the whole point is that the
+person may not have an account yet — `memberships.userId` is required and cannot express "somebody,
+eventually". `cohostInvitations` holds the promise; verified-email matching turns it into a `cohost`
+membership the moment its owner appears with a proven address.
+
+| Step                    | What happens                                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Owner invites           | `cohosts.invite` (an **action**, because it emails) → `pending` row with a token and a 14-day expiry, plus `membership.cohost_invited` |
+| Re-invite               | The same row's expiry is refreshed and the **token is kept**, so a link already in an inbox stays live                                 |
+| Acceptance              | A verified address matching `email` → membership upgraded to `cohost`, `membership.cohost_invite_accepted`                             |
+| Owner withdraws         | `cohosts.revokeInvitation` → `revoked`, **token burned**, `membership.cohost_invite_revoked`                                           |
+| Owner removes a co-host | `cohosts.remove` → membership revoked **and** any pending invitation to the same address revoked with it                               |
+
+Two properties are worth being explicit about:
+
+- **The token in the email is not a credential.** It addresses the invitation so the link lands on
+  the right party with the right explanation; it grants nothing. Acceptance binds on a _verified_
+  address match, so a forwarded email hands on a URL and no seat. This is deliberately different
+  from the organiser invitation, which _is_ claimed by token — a co-host seat carries the ability to
+  see every guest's photographs, including the pending ones, and a capability like that must not be
+  transferable by forwarding a message.
+- **Removing a co-host takes the invitation with it.** Otherwise the next sign-in finds the pending
+  row, matching revives the membership (which is correct behaviour for a _re_-invited host), and the
+  removal quietly undoes itself.
+
+### Invite rotation: keep or revoke
+
+Rotation always replaces **both** credentials and never edits the outgoing row — "which QR was on
+the wall in July" stays answerable. What the host chooses is what happens to the people:
+
+| `keepExistingMemberships` | Guests                                                                              | Hosts |
+| ------------------------- | ----------------------------------------------------------------------------------- | ----- |
+| `true` (default)          | keep their seats; re-scanning moves them onto the new version                       | keep  |
+| `false`                   | revoked, one `membership.revoked` audit row each, outstanding upload grants expired | keep  |
+
+Hosts always keep their seats: rotation is aimed at the guest list, and locking the co-host out of
+the console mid-party helps nobody.
+
+A revoked guest loses access **reactively** — the next re-run of any subscription resolves no role
+and the event answers `notFound` — and can come back only through the **new** code. That last part
+needs a distinction the row did not previously carry: `memberships.revokedByRotation` marks a _sweep_
+as opposed to a host's deliberate _removal_. A removal survives a fresh scan of a valid QR, because
+it is a judgement about that person; a sweep does not, because it is a judgement about the
+credential and everybody who comes back is holding the replacement.
+
+Because the choice is irreversible and is offered on **two** surfaces — the organiser console's
+modal and the app's Host tab — the sentences describing each option are themselves a contract:
+`ROTATION_CONSEQUENCES` in `@partybooth/contracts/codes`, next to the budget that enforces it, with
+`keepExistingMemberships(choice)` as the only place the choice becomes a boolean. The two clients had
+already drifted into describing the same sweep differently, which is the worst available outcome: a
+host who read "co-hosts are kept" on a laptop and "every guest is removed" on a phone has to guess
+which is current. The console additionally opens with **no** option selected — the API's `true`
+default is right for a call and wrong for a dialog — while the app defaults to the non-destructive
+`keep` and requires a deliberate switch for the sweep.
+
+Rotation is budgeted at **five an hour per event** (`ROTATION_POLICY`, `rotationAttempts`). The
+ceiling exists because the revoke path writes one audit row per guest it removes, so a held-down
+button turns one fifty-guest party into an unbounded pile of writes during the evening it is meant
+to protect. The budget counts successes, like the upload one and unlike the join one.
+
+### The account-lock sweep
+
+PLAN.md: a lock "suspends owner/co-host access, joins, uploads and slideshows **across owned
+events**". That is two halves, and only the first was ever enforced by the account-state gate.
+
+- **The actor's own state** — `accountStateAllows` reduces a locked account to "view yourself" and
+  "delete yourself" (App Review requires in-app deletion to stay reachable, and a lock nobody can
+  appeal or escape is a trap rather than a suspension).
+- **The event's owner's state** — an event whose owner is locked, deletion-scheduled or deleted is
+  **frozen for everybody**. `lib/lock.ts` computes it and `requireEventActor` asserts it, which is
+  the single function every event-scoped read and write in the product passes through; `join.ts`
+  asserts it separately, because joining is the one path that reaches an event without a membership.
+
+Deriving the freeze from the event's owner, rather than sweeping a list of events at lock time, is
+what makes it total: there is no event — existing, or created a second before the lock — that the
+enumeration could miss, and no sixteenth surface added in a later sprint that has to remember.
+
+A global admin passes through the freeze, because the console has to be able to look at the party it
+just froze and at the account it is about to unlock. Guests are told one vague sentence: whose
+account is suspended and why is not a fact to broadcast to thirty people at a door.
+
+### Push notifications
+
+Three categories, which are the units of opt-out because they are the units of "turn this off":
+`uploadStatus` (your own upload failed, and later that it recovered), `eventLifecycle` (a party you
+are in opened or closed) and `hostPendingThreshold` (you are hosting and the queue has built up).
+Preferences are stored as an **opt-out list** plus a per-user threshold (`users.notificationOptOut`,
+`users.pendingNotifyThreshold`), so adding a category defaults to _on_ without a migration.
+
+The shape is a queue rather than a function call for one reason: **a Convex mutation has no
+`fetch`**. Deciding to notify somebody happens inside the mutation that caused it, so it must be a
+database write; the send must be an action; and `pushNotifications` is what survives the gap.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: a mutation decides
+    queued --> sent: Expo accepted the message (ticket)
+    queued --> failed: Expo refused it
+    queued --> dropped: no Expo project on this deployment
+    sent --> delivered: receipt says ok
+    sent --> failed: receipt says otherwise
+```
+
+- **Debounced** by `notificationThrottles`, keyed per `(category, subject, user)`. Thirty photos
+  landing in one minute cross the host's threshold once and buzz once; dropping back under the
+  threshold **clears** the memory, so the next rush pings immediately rather than waiting out a
+  window that started during the last one.
+- **Chunked** at Expo's documented ceiling of 100 messages per send and 1000 ids per receipt
+  request, and **receipt-checked** about fifteen minutes later — which is where
+  `DeviceNotRegistered` almost always arrives, and therefore where token pruning actually happens.
+- **A token is a phone, not a person.** Registering a token already held by another account
+  _reassigns_ it, because the alternative is the previous account's notifications arriving in
+  somebody else's hands.
+- **Only `DeviceNotRegistered` prunes.** `MessageTooBig`, `MessageRateExceeded`, `MismatchSenderId`,
+  `InvalidCredentials` and `InvalidProviderToken` describe the message or the project's credentials,
+  and pruning on those would empty the table the day somebody rotates an APNs key. The three
+  credential errors are also exempt from the **failure counter** — otherwise a revoked key, which
+  fails for every device at once, disables the whole table on the third send instead of immediately,
+  which is the same disaster arrived at slowly.
+- **The routing payload is a contract, not a convention.** The `data` bag a notification carries is
+  built by `@partybooth/contracts/push`'s `uploadStatusPayload` / `eventLifecyclePayload` /
+  `pendingThresholdPayload` and read back by its `parsePushPayload`. It crosses a network and a JSON
+  round trip between two codebases, so neither the backend nor the app spells one of its keys, and a
+  builder→parser round-trip test is what keeps the tap table honest. `kind` **is** the category: the
+  thing a person opted out of and the thing a tap opens are the same thing.
+
+Everything is behind `PushAdapter` (`lib/push/`), so the whole stack is unit-tested offline against
+a fake. A deployment with no `EAS_PROJECT_ID` resolves the unconfigured adapter and marks its
+notifications `dropped`: a party where nobody's phone buzzes is a party, and one where approving a
+photo throws because push is unset is not.
+
+### Admin operations
+
+The `/admin` console is a **separate shell** behind OTP plus `ADMIN_EMAIL_ALLOWLIST`, and every
+function it calls re-checks `requireGlobalAdmin` server-side — the layout gate in `apps/web` is
+defence in depth, not the boundary.
+
+| Operation                                       | Subject | Reversible?                                    |
+| ----------------------------------------------- | ------- | ---------------------------------------------- |
+| `inviteOrganiser`                               | account | the invitation expires or is left unredeemed   |
+| `lockAccount` / `unlockAccount`                 | account | yes — and the freeze lifts with the unlock     |
+| `scheduleAccountDeletionFor` / `restoreAccount` | account | yes, inside the 30-day window                  |
+| `scheduleEventDeletion` / `restoreEvent`        | event   | yes, inside the 30-day window                  |
+| `rotateEventCode`                               | event   | no — the old credential is gone                |
+| `revokeMembership`                              | person  | they can re-join if the credential still works |
+
+Three rules hold across all of them, and they are enforced in the backend rather than by the form:
+
+- **Every mutation takes a non-empty `reason`** and writes an immutable `auditEvents` row.
+  `writeAuditEvent` throws rather than writing a blank one, so "who did this and why" cannot be
+  skipped by a client that forgets to ask. `AUDIT_ACTIONS_REQUIRING_REASON` is the list that must
+  never arrive without one, and the console badges any historical row that did.
+- **An admin reads numbers, not photographs.** `stats.overview` is counts and is admin-readable;
+  `stats.recentSubmissions` carries thumbnails and is host-only. Nothing under the console renders
+  an image — the accounts and events lists carry storage totals and media counts and no preview.
+- **The events list carries no join code.** A list holding every live code would turn one console
+  session into every party in the product; the rotation form reads the number it is replacing from
+  `invites.current`, one event at a time, deliberately asked for.
+
+`rotateEventCode` accepts either a random draw or a **specific** six digits, which the backend
+collision-checks against every live invite version — the client's `validateSpecificEventCode` is a
+format and entropy check only, because only Convex can know whether another party already holds that
+number.
 
 ### Profile and onboarding
 
@@ -630,5 +817,8 @@ can never eat into the budget they need to send the photo they came here to send
 
 Filled in by the sprint that builds the thing, rather than guessed now:
 
-- **(Sprint 5)** The audit-event taxonomy — the closed list of `action` values.
-- **(Sprint 5)** Co-host invitation and invite-rotation flows as the UI actually exposes them.
+- **(Sprint 6)** The audit-event taxonomy as a table — the closed list lives in
+  `AUDIT_ACTIONS` and every value is documented there; a rendered index is still owed.
+- **(Sprint 6)** A screen-by-screen tour of `/admin` as the UI lays it out. What each operation
+  _means_ is above under "Admin operations"; what is still owed is the walkthrough of the four
+  routes, which is worth writing once the dress rehearsal has said whether they are the right four.

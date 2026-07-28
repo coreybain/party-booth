@@ -28,12 +28,12 @@ domains are out of scope.
 
 ## Roles
 
-| Role          | Gets in via                                        | Can                                                                         |
-| ------------- | -------------------------------------------------- | --------------------------------------------------------------------------- |
-| `globalAdmin` | separate `/admin` OTP login, server-side allowlist | operate the platform: invite organisers, lock accounts, rotate codes, audit |
-| `owner`       | creates the event                                  | everything within their own event, including deletion and transfer          |
-| `cohost`      | invited by the owner, by email                     | moderate, rotate invites, see the host surfaces — never delete or transfer  |
-| `guest`       | joins with a QR token or six-digit code            | capture, upload, see own media and its status, withdraw, view the gallery   |
+| Role          | Gets in via                                        | Can                                                                                                                                           |
+| ------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `globalAdmin` | separate `/admin` OTP login, server-side allowlist | operate the platform: invite organisers, lock accounts, rotate codes, audit                                                                   |
+| `owner`       | creates the event                                  | everything within their own event, including deletion and transfer                                                                            |
+| `cohost`      | invited by the owner, by email                     | run the party: moderate, edit settings, pause/resume, present, rotate invites — never delete, archive, transfer, or change who else is a host |
+| `guest`       | joins with a QR token or six-digit code            | capture, upload, see own media and its status, withdraw, view the gallery                                                                     |
 
 Global admins have **no media access and no impersonation**, by design. See
 [`domain-model.md`](domain-model.md) for the precise permission matrix.
@@ -63,6 +63,18 @@ invite, rotation.
 
 Keyboard-driven review and submitter grouping ship only if time allows.
 
+**Who may open the console.** An organiser invitation, membership of the admin allowlist, **or
+hosting at least one event**. The third is the co-host's way in and it is not the same as being an
+organiser: accepting a co-host invitation grants a membership and deliberately does not set
+`isOrganiser`, because that flag gates _creating_ events and the beta is invitation-only. So a
+co-host reaches the moderation queue, the slideshow and the event's settings, and the "New event"
+control is not offered to them.
+
+**An account that is locked or scheduled for deletion** gets its own screen rather than the
+sign-in page or a permission error — it is the one audience entitled to know exactly what has
+happened to it, and account deletion stays reachable from there (Apple 5.1.1(v)). Guests of a
+frozen party are told something deliberately vaguer; see the lock section below.
+
 ### Guest mobile web — the guaranteed path
 
 QR → HTTPS universal link → join with token or code → Google/OTP sign-in → name confirmation.
@@ -76,7 +88,21 @@ only at launch — tap for photo, hold for video, flash, flip, both orientations
 Auto-send with a 15-second undo, backed by a durable local queue that resumes in the foreground;
 background retry is best-effort and post-launch. The Host tab carries QR/code, rotation, the pending
 queue and quick approve/decline. Expo push covers upload failure and recovery, event open and close,
-and a pending-queue threshold ping for hosts.
+and a pending-queue threshold ping for hosts — the last of these on a **per-user threshold**
+(default 5) and debounced, so thirty photos arriving in one minute buzz a host once rather than
+thirty times. Every category can be switched off individually in Settings.
+
+The Host tab also carries the party's own controls: open early, pause new photos, resume, push the
+finish time out by an hour, and end the party. Ending it is **owner-only** and asks first; a co-host
+may do everything else, which is what makes a co-host a working pressure valve when the owner is on
+the dance floor. Rotation asks the keep-or-revoke question explicitly in a modal and says what the
+revoke path costs — every guest re-joins, and nobody is banned.
+
+The notification permission prompt is deliberately **not** shown at launch. iOS grants one system
+prompt per install, so the app spends it after the guest's **first successful join**, when they have
+a reason to say yes; Settings offers a way back for somebody who declined. A tapped notification
+switches to the party it names and then opens the screen that answers it — upload trouble to My
+media, a party opening to the Camera, a host's queue to the Host tab.
 
 **App Review requirements, all mandatory for submission:** in-app content reporting, user blocking,
 in-app account deletion, a privacy policy URL, a 17+/18+ age rating, Sign in with Apple alongside
@@ -92,7 +118,25 @@ confirmation and a reason, and writes an immutable audit event.
 
 **Agreed cut order if the schedule bites:** specific-value code rotation → job-health dashboards →
 the deletion-scheduling UI (a script is the fallback). Organiser invite, lock/unlock and audit are
-the non-negotiable core.
+the non-negotiable core. _Nothing was cut — the full backend surface shipped in Sprint 5, including
+specific-value rotation and job health._
+
+Job health covers what is supposed to happen by itself and has not: media tombstoned whose objects
+are still in storage, deletion jobs past their date, and the push queue. **Pending exports reads a
+constant zero** — ZIP exports are P2 and there is no job table to count, and an honest zero is
+better than an invented number.
+
+**Locking an organiser freezes every event they own**, for everybody: co-host access, joining,
+upload grants, the slideshow, and the issuance of signed URLs. That is the point of the control, and
+it is derived from the event's owner rather than swept over a list, so an event created a moment
+before the lock is covered too.
+
+The two audiences are told different things, and that split is deliberate. The **locked account**
+is told plainly that it is suspended, what it means for the parties it runs, and how to appeal. A
+**guest** of one of those parties is told only that the party is unavailable — a suspension is a
+fact about a third party's standing with us, and thirty people in a room are not entitled to it. The
+guest-facing screens also drop the usual "ask the host for the current QR" advice in this case: a
+new code would change nothing, and the suggestion points the room at a host who cannot fix it.
 
 ## Media rules
 
