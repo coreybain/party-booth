@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 
+import { ActiveEventSettings } from "@/components/events/active-event-settings";
 import { EventSettingsLinks } from "@/components/events/event-settings-links";
 import { PageHeader } from "@/components/layout/app-shell";
-import { Card, Placeholder, SectionHeading } from "@/components/layout/card";
+import { Card, SectionHeading } from "@/components/layout/card";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -10,18 +11,20 @@ export const metadata: Metadata = { title: "Settings" };
  * PLAN.md → "Settings: essentials only (schedule, moderation mode, co-host
  * invite, rotation)".
  *
- * Every one of those is a property of an *event*, not of the account, so the
- * schedule and moderation mode live on the event's own edit form and this page
- * points at it for whichever event is selected. Co-hosts and rotation land in
- * Sprint 5 and keep their placeholders, so the shape of the page does not move
- * under the host between now and then.
+ * Every one of those is a property of an *event*, not of the account. The
+ * schedule and the moderation mode live on the event's own edit form, so the
+ * first card lists the events and links to it; co-hosts and rotation have
+ * nowhere else to be, and they follow the header's event switcher — the same
+ * selection `/media` and `/slideshow` read. Adding a second event picker inside
+ * this page would put two controls on screen that both claim to choose the
+ * event, and they would disagree the first time somebody used the wrong one.
  */
 export default function SettingsPage() {
   return (
     <>
       <PageHeader
         title="Settings"
-        description="Event essentials. Nothing you can break by accident."
+        description="Event essentials. The co-host and rotation panels act on whichever event is selected above."
       />
 
       <div className="space-y-4">
@@ -33,24 +36,7 @@ export default function SettingsPage() {
           <EventSettingsLinks className="mt-4" />
         </Card>
 
-        <Card>
-          <SectionHeading
-            title="Co-hosts"
-            description="Invite someone to help moderate. They can't delete the event or transfer ownership."
-          />
-          <Placeholder className="mt-4" title="No co-hosts" sprint="Sprint 5" />
-        </Card>
-
-        <Card>
-          <SectionHeading
-            title="Invite rotation"
-            description="Issue a new code and QR, and choose whether existing guests keep access."
-          />
-          <Placeholder className="mt-4" title="Nothing to rotate" sprint="Sprint 5">
-            Rotating kills the printed QR immediately, which is the point — the model and the
-            backend mutation are already in place.
-          </Placeholder>
-        </Card>
+        <ActiveEventSettings />
       </div>
     </>
   );
