@@ -51,6 +51,7 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 - [ ] Unit tests: grant expiry/single-use, callback idempotency, media state machine
 
 **RC3:** photo taken on your phone (app AND web path) lands as `pending` in the organiser's media list within seconds; withdrawn media disappears; a second signed-in guest cannot fetch it by URL.
+> ⏳ **RC3 blocked on owner setup only** — `UPLOADTHING_TOKEN` (Vercel *and* Convex), `UPLOAD_CALLBACK_SECRET` (same value in both), `SITE_URL`, and three UploadThing dashboard settings: paid plan, region `pdx1` + default ACL **Private**, and **per-request ACL override enabled** (the route handler declares `acl: "private"` in code). Code side verified: **1235 tests**, offline typecheck/lint/format green, `next build` and `expo export` both pass with an **empty** environment. Integration found and fixed one RC3-blocking defect: `apps/mobile` was sending only the grant secret where the route handler parses the full upload ticket, so every app-path upload would have been refused before a byte moved — the ticket now has one definition, in `@partybooth/contracts/upload`, that both sides parse. Boxes stay unticked until the checkpoint is *verified* on a phone, per CONTRIBUTING ("a sprint is done when its RC is verified, not when the code is written").
 
 ---
 

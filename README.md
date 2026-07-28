@@ -73,7 +73,8 @@ apps/
   mobile/     @partybooth/mobile   Expo Router — camera, gallery, host tab
 packages/
   backend/    @partybooth/backend            Convex schema + functions, Better Auth
-  contracts/  @partybooth/contracts          shared zod schemas, permission rules, role types
+  contracts/  @partybooth/contracts          shared zod schemas, permission rules, role types,
+                                            the upload grant/ticket contract and capture pipeline
   env/        @partybooth/env                typed, lazily-validated environment access
   config-typescript/  @partybooth/config-typescript   strict tsconfig presets
   config-eslint/      @partybooth/config-eslint       flat ESLint presets
@@ -138,10 +139,61 @@ the clients make and casts once. Both apps re-export from it behind a seam
 (`apps/web/src/lib/convex-api.ts`, `apps/mobile/src/lib/api.ts`). Two copies of
 that description would drift silently, because every mismatch is an `any`.
 
+Because that description is an **assertion rather than a check**, anything a client
+_branches on_ is re-parsed with a real schema at the call site: `parseJoinResult`
+and `parseGrantResult` in `@partybooth/contracts`. Both fail closed — the next
+thing that happens after reading a grant is that bytes get sent somewhere on the
+strength of it.
+
 **Dependency versions** — cross-cutting libraries live in the `catalog:` block of
 `pnpm-workspace.yaml`. Write `"zod": "catalog:"` instead of pinning a version, so every package
 moves together. Currently catalogued: `typescript`, `zod`, `vitest`, `@vitest/coverage-v8`,
 `eslint`, `prettier`, `convex`, `@types/node`.
+
+## Uploads and media
+
+The upload spine is the highest-risk part of this product and the one with the most invariants, so
+they are written down rather than implied. The long form is
+[ADR 0004](docs/adr/0004-private-upload-pipeline.md) and
+[`docs/domain-model.md`](docs/domain-model.md); the short form:
+
+**A guest never holds a storage credential.** They ask Convex for a **grant** — short-lived (two
+minutes), single-use, and bound to one exact file for one exact capture in one exact event. The
+UploadThing route handler in `apps/web` is the only thing in the system holding an
+`UPLOADTHING_TOKEN`, and the Expo app uploads _through_ it rather than around it.
+
+**Every file has a private ACL, and every read is a permission-checked short-lived URL.** There is
+no such thing as "the URL of a photo". Signed URLs last ten minutes and carry their `expiresAt` so a
+client refreshes rather than serving a broken image. Withdrawal does not wait for expiry — the object
+is deleted, which invalidates every outstanding URL immediately. Withdrawal is **permanent**.
+
+**Location metadata is stripped at capture, by re-encoding, on the client.** The checksum is taken
+over the re-encoded bytes, so the grant is minted against the stripped file. `sourceMetadataStripped`
+records what the pipeline actually did — it is never a hardcoded `true`.
+
+**The wire between clients and the route handler lives in contracts.** `uploadTicketSchema` and
+`buildUploadTicket` in `@partybooth/contracts/upload`, and the capture arithmetic (`fitWithin`,
+`toHex`, `newCaptureId`, `DERIVATIVE_PROFILES`) in `@partybooth/contracts/capture`. `apps/mobile`
+does not depend on `apps/web`'s build, so a shape those two both need has to live in a package they
+both import — a comment asking two people to keep two files in step is not a contract.
+
+**Storage sits behind an adapter keyed on `event.storageRegion`.** `resolveStorageAdapter(region)` in
+`packages/backend/convex/lib/storage/` is the only caller of the UploadThing SDK in the deployment.
+The region always comes from the row, never from the environment, which is what makes "files never
+migrate" true. Tests use an in-memory fake; a deployment with no token gets an adapter whose reads
+omit the URL and whose deletes throw loudly.
+
+**What degrades without credentials**, which is why all of this tests offline:
+
+| Unset                    | What happens                                                            |
+| ------------------------ | ----------------------------------------------------------------------- |
+| `UPLOADTHING_TOKEN`      | `/api/uploadthing` answers **503 naming the variable**; reads omit URLs |
+| `UPLOAD_CALLBACK_SECRET` | completions are refused, so uploads never leave `processing`            |
+| `CONVEX_URL`             | the middleware refuses before any bytes move                            |
+
+Nothing throws at module scope, so `next build` and `expo export` both pass with an empty
+environment. `media.storageStatus` (host-only) reports the flags, so a misconfiguration is
+diagnosable from the organiser console rather than from a silent party.
 
 ## Environment
 

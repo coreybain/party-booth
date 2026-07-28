@@ -98,9 +98,10 @@ Confirmed available in the dashboard; the public docs region list is stale.
 
 **Pending** — the media state awaiting host review. The count on the organiser home.
 
-**Processing** — the media state between a completed upload and a moderation outcome, while
-derivatives are generated. Transitions in and out of it must be idempotent, because completion
-callbacks can arrive out of order.
+**Processing** — the media state between an upload starting and a moderation outcome. Transitions in
+and out of it must be idempotent, because the client's confirmation and the provider's callback
+arrive in either order and more than once. A `processing` row with no storage key is an upload that
+never finished.
 
 **Purge** — the irreversible destruction of data after the deletion window. Automated post-launch
 (P1); operated by script until then.
@@ -122,15 +123,45 @@ immutable once the first upload lands, carried on grants and media. See
 [ADR 0002](adr/0002-storage-region-adapter.md).
 
 **Storage adapter** — the seam that turns a `storageRegion` value into credentials and a host. The
-only place in the codebase that knows a region is a real thing.
+only place in the codebase that knows a region is a real thing. Its two provider operations are
+"mint a short-lived signed read URL" and "delete these objects"; grant handling and media records are
+Convex's business, not the provider's.
 
 **Universal link** — the HTTPS URL a QR code resolves to. Opens the app when installed, otherwise
 falls through to the mobile web join page. Never a custom scheme, which is why the domain matters.
 
 **UploadThing** — the private-storage provider. Paid plan, region `pdx1`, default ACL **Private**.
 
-**Withdrawn** — the terminal media state a submitter sets on their own item. It disappears from every
-surface.
+**Upload grant** — short-lived (two minutes), single-use permission to put one exact file into
+storage, bound to `{eventId, captureId, mediaType, byteSize, checksum, storageRegion}`. A guest holds
+one of these instead of a provider credential. Stored hashed; spent atomically. See
+[ADR 0004](adr/0004-private-upload-pipeline.md).
+
+**Upload ticket** — what a client POSTs to `/api/uploadthing` alongside the bytes: the grant secret
+plus its claims about the file (`captureId`, `mediaType`, `byteSize`, `mimeType`, `checksum`,
+dimensions). Only the secret carries authority; the rest is cross-checked against the file actually
+offered before a presigned URL is minted, and against the grant inside Convex afterwards. Defined
+once, in `@partybooth/contracts/upload`, because both clients build one and neither imports the
+other. Not a synonym for "grant" — a grant is a capability, a ticket is an envelope carrying one.
+
+**Capture id** — a client-generated, unguessable id minted the moment a photo is taken and **reused
+for every retry of it**. Media rows are keyed on `(eventId, captureId)`, so a retry after a dropped
+connection lands on the row already there instead of creating a second copy in the host's queue. It
+encodes nothing; the leading `w`/`m` says which client minted it and nothing may branch on it.
+
+**Storage adapter** — the seam every read and delete in `convex/` goes through, resolved from the
+region on the row (`resolveStorageAdapter`). It is the only caller of the UploadThing SDK in the
+deployment, which is what lets the whole repo be tested with an in-memory fake and no credentials.
+See [ADR 0002](adr/0002-storage-region-adapter.md).
+
+**Upload callback secret** (`UPLOAD_CALLBACK_SECRET`) — the shared secret proving a completion call
+came from our own UploadThing route handler rather than from a guest replaying the grant they were
+legitimately given. Required _in addition to_ the grant.
+
+**Withdrawn** — a submitter taking their own item back. Permanent: the record moves to the terminal
+`deleted` state, the bytes are deleted from storage, any unspent grant for the capture is expired,
+and the same `captureId` can never be uploaded again. `withdrawnAt` is what distinguishes it from a
+host removal.
 
 ---
 
@@ -144,3 +175,4 @@ surface.
 | "reject"                  | **decline**                | one verb, matching the media state                                 |
 | "invite link"             | **invite version**         | the credentials rotate as a unit — code and token together         |
 | "public URL"              | **short-lived signed URL** | there are no public media URLs anywhere in this product            |
+| "file key" in a payload   | **short-lived signed URL** | a key names an object directly; it must never reach a client       |

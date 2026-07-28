@@ -126,28 +126,42 @@ the 30-day restore window real.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> processing: upload completed (idempotent callback)
-    processing --> pending: moderation mode = manual
+    [*] --> processing: grant consumed / client confirmed
+    processing --> pending: moderation mode = manual (or ai, until P1)
     processing --> approved: moderation mode = automatic
-    processing --> failed: derivative or callback failure
+    processing --> deleted: submitter withdraws
     pending --> approved: host approves
     pending --> declined: host declines
     approved --> declined: host changes their mind
     declined --> approved: host changes their mind
-    pending --> withdrawn: submitter withdraws
-    approved --> withdrawn: submitter withdraws
-    declined --> withdrawn: submitter withdraws
-    failed --> [*]
-    withdrawn --> [*]
+    pending --> deleted: submitter withdraws
+    approved --> deleted: submitter withdraws
+    declined --> deleted: submitter withdraws
+    deleted --> [*]
 ```
 
-Only `approved` media is visible in the gallery and the slideshow. `withdrawn` is terminal from the
-submitter's side and removes the item from every surface. The `ai` moderation mode adds an
-auto-approve path into `approved` post-launch; it never auto-declines.
+The terminal state is `deleted`, not `withdrawn` — one state covers a guest taking their photo back
+and a host removing it, because from every read path's point of view the two are the same fact and a
+second name for it is a second thing to remember to filter on. `media.withdrawnAt` records _which_
+of the two it was. There is no `failed` state either: an upload that never completes leaves a
+`processing` row with no storage key, which is the same shape a retry can pick up, and the grant that
+would have completed it simply expires.
 
-Because upload callbacks can arrive out of order, the transition into `processing` and out of it
-must be **idempotent and reconciling** — a late callback for an already-approved item is a no-op,
-not a regression. Sprint 3 owns those unit tests.
+Who sees what is [`canSeeMedia`](../packages/contracts/src/media.ts), and it is the read-path half of
+the privacy invariant in `PLAN.md`:
+
+| Role          | Others' media             | Own media                 |
+| ------------- | ------------------------- | ------------------------- |
+| `guest`       | `approved` only           | every state but `deleted` |
+| `cohost`      | every state but `deleted` | every state but `deleted` |
+| `owner`       | every state but `deleted` | every state but `deleted` |
+| `globalAdmin` | **nothing**               | **nothing**               |
+
+Because the two completion signals can arrive in either order and more than once, the transition
+into `processing` and out of it is **idempotent and reconciling**, keyed on `(eventId, captureId)`:
+a late callback for an already-settled item is a no-op, and one for a withdrawn item deletes its own
+bytes rather than reviving the row. [ADR 0004](adr/0004-private-upload-pipeline.md) has the full
+argument; `packages/backend/convex/media.test.ts` has the tests.
 
 ### Account
 
@@ -214,20 +228,31 @@ person cannot tell "removed" from "wrong code".
 ```mermaid
 stateDiagram-v2
     [*] --> captured
-    captured --> queued: 15-second undo elapses
-    captured --> discarded: guest taps undo
+    captured --> queued: undo window elapses, or "send now"
+    captured --> cancelled: guest taps undo
     queued --> uploading: grant obtained
+    queued --> cancelled: guest cancels
     uploading --> uploaded: storage confirms
-    uploading --> queued: retry (durable local queue)
-    uploading --> failed: retries exhausted
-    failed --> queued: manual retry
+    uploading --> failed: attempt failed
+    uploading --> cancelled: guest cancels
+    failed --> queued: retry, automatic or manual
+    failed --> cancelled: guest gives up
     uploaded --> [*]
-    discarded --> [*]
+    cancelled --> [*]
 ```
 
-This machine lives on the device, not in Convex. `uploaded` is where the server-side **Media**
-machine picks up. The queue is durable and resumes in the foreground; background retry is
-best-effort and post-launch.
+This machine lives on the device, not in Convex — `CAPTURE_STATES` and `captureStateMachine` in
+[`packages/contracts/src/media.ts`](../packages/contracts/src/media.ts). The terminal state is
+**`cancelled`**, not `discarded`, and a failed attempt goes back through `queued` rather than
+straight to `uploading`: `TERMINAL_CAPTURE_STATES` is derived from the transition table itself, so
+both clients agree by construction rather than by two lists staying in step.
+
+`uploaded` is where the server-side **Media** machine picks up. Both clients drive the same
+vocabulary — `apps/web`'s `uploadReducer` and `apps/mobile`'s `queueReducer` — but only the app's
+queue is **durable**: it persists to the document directory, rewrites anything left `uploading` back
+to `queued` on cold start and on foreground, and retries on a backoff ladder. Mobile web keeps its
+queue in memory and offers a retry button, because a browser tab that is closed has no queue to
+resume. Background retry (uploading while the app is off screen) is best-effort and post-launch.
 
 ## Invitations and joining
 
@@ -334,6 +359,104 @@ because it falls back to the local part of the email address and so is never emp
 a reinstall does not re-prompt and a guest who onboarded on their phone is not asked again on the
 web.
 
+## The media pipeline
+
+One capture, end to end. Every step is the same on both clients; only the encoder and the file
+system differ.
+
+```mermaid
+sequenceDiagram
+    participant G as Guest client
+    participant C as Convex
+    participant R as apps/web route handler
+    participant S as UploadThing (pdx1)
+
+    G->>G: re-encode → strip EXIF/GPS, hash the result
+    G->>C: media.requestUploadGrant (captureId, byteSize, checksum, …)
+    C-->>G: IssuedGrant { secret, expiresAt } — or rejected / throttled
+    G->>R: POST /api/uploadthing with the UploadTicket
+    R->>C: media.confirmUpload (as the signed-in guest)
+    C-->>R: media row, state processing
+    R-->>G: presigned URL
+    G->>S: PUT the bytes (private ACL)
+    S->>R: onUploadComplete (signed, no session)
+    R->>C: media.completeUpload (callbackSecret + grant secret + fileKey)
+    C-->>R: registered | duplicate | discarded | rejected
+```
+
+Four things about this shape are load-bearing:
+
+1. **The guest never holds a provider credential.** They hold a grant. `apps/web`'s route handler is
+   the only thing in the system with an `UPLOADTHING_TOKEN`, and the Expo app uploads _through it_
+   rather than around it.
+2. **Metadata is stripped at capture, by re-encoding**, before the checksum is taken — so the value
+   the grant is minted against is the value of the stripped file. Server-side stripping would mean
+   writing the GPS-bearing original to storage first, which is the artefact the promise says never
+   exists. `sourceMetadataStripped` records what the pipeline actually did; it is never a literal
+   `true`. See [ADR 0004](adr/0004-private-upload-pipeline.md) §7.
+3. **Completion needs two credentials.** The grant says _which_ upload; `UPLOAD_CALLBACK_SECRET` says
+   the caller is our own route handler. Without the second, a guest replaying their own legitimate
+   grant could point a media row at any file key in the app.
+4. **All four completion outcomes are HTTP 200.** A callback that answers with an error is one the
+   provider retries for ever, and "we already had this" and "the guest withdrew it mid-flight" are
+   not conditions retrying will fix. Anything Convex refuses to attach, it schedules for deletion.
+
+### The upload ticket
+
+`uploadTicketSchema` in [`packages/contracts/src/upload.ts`](../packages/contracts/src/upload.ts) is
+the wire between _whichever_ client is uploading and the route handler. It lives in contracts, not in
+either app, because `apps/mobile` deliberately does not depend on the website's build — when the
+shape lived in `apps/web` the two sides drifted (the app sent only the grant secret) with nothing to
+catch it.
+
+It is **not a credential**. `ticket.secret` is; everything else is a claim about the file, which the
+middleware cross-checks against the file actually offered (`checkTicketAgainstFiles`) before it
+spends a round trip. The check that _binds_ is `matchesGrant` in Convex, where one side of the
+comparison is a value the server minted. `buildUploadTicket` takes `eventId`, `captureId`,
+`mediaType` and `byteSize` from the grant rather than from client state, so a ticket cannot describe
+a file other than the one that was authorised.
+
+### Derivatives
+
+Both clients produce two files and upload one:
+
+| File     | Web (`<canvas>`) | App (`expo-image-manipulator`) | Goes where                        |
+| -------- | ---------------- | ------------------------------ | --------------------------------- |
+| original | 2560 px, q 0.85  | 4096 px, q 0.92                | uploaded — this is the submission |
+| preview  | 480 px, q 0.6    | 640 px, q 0.6                  | stays on the device               |
+
+The ceilings differ because mobile Safari caps canvas area and silently returns a blank bitmap past
+it, which `expo-image-manipulator` does not do. Both profiles live together in
+[`packages/contracts/src/capture.ts`](../packages/contracts/src/capture.ts) so the difference is a
+recorded decision rather than an accident. Output is always JPEG: the re-encode is happening anyway
+for the metadata strip, and it normalises iPhone HEIC into something the organiser's laptop can
+display.
+
+The preview is **local-only** on both platforms — `media.completeUpload` takes one `fileKey` per
+capture, so there is nowhere to put a second object. Sprint 4's video poster needs that path.
+
+## The storage adapter
+
+Nothing in `convex/` talks to UploadThing directly. Every read and every delete goes through a
+`StorageAdapter`, resolved per call:
+
+```
+resolveStorageAdapter(region) →
+  test override        → the in-memory fake (packages/backend/convex/lib/storage/fake.ts)
+  no UPLOADTHING_TOKEN → unconfiguredAdapter: reads omit the URL, deletes throw
+  otherwise            → createUploadThingAdapter(region)
+```
+
+**The region always comes from the row, never from the environment**: `media.storageRegion` for a
+read or a delete, `events.storageRegion` for a grant. `STORAGE_DEFAULT_REGION` only ever seeds a new
+event. That is what makes "files never migrate" true rather than aspirational — a future region
+change cannot retroactively send a delete to the wrong app.
+
+The unconfigured adapter is why the whole repo tests offline. Reads catch
+`StorageNotConfiguredError` and omit the URL, so a guest with no credentials configured still sees
+that their photo is pending. Deletes deliberately let it escape: silently not deleting a withdrawn
+photo is the worst outcome this product has.
+
 ## `storageRegion`
 
 `events.storageRegion` is a string enum, currently `["pdx1"]`. It is set at event creation and
@@ -343,11 +466,47 @@ a storage adapter resolves credentials and host from it. Files never migrate whe
 The full reasoning, alternatives and the multi-region path are in
 [ADR 0002](adr/0002-storage-region-adapter.md).
 
+## Upload grants
+
+An `uploadGrants` row is short-lived, single-use permission to put **one exact file** into storage.
+A guest holds no provider credential; they hold one of these.
+
+| Bound to        | Why                                                                                |
+| --------------- | ---------------------------------------------------------------------------------- |
+| `eventId`       | A grant for one party cannot store a file against another.                         |
+| `captureId`     | Client-generated, stable across retries. What makes the whole pipeline idempotent. |
+| `mediaType`     | Decides which cap in `MEDIA_LIMITS` applies.                                       |
+| `byteSize`      | Checked again at completion — a body that grew has walked around the cap.          |
+| `checksum`      | Lower-case hex SHA-256. Checked at completion when the client supplies one.        |
+| `storageRegion` | Copied from the event, never from the environment. Files never migrate (ADR 0002). |
+
+```mermaid
+stateDiagram-v2
+    [*] --> issued: media.requestUploadGrant
+    issued --> consumed: media.completeUpload (once, atomically)
+    issued --> expired: two minutes elapse
+    issued --> expired: the capture is withdrawn
+    consumed --> [*]
+    expired --> [*]
+```
+
+- **Two-minute TTL** (`GRANT_POLICY.ttlMs`), measured to the point the upload _starts_, not to the
+  point it finishes — a 250 MB video on party wifi takes longer than that and is fine.
+- **The secret is stored hashed**, like the OTP codes in `userEmails`. It is returned once and never
+  logged or audited.
+- **Single use is the transaction, not the status column.** The read, the decision and the write all
+  happen inside one Convex mutation, which is serialisable — two racing completions cannot both
+  observe `issued`.
+- **Expiry is a fact about the clock.** A row still marked `issued` past its `expiresAt` is unusable
+  whether or not anything has swept it; the status is tidying.
+
+`uploadAttempts` is the per-account grant counter. It is a separate table from `joinAttempts` because
+it throttles _successes_ — an issued grant is the scarce thing — so a guest fumbling a six-digit code
+can never eat into the budget they need to send the photo they came here to send.
+
 ## Not yet written
 
 Filled in by the sprint that builds the thing, rather than guessed now:
 
-- **(Sprint 3)** The upload-grant record: exact fields, expiry, single-use enforcement, and the
-  reconciliation rules for out-of-order completion callbacks.
 - **(Sprint 4)** Report and block entities required for App Review.
 - **(Sprint 5)** The audit-event taxonomy — the closed list of `action` values.
