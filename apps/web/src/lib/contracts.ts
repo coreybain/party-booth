@@ -82,6 +82,9 @@ export {
   JOIN_POLICY,
   JOIN_REJECTED_MESSAGE,
   JOIN_THROTTLED_MESSAGE,
+  // The route handler in `app/api/join` validates the invite shape before
+  // forwarding it, using the same schema Convex parses with.
+  joinInputSchema,
   parseJoinResult,
   type JoinResult,
 } from "@partybooth/contracts/join";

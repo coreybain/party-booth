@@ -91,7 +91,10 @@ export function describeJoinFailure(
     return {
       title: "Too many tries",
       message: result.message,
-      hint: `Wait about ${formatRetryAfter(result.retryAfterMs)}, then try the code again. Scanning the QR instead works straight away.`,
+      // Never "scan the QR instead": the budget is charged per *account*, not per
+      // credential type, so a token join is refused by the same lockout. Telling a
+      // guest otherwise sends them back to the sign to be refused a second time.
+      hint: `Wait about ${formatRetryAfter(result.retryAfterMs)}, then try again. The wait applies to scanning the QR too.`,
       retryAfterMs: result.retryAfterMs,
       canRetry: false,
     };

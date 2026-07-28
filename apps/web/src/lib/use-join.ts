@@ -1,12 +1,11 @@
 "use client";
 
-import { useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { appErrorMessage } from "@/lib/app-errors";
-import { parseJoinResult } from "@/lib/contracts";
-import { backendApi, type JoinInvite } from "@/lib/convex-api";
+import type { JoinInvite } from "@/lib/convex-api";
+import { requestJoin } from "@/lib/join-transport";
 
 /**
  * One join, however the guest arrived.
@@ -30,6 +29,13 @@ import { backendApi, type JoinInvite } from "@/lib/convex-api";
  * - **The result is parsed, not trusted.** `@partybooth/backend/client-api` is
  *   a hand-written assertion until Convex codegen can introspect a deployment;
  *   `parseJoinResult` is the contract's own schema, and it fails *closed*.
+ *   `requestJoin` does that parse.
+ *
+ * The call goes through `POST /api/join` rather than straight over the Convex
+ * socket. That is a throttle decision, not a plumbing preference: only something
+ * in the request path can derive the network key the join throttle's second axis
+ * needs, and a value the browser volunteers is a value an attacker picks. See
+ * `src/lib/join-transport.ts`.
  */
 
 export type JoinPhase =
@@ -51,14 +57,13 @@ export interface JoinController {
 
 export function useJoinAttempt(): JoinController {
   const router = useRouter();
-  const join = useMutation(backendApi.join.join);
   const [phase, setPhase] = useState<JoinPhase>({ status: "idle" });
 
   const attempt = useCallback(
     async (invite: JoinInvite): Promise<JoinPhase> => {
       setPhase({ status: "joining" });
       try {
-        const result = parseJoinResult(await join({ invite }));
+        const result = await requestJoin(invite);
 
         if (result.outcome === "joined") {
           // `replace`, not `push`: the back button must not return a guest to a
@@ -85,7 +90,7 @@ export function useJoinAttempt(): JoinController {
         return next;
       }
     },
-    [join, router],
+    [router],
   );
 
   const reset = useCallback(() => {

@@ -240,8 +240,15 @@ attempt against a superseded version is rejected.
 "Unique among joinable events" is doing real work. Archiving an event frees its code **implicitly**:
 nothing is rewritten, the old row keeps the code, and the code stops counting because its event is no
 longer joinable. So a lookup by code can match several rows and must filter rather than assume one —
-and re-opening an archived event has to re-check its code, redrawing it if somebody else has since
-been given that number.
+and re-opening an archived event has to re-check its code, **minting a new invite version** if
+somebody else has since been given that number. Not editing the old row: an `inviteVersions` row is
+the historical credential every membership admitted under it points at, so rewriting its code would
+make the log claim guests joined with digits that did not exist yet.
+
+The same immutability rule is why a rotation must always _change_ the code. The collision check
+excuses the event's own outgoing version — otherwise no rotation could run — and that exemption used
+to let a random draw, or an admin picking a specific value, hand back the six digits the rotation was
+supposed to kill.
 
 ```mermaid
 flowchart TD
@@ -271,20 +278,29 @@ history, which is not information they lack.
 Joining is authenticated, rate-limited, enumeration-protected and audited:
 
 - **Authenticated** — there is always a user, which is what gives the throttle a key.
-- **Rate-limited** — `joinAttempts` counts failures per key (`user:<id>`, plus an optional
-  `net:<hash>` the web route can supply). Ten failures in fifteen minutes starts a fifteen-minute
-  lockout; a success hands the budget back. The read-decide-write happens inside a Convex mutation,
-  so it is transactional.
+- **Rate-limited** — `joinAttempts` counts failures per key (`user:<id>`, plus `net:<hash>` for calls
+  that came through `apps/web`'s `POST /api/join`, which derives it from the forwarded address).
+  Ten failures in fifteen minutes starts a fifteen-minute lockout, and **only elapsed time hands the
+  budget back**. A success used to reset it, which was a complete bypass: an admitted attempt is not
+  scarce — replaying your own party's code counts — so "nine guesses, one replay" looped forever.
+  The read-decide-write happens inside a Convex mutation, so it is transactional.
+  The Expo app has no server in front of it and is charged on the account key alone; a client-supplied
+  network key is treated as untrusted, because it can only ever add a key, never remove one.
 - **Enumeration-protected** — a six-digit code is only a million values, so every failure returns the
   same value: one fixed sentence, no other fields. "No such code", "superseded version", "not
   joinable yet", "outside the schedule window" and "your membership was revoked" are
   indistinguishable from outside. The real reason goes to `auditEvents` and nowhere else.
-- **Audited** — every attempt writes a row, successful or not.
+- **Audited** — every attempt writes a row: `membership.join_succeeded` for every admitted one
+  (including repeat scans that change nothing — a replayed credential must not be invisible),
+  `membership.created` only when a row actually appears, and `membership.join_rejected` for every
+  refusal, throttles included.
 
 The pre-join preview follows the same logic, which is why it is split in two: previewing from a
 **token** is a query (160 bits is not enumerable, and the join page must render before sign-in),
 while previewing from a typed **code** is a _mutation_, because only a mutation can spend a throttle
-budget.
+budget. Both run the same credential evaluation as a join, and the code preview is audited on the
+same terms — it is the endpoint a code-walker actually calls, so a silent refusal there would blind
+the log exactly at the ceiling.
 
 ### Verified-email matching
 

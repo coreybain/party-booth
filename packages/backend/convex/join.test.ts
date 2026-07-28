@@ -95,6 +95,51 @@ describe("join.join", () => {
     const row = (await auditRows(t)).find((r) => r.action === AUDIT_ACTIONS.membershipCreated);
     expect(row?.eventId).toBe(eventId);
     expect(row?.metadata).toMatchObject({ via: "code", inviteVersion: 1 });
+
+    const success = (await auditRows(t)).find((r) => r.action === AUDIT_ACTIONS.joinSucceeded);
+    expect(success?.eventId).toBe(eventId);
+    expect(success?.metadata).toMatchObject({
+      via: "code",
+      inviteVersion: 1,
+      alreadyMember: false,
+      priorStatus: "none",
+    });
+  });
+
+  it("audits every accepted attempt, including the ones that change nothing", async () => {
+    // A valid credential replayed a thousand times used to leave a single row
+    // from its first use — which is precisely the shape an attacker hides in.
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+    await as.mutation(api.join.join, { invite: { via: "token", token: TOKEN } });
+    await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+
+    const rows = await auditRows(t);
+    expect(rows.filter((r) => r.action === AUDIT_ACTIONS.membershipCreated)).toHaveLength(1);
+    const successes = rows.filter((r) => r.action === AUDIT_ACTIONS.joinSucceeded);
+    expect(successes).toHaveLength(3);
+    expect(successes.slice(1).every((r) => r.metadata?.["alreadyMember"] === true)).toBe(true);
+    expect(successes[1]?.metadata).toMatchObject({ via: "token", priorStatus: "active" });
+  });
+
+  it("does not call coming back after leaving a membership creation", async () => {
+    const as = t.withIdentity({ subject: "guest" });
+    const first = await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+    if (first.outcome !== "joined") throw new Error("unreachable");
+    await t.run(async (ctx) => ctx.db.patch(first.membershipId, { status: "left" }));
+
+    const again = await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+    expect(again).toMatchObject({ outcome: "joined", alreadyMember: false });
+
+    const rows = await auditRows(t);
+    // The row was already there — it was re-activated, not created.
+    expect(rows.filter((r) => r.action === AUDIT_ACTIONS.membershipCreated)).toHaveLength(1);
+    const successes = rows.filter((r) => r.action === AUDIT_ACTIONS.joinSucceeded);
+    expect(successes).toHaveLength(2);
+    expect(successes.at(-1)?.metadata).toMatchObject({
+      alreadyMember: false,
+      priorStatus: "left",
+    });
   });
 
   it("refuses a signed-out caller", async () => {
@@ -277,7 +322,10 @@ describe("join throttle", () => {
     ).toBe("joined");
   });
 
-  it("hands the budget back on a success, so a mistype costs nothing", async () => {
+  it("does not hand the budget back on a successful join", async () => {
+    // The reset this replaces was a complete bypass: an admitted attempt is
+    // cheap, so "9 guesses + 1 real join" looped forever and the ceiling never
+    // arrived.
     const as = t.withIdentity({ subject: "guest" });
     for (let i = 0; i < JOIN_POLICY.maxFailuresPerWindow - 1; i += 1) {
       await as.mutation(api.join.join, { invite: { via: "code", code: "999888" } });
@@ -285,9 +333,49 @@ describe("join throttle", () => {
     await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
 
     const attempts = await t.run(async (ctx) => ctx.db.query("joinAttempts").collect());
-    expect(attempts).not.toHaveLength(0);
-    expect(attempts.every((attempt) => attempt.failureCount === 0)).toBe(true);
-    expect(attempts.every((attempt) => attempt.lockedUntil === undefined)).toBe(true);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.failureCount).toBe(JOIN_POLICY.maxFailuresPerWindow - 1);
+  });
+
+  it("does not let a repeat join by an existing member zero the failure count", async () => {
+    const as = t.withIdentity({ subject: "guest" });
+    // In first, legitimately. This is the credential an attacker would replay.
+    await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+
+    for (let i = 0; i < JOIN_POLICY.maxFailuresPerWindow - 1; i += 1) {
+      await as.mutation(api.join.join, { invite: { via: "code", code: "999888" } });
+    }
+    const replay = await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+    expect(replay).toMatchObject({ outcome: "joined", alreadyMember: true });
+
+    const after = await t.run(async (ctx) => ctx.db.query("joinAttempts").collect());
+    expect(after[0]?.failureCount).toBe(JOIN_POLICY.maxFailuresPerWindow - 1);
+
+    // …so the tenth guess still hits the ceiling.
+    await as.mutation(api.join.join, { invite: { via: "code", code: "999888" } });
+    expect(
+      (await as.mutation(api.join.join, { invite: { via: "code", code: CODE } })).outcome,
+    ).toBe("throttled");
+  });
+
+  it("cannot be walked past the ceiling by alternating guesses and replays", async () => {
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.join.join, { invite: { via: "code", code: CODE } });
+
+    // The proof-of-concept from the audit, scaled down: nine guesses, one
+    // replay, repeated. It used to run forever.
+    const outcomes: string[] = [];
+    for (let round = 0; round < 4 && !outcomes.includes("throttled"); round += 1) {
+      for (let i = 0; i < 9; i += 1) {
+        outcomes.push(
+          (await as.mutation(api.join.join, { invite: { via: "code", code: "999888" } })).outcome,
+        );
+      }
+      outcomes.push(
+        (await as.mutation(api.join.join, { invite: { via: "code", code: CODE } })).outcome,
+      );
+    }
+    expect(outcomes).toContain("throttled");
   });
 
   it("also charges a network key when the caller supplies one", async () => {
@@ -391,5 +479,89 @@ describe("join previews", () => {
     expect(await as.mutation(api.join.previewByCode, { code: CODE })).toMatchObject({
       alreadyMember: true,
     });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Preview auditing                                                   */
+  /* ------------------------------------------------------------------ */
+
+  it("audits a throttled preview instead of going quiet at the ceiling", async () => {
+    // The preview is the endpoint a code-walker actually calls, so a silent
+    // refusal here is a blind spot in the only mechanism that can tell a
+    // guesser from a guest — and it goes dark exactly at guess ten.
+    const as = t.withIdentity({ subject: "guest" });
+    for (let i = 0; i < JOIN_POLICY.maxFailuresPerWindow; i += 1) {
+      await as.mutation(api.join.previewByCode, { code: "999888" });
+    }
+    const before = (await auditRows(t)).length;
+
+    expect(await as.mutation(api.join.previewByCode, { code: "111222" })).toBeNull();
+
+    const rows = await auditRows(t);
+    expect(rows).toHaveLength(before + 1);
+    expect(rows.at(-1)).toMatchObject({
+      action: AUDIT_ACTIONS.joinRejected,
+      metadata: { reason: "throttled", via: "code", preview: true },
+    });
+  });
+
+  it("records the real reason a preview was refused, not always unknownCredential", async () => {
+    const asOwner = t.withIdentity({ subject: "owner" });
+    await asOwner.mutation(api.invites.rotate, { eventId });
+
+    const as = t.withIdentity({ subject: "guest" });
+    // The old code now belongs to a superseded version — which is a different
+    // incident from a code that never existed, and the log is the only place
+    // the difference is allowed to survive.
+    expect(await as.mutation(api.join.previewByCode, { code: CODE })).toBeNull();
+
+    const rejections = (await auditRows(t)).filter(
+      (row) => row.action === AUDIT_ACTIONS.joinRejected,
+    );
+    expect(rejections.at(-1)?.metadata).toMatchObject({
+      reason: "revokedVersion",
+      preview: true,
+    });
+    expect(rejections.at(-1)?.eventId).toBe(eventId);
+  });
+
+  it("records eventNotJoinable for a preview of a party that is not open", async () => {
+    await t.run(async (ctx) => ctx.db.patch(eventId, { state: "draft" }));
+    const as = t.withIdentity({ subject: "guest" });
+    expect(await as.mutation(api.join.previewByCode, { code: CODE })).toBeNull();
+
+    const rejections = (await auditRows(t)).filter(
+      (row) => row.action === AUDIT_ACTIONS.joinRejected,
+    );
+    expect(rejections.at(-1)?.metadata).toMatchObject({
+      reason: "eventNotJoinable",
+      preview: true,
+    });
+  });
+
+  it("still says nothing to the caller, whatever the reason", async () => {
+    const as = t.withIdentity({ subject: "guest" });
+    await t.run(async (ctx) => ctx.db.patch(eventId, { state: "draft" }));
+    const notJoinable = await as.mutation(api.join.previewByCode, { code: CODE });
+    const nonexistent = await as.mutation(api.join.previewByCode, { code: "111222" });
+    expect(notJoinable).toBeNull();
+    expect(nonexistent).toBeNull();
+  });
+
+  it("refuses a preview to somebody a host removed", async () => {
+    const guestId = await t.run(async (ctx) =>
+      ctx.db
+        .query("users")
+        .withIndex("by_authId", (q) => q.eq("authId", "guest"))
+        .unique(),
+    );
+    if (!guestId) throw new Error("unreachable");
+    await seedMembership(t, eventId, guestId._id, "guest", "revoked");
+
+    const as = t.withIdentity({ subject: "guest" });
+    // "Can I see it" and "can I join it" must agree, or the preview becomes the
+    // place to learn something the join refuses to tell you.
+    expect(await as.mutation(api.join.previewByCode, { code: CODE })).toBeNull();
+    expect(await t.query(api.join.previewByToken, { token: TOKEN })).not.toBeNull();
   });
 });

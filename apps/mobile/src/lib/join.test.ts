@@ -112,6 +112,20 @@ describe("describeJoinFailure", () => {
     expect(copy.canRetry).toBe(false);
     expect(copy.hint).toContain("5 minutes");
   });
+
+  it("never claims the QR skips the lockout", () => {
+    // The budget is charged per account, not per credential type, so a token join
+    // is refused by the same lockout. Sending a throttled guest back to the sign to
+    // be refused a second time is worse than telling them to wait.
+    const copy = describeJoinFailure({
+      outcome: "throttled",
+      message: JOIN_THROTTLED_MESSAGE,
+      retryAfterMs: 60_000,
+    });
+    expect(copy.hint).not.toMatch(/straight away|instead works|never gets throttled/i);
+    expect(copy.hint).toMatch(/QR/);
+    expect(copy.hint).toMatch(/wait/i);
+  });
 });
 
 describe("formatRetryAfter", () => {

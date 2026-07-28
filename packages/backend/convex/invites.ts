@@ -1,5 +1,6 @@
 import {
   AUDIT_ACTIONS,
+  normalizeEventCode,
   rotateInviteInputSchema,
   validateSpecificEventCode,
 } from "@partybooth/contracts";
@@ -70,6 +71,19 @@ export const rotate = mutation({
       }
       if (await isCodeTaken(ctx, validated.code, { ignoreEventId: actor.event._id })) {
         throw invalidInput("That code is already in use by another event.");
+      }
+      // `ignoreEventId` above deliberately excuses this event's own outgoing
+      // code from the collision check — otherwise no specific-code rotation
+      // could ever run. That exemption is exactly why the same value has to be
+      // refused here: rotating 482913 → 482913 revokes the version, mints a new
+      // one, tells the host the poster is dead, and leaves the six digits on it
+      // working. `mintInviteVersion` refuses it too; this is the sentence a
+      // human reads.
+      const current = await getActiveInviteVersion(ctx, actor.event);
+      if (current && normalizeEventCode(current.code) === validated.code) {
+        throw invalidInput(
+          "That is the code you are rotating away from. Pick a different one, or rotate to a random code.",
+        );
       }
       specificCode = validated.code;
     }

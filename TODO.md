@@ -33,7 +33,7 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 - [x] Unit tests: permission rules, event state transitions, code/token generation, join rate limits
 
 **RC2:** on your phone (web + app): create an event on desktop, scan its QR with your phone, sign in as a guest, land in the event. Second phone joins by typing the code.
-> ⏳ **RC2 blocked on the same owner setup as RC1** (Convex deployment, Vercel link, OAuth keys — see the notes section). Code side verified: 861 tests, offline typecheck/lint/format green, `next build` and `expo export` both pass with an **empty** environment.
+> ⏳ **RC2 blocked on the same owner setup as RC1** (Convex deployment, Vercel link, OAuth keys — see the notes section). Code side verified: 907 tests, offline typecheck/lint/format green, `next build` and `expo export` both pass with an **empty** environment. Audit findings addressed: join-throttle bypass on success, invite-version immutability on re-open and rotation, join/preview auditing, active-event switch on the app, onboarding gate on both join routes, and the two `/.well-known/` association documents.
 
 ---
 
@@ -138,6 +138,7 @@ Not part of any sprint; these are third-party clocks and dashboard logins only y
 - [ ] Add **Resend** domain + DNS records (SPF/DKIM need propagation time)
 - [ ] Create **Vercel** project, **Sentry** project, **Google OAuth** client, **Apple Sign-In** service config
 - [ ] Buy/confirm the **domain** used for QR universal links
+- [ ] Fill in `APPLE_TEAM_ID`, `APPLE_APP_BUNDLE_IDENTIFIER` and `ANDROID_CERT_FINGERPRINTS` (Play Console → Setup → App signing → SHA-256). Without them, `apps/web` serves 404 at `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json`, and a scanned QR opens the browser instead of the app. After deploying, run `pnpm verify:app-links https://<your-domain>` — do this **before** printing signage; both platforms cache what they fetch at install time.
 - [ ] Drop all resulting API keys/secrets into the env files (Claude will scaffold `.env.example` in Sprint 1 so you know exactly what goes where)
 
 Done when: every provider dashboard is reachable and DNS records are submitted.

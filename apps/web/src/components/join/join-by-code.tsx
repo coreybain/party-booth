@@ -1,6 +1,6 @@
 "use client";
 
-import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useConvexAuth, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
@@ -17,6 +17,7 @@ import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type JoinPreview } from "@/lib/convex-api";
 import { JOIN_REJECTED_MESSAGE } from "@/lib/contracts";
 import { joinFallbackUrl } from "@/lib/join-url";
+import { requestPreviewByCode } from "@/lib/join-transport";
 import { useJoinAttempt } from "@/lib/use-join";
 
 /**
@@ -49,7 +50,6 @@ function JoinByCodeLive() {
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
 
   const me = useQuery(backendApi.users.currentUser, isAuthenticated ? {} : "skip");
-  const previewByCode = useMutation(backendApi.join.previewByCode);
   const { phase, busy, attempt, reset } = useJoinAttempt();
 
   const [code, setCode] = useState<string | undefined>(undefined);
@@ -62,25 +62,25 @@ function JoinByCodeLive() {
     | { kind: "error"; message: string }
   >({ kind: "idle" });
 
-  const lookUp = useCallback(
-    async (entered: string) => {
-      setLookup({ kind: "checking" });
-      setCode(entered);
-      try {
-        const found = await previewByCode({ code: entered });
-        if (found === null) {
-          // One answer for "no such code", "old code" and "not open yet".
-          setLookup({ kind: "rejected" });
-          return;
-        }
-        setPreview(found);
-        setLookup({ kind: "idle" });
-      } catch (error) {
-        setLookup({ kind: "error", message: appErrorMessage(error) });
+  const lookUp = useCallback(async (entered: string) => {
+    setLookup({ kind: "checking" });
+    setCode(entered);
+    try {
+      // Through `/api/join`, not the Convex socket: the lookup is the call a
+      // code-walker actually makes, so it is the one that most needs the
+      // server-derived network key on its throttle. See `join-transport.ts`.
+      const found = await requestPreviewByCode(entered);
+      if (found === null) {
+        // One answer for "no such code", "old code" and "not open yet".
+        setLookup({ kind: "rejected" });
+        return;
       }
-    },
-    [previewByCode],
-  );
+      setPreview(found);
+      setLookup({ kind: "idle" });
+    } catch (error) {
+      setLookup({ kind: "error", message: appErrorMessage(error) });
+    }
+  }, []);
 
   const attemptJoin = useCallback(async () => {
     if (code === undefined) return;

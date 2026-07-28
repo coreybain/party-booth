@@ -13,7 +13,6 @@ import {
   joinThrottled,
   networkJoinKey,
   registerJoinFailure,
-  registerJoinSuccess,
   type JoinAttemptState,
   type JoinResult,
 } from "./join";
@@ -118,15 +117,22 @@ describe("registerJoinFailure", () => {
   });
 });
 
-describe("registerJoinSuccess", () => {
-  it("hands the budget back and clears any lockout", () => {
-    expect(registerJoinSuccess(T0)).toEqual({
-      failureCount: 0,
-      windowStartedAt: T0,
-      lastAttemptAt: T0,
-      lockedUntil: undefined,
-    });
-    expect(canAttemptJoin(registerJoinSuccess(T0), T0)).toEqual({ allowed: true });
+describe("no success reset", () => {
+  /**
+   * The module deliberately exports nothing that clears a budget on demand. A
+   * success reset was a full bypass of the ceiling: an admitted attempt is
+   * cheap to manufacture (replaying your own event's code counts), so
+   * "9 failures + 1 success" looped forever.
+   */
+  it("exports no way to clear a failure budget", async () => {
+    const contracts: Record<string, unknown> = await import("./join");
+    expect(Object.keys(contracts)).not.toContain("registerJoinSuccess");
+  });
+
+  it("only lets time hand the budget back", () => {
+    const locked = failTimes(JOIN_POLICY.maxFailuresPerWindow);
+    expect(canAttemptJoin(locked, T0 + 1).allowed).toBe(false);
+    expect(canAttemptJoin(locked, (locked?.lockedUntil ?? 0) + 1).allowed).toBe(true);
   });
 });
 

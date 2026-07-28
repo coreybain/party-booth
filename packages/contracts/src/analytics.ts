@@ -109,6 +109,17 @@ export const AUDIT_ACTIONS = {
   membershipCreated: "membership.created",
   membershipRevoked: "membership.revoked",
   membershipLeft: "membership.left",
+  /**
+   * An attempt that was **accepted**, written for every admitted join —
+   * including a repeat scan by somebody who was already a member.
+   *
+   * Separate from {@link AUDIT_ACTIONS.membershipCreated} because that one is
+   * about a row appearing, and this one is about a credential being used. Only
+   * having the former meant a valid code replayed a thousand times left a
+   * single audit row from the first use, which is the shape an attacker uses to
+   * hide: "every attempt is audited" has to include the ones that worked.
+   */
+  joinSucceeded: "membership.join_succeeded",
   joinRejected: "membership.join_rejected",
   cohostInvited: "membership.cohost_invited",
   /** A verified email matched a pending co-host invite and was elevated. */

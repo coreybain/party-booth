@@ -387,11 +387,21 @@ export const setState = mutation({
 
     // Codes are unique among *joinable* events, so archiving frees one
     // implicitly. Coming back the other way is therefore the one transition
-    // that can find its own code already taken.
+    // that can find its own code already taken — and the fix is a *new* invite
+    // version, not an edit to the old row, which memberships point at.
     let reissuedCode: string | undefined;
+    let reissuedVersion: number | undefined;
     if (!isJoinableEventState(from) && isJoinableEventState(to)) {
       const fresh = await ctx.db.get(actor.event._id);
-      if (fresh) reissuedCode = (await ensureCodeIsFree(ctx, fresh, { now }))?.reissuedCode;
+      const reissued = fresh
+        ? await ensureCodeIsFree(ctx, fresh, {
+            now,
+            actorUserId: actor.user._id,
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          })
+        : undefined;
+      reissuedCode = reissued?.reissuedCode;
+      reissuedVersion = reissued?.version;
     }
 
     await writeEventAudit(ctx, {
@@ -402,7 +412,9 @@ export const setState = mutation({
       metadata: {
         from,
         to,
-        ...(reissuedCode === undefined ? {} : { codeReissued: true }),
+        ...(reissuedCode === undefined
+          ? {}
+          : { codeReissued: true, inviteVersion: reissuedVersion }),
       },
       now,
     });

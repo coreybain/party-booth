@@ -198,6 +198,45 @@ export const serverVars = {
     { secret: true },
   ),
 
+  /* --- Universal links / App Links -------------------------------------- */
+  /**
+   * The two association documents `apps/web` serves from `/.well-known/` are what
+   * turn a printed `https://<host>/join/<token>` QR into an app launch rather
+   * than a browser tab. Both are per-deployment facts, so they are configuration
+   * rather than constants — and both are optional, because an unsigned local
+   * build has neither, and the routes answer 404 rather than serving a document
+   * that claims an association that does not exist. A wrong association file is
+   * worse than none: iOS and Android cache it.
+   */
+  ANDROID_APP_PACKAGE: envVar(
+    nonEmpty.default("com.partybooth.app"),
+    "Android application id — must match `android.package` in apps/mobile/app.config.ts.",
+  ),
+  ANDROID_CERT_FINGERPRINTS: envVar(
+    z
+      .string()
+      .transform((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim().toUpperCase())
+          .filter((entry) => entry.length > 0),
+      )
+      .pipe(
+        z
+          .array(
+            z
+              .string()
+              .regex(
+                /^(?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/,
+                "must be a SHA-256 fingerprint: 32 colon-separated hex pairs",
+              ),
+          )
+          .min(1),
+      )
+      .optional(),
+    "Comma-separated SHA-256 signing-certificate fingerprints for Android App Links. Play Console → your app → Setup → App signing → 'App signing key certificate'. Include the upload key too while testing internal builds.",
+  ),
+
   /* --- Expo push (server side) ------------------------------------------ */
   EXPO_ACCESS_TOKEN: envVar(
     nonEmpty.optional(),

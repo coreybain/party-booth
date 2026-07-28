@@ -24,7 +24,24 @@ export interface AppErrorView {
 
 const FALLBACK = "Something went wrong. Try again in a moment.";
 
+/**
+ * An `AppErrorView` that came back over HTTP rather than over the Convex socket.
+ *
+ * `ConvexError` does not survive a JSON round trip, so the `/api/join` route
+ * serialises the view and the client rethrows it as this. Everything downstream
+ * — `appErrorMessage`, `isSignedOutError` — then behaves identically whether the
+ * call went through the route handler or straight to Convex.
+ */
+export class RemoteAppError extends Error {
+  override readonly name = "RemoteAppError";
+  constructor(readonly view: AppErrorView) {
+    super(view.message);
+  }
+}
+
 export function toAppErrorView(error: unknown): AppErrorView {
+  if (error instanceof RemoteAppError) return error.view;
+
   if (isAppError(error)) {
     const data = error.data;
     const retryAfterMs =

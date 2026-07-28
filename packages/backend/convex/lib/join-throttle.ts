@@ -1,7 +1,6 @@
 import {
   canAttemptJoin,
   registerJoinFailure,
-  registerJoinSuccess,
   type JoinAttemptState,
   type JoinThrottleDecision,
 } from "@partybooth/contracts";
@@ -76,8 +75,9 @@ async function upsert(
 
   if (existing) {
     // `undefined` is how Convex removes an optional field, and it has to be
-    // passed explicitly: a success must *clear* a lockout, not leave the old
-    // value sitting there where the next read would still honour it.
+    // passed explicitly: a window that has rolled over must *clear* the expired
+    // lockout rather than leave the old value where the next read still honours
+    // it. Only elapsed time ever produces that state — see `registerJoinFailure`.
     await ctx.db.patch(existing._id, { ...fields, lockedUntil: next.lockedUntil });
     return;
   }
@@ -99,13 +99,14 @@ export async function recordJoinFailure(
   }
 }
 
-/** Hand the budget back on success, so a mistyped code costs nothing long-term. */
-export async function recordJoinSuccess(
-  ctx: MutationCtx,
-  keys: readonly string[],
-  now: number,
-): Promise<void> {
-  for (const key of keys) {
-    await upsert(ctx, key, registerJoinSuccess(now), now);
-  }
-}
+/**
+ * There is no `recordJoinSuccess`, and adding one back would re-open the hole
+ * it was removed for.
+ *
+ * A success used to zero the failure count and clear the lockout. Admitted
+ * attempts are not scarce — `join.join` counts a repeat join by an existing
+ * member as one — so anybody holding a single valid code could spend nine
+ * guesses, replay their own code, and start again with a full budget, forever.
+ * See `@partybooth/contracts/join` for the arithmetic. Failures now expire only
+ * with the window, which is the one clock a caller cannot wind forward.
+ */

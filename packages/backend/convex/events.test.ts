@@ -9,6 +9,7 @@ import {
   auditRows,
   makeTest,
   seedEvent,
+  seedInviteVersion,
   seedMembership,
   seedUser,
   setAllowlist,
@@ -278,6 +279,61 @@ describe("events.setState", () => {
     const row = (await auditRows(t)).find((r) => r.action === AUDIT_ACTIONS.eventStateChanged);
     expect(row?.metadata).toMatchObject({ from: "scheduled", to: "archived" });
     expect(row?.actorRole).toBe("owner");
+  });
+
+  it("mints a new invite version when re-opening finds its code reused", async () => {
+    // The after-party path: archive, somebody else is handed those six digits,
+    // then the host re-opens. The old `inviteVersions` row is the credential
+    // every membership admitted under it points at, so it must come out of this
+    // byte-for-byte identical — a patch would rewrite history.
+    const stale = await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    await t.run(async (ctx) => ctx.db.patch(eventId, { state: "archived" }));
+
+    const other = await seedEvent(t, ownerId, { state: "live", name: "Someone else" });
+    await seedInviteVersion(t, other, ownerId, { code: "482913", version: 1 });
+
+    const as = t.withIdentity({ subject: "owner" });
+    const result = await as.mutation(api.events.setState, { eventId, state: "live" });
+
+    expect(result.reissuedCode).toBeDefined();
+    expect(result.reissuedCode).not.toBe("482913");
+
+    const previous = await t.run(async (ctx) => ctx.db.get(stale.inviteVersionId));
+    expect(previous?.code).toBe("482913");
+    expect(previous?.token).toBe(stale.token);
+    expect(previous?.version).toBe(1);
+    // Retired, not rewritten.
+    expect(previous?.status).toBe("revoked");
+
+    const versions = await t.run(async (ctx) =>
+      ctx.db
+        .query("inviteVersions")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(versions).toHaveLength(2);
+    const active = versions.find((version) => version.status === "active");
+    expect(active?.version).toBe(2);
+    expect(active?.code).toBe(result.reissuedCode);
+    expect(active?.token).not.toBe(stale.token);
+
+    const row = (await auditRows(t)).find((r) => r.action === AUDIT_ACTIONS.eventStateChanged);
+    expect(row?.metadata).toMatchObject({ codeReissued: true, inviteVersion: 2 });
+    expect(JSON.stringify(row)).not.toContain("482913");
+  });
+
+  it("leaves the invite version alone when re-opening finds no clash", async () => {
+    const stale = await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    await t.run(async (ctx) => ctx.db.patch(eventId, { state: "archived" }));
+
+    const as = t.withIdentity({ subject: "owner" });
+    const result = await as.mutation(api.events.setState, { eventId, state: "live" });
+
+    expect(result.reissuedCode).toBeUndefined();
+    const versions = await t.run(async (ctx) => ctx.db.query("inviteVersions").collect());
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?._id).toBe(stale.inviteVersionId);
+    expect(versions[0]?.status).toBe("active");
   });
 
   it("refuses a co-host — changing state is an owner power", async () => {

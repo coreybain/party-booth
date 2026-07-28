@@ -5,6 +5,7 @@ import {
   joinRejected,
   joinThrottled,
   networkJoinKey,
+  type JoinInput,
   type JoinRejectionReason,
   type JoinResult,
 } from "@partybooth/contracts";
@@ -21,10 +22,10 @@ import {
   resolveInviteByToken,
   type ResolvedInvite,
 } from "./lib/events";
-import { getActiveMembership, requireActiveUser, type ReadCtx } from "./lib/guards";
+import { requireActiveUser, type ReadCtx } from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
-import { checkJoinThrottle, recordJoinFailure, recordJoinSuccess } from "./lib/join-throttle";
+import { checkJoinThrottle, recordJoinFailure } from "./lib/join-throttle";
 import { eventState } from "./lib/validators";
 
 /**
@@ -45,6 +46,23 @@ import { eventState } from "./lib/validators";
  * Failures are values rather than exceptions on purpose. A thrown error is a
  * different code path with different timing and a different shape on the wire,
  * and three of those is an oracle.
+ *
+ * Three invariants hold across every entry point in this file, and each one is
+ * here because breaking it was an audit finding:
+ *
+ * 1. **One evaluator.** {@link evaluateCredential} is the only thing that turns
+ *    a credential into a verdict, so `join` and `previewByCode` cannot disagree
+ *    about what a revoked version means. The preview used to run its own
+ *    joinability check and then record *every* refusal as `unknownCredential`,
+ *    which made the audit log — the one place the reason survives — wrong
+ *    precisely when it mattered.
+ * 2. **Every attempt leaves a row.** Accepted, rejected or throttled, by code or
+ *    by token, join or preview. A valid credential replayed a thousand times
+ *    used to leave one row from its first use; a preview at the throttle
+ *    ceiling used to leave none at all, so an attacker went dark exactly when
+ *    they were most interesting.
+ * 3. **Nothing but time returns budget.** There is no success reset — see
+ *    `lib/join-throttle.ts`.
  */
 
 const inviteArg = v.union(
@@ -75,11 +93,19 @@ const joinResultValidator = v.union(
 /**
  * Which keys this attempt is charged to.
  *
- * The account key always exists — joining is authenticated. The network key is
- * optional because a Convex mutation has no client address: the web join route
- * can pass one through, and it is hashed here so the throttle table never holds
- * a raw address. A client that omits or forges it can only ever *add* a key to
- * be throttled on, never remove the account one.
+ * The account key always exists — joining is authenticated — and it is the only
+ * one that is *guaranteed* to be charged. The network key is additive and comes
+ * from a server-side origin: `apps/web` posts joins and code previews through
+ * `/api/join`, which derives the key from the request's forwarded address and
+ * passes it here, where it is hashed so the throttle table never holds a raw
+ * address.
+ *
+ * It is **not trusted**, and the code above must never read as if it were: a
+ * caller reaching this mutation directly over the Convex socket (the Expo app
+ * does, by design — it has no server in front of it) simply omits it. Because a
+ * supplied key can only ever *add* a key to be throttled on, forging one costs
+ * the forger and helps nobody. What it cannot do is remove the account key, and
+ * that is the whole security argument for accepting it from a client at all.
  */
 async function throttleKeys(
   userId: Id<"users">,
@@ -93,8 +119,113 @@ async function throttleKeys(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Rejection                                                                  */
+/* Evaluating a credential                                                    */
 /* -------------------------------------------------------------------------- */
+
+interface CredentialAccepted {
+  ok: true;
+  invite: ResolvedInvite;
+  /** Any existing row for this user and event, whatever its status. */
+  membership: Doc<"memberships"> | null;
+}
+
+interface CredentialRefused {
+  ok: false;
+  /** Audit-log only. Never returned to the caller in any form. */
+  reason: JoinRejectionReason;
+  /** Known for everything except an unresolvable credential. */
+  eventId?: Id<"events"> | undefined;
+}
+
+type CredentialVerdict = CredentialAccepted | CredentialRefused;
+
+/**
+ * Resolve a credential and decide whether this account may walk in — once, for
+ * every caller.
+ *
+ * The verdict keeps the *reason* internally and the callers throw it away on
+ * the way out; that split is the enumeration protection, and it only works if
+ * there is one place the reason is computed. `userId` is nullable because
+ * `previewByToken` is unauthenticated: with no account there is no membership
+ * to have been revoked, and a 160-bit token has nothing to enumerate.
+ */
+async function evaluateCredential(
+  ctx: ReadCtx,
+  input: JoinInput,
+  userId: Id<"users"> | null,
+  now: number,
+): Promise<CredentialVerdict> {
+  const invite =
+    input.via === "token"
+      ? await resolveInviteByToken(ctx, input.token)
+      : await resolveInviteByCode(ctx, input.code);
+
+  if (!invite) return { ok: false, reason: "unknownCredential" };
+
+  const verdict = checkInviteJoinable(invite, now);
+  if (!verdict.joinable) {
+    return { ok: false, reason: verdict.reason, eventId: invite.event._id };
+  }
+
+  if (userId === null) return { ok: true, invite, membership: null };
+
+  const membership = await ctx.db
+    .query("memberships")
+    .withIndex("by_event_and_user", (q) => q.eq("eventId", invite.event._id).eq("userId", userId))
+    .unique();
+
+  // A host removed this person. A fresh scan of the same QR must not undo
+  // that — only a co-host invite or a rotation that keeps memberships does.
+  // The preview answers the same way, so "can I see it" and "can I join it"
+  // never disagree.
+  if (membership?.status === "revoked") {
+    return { ok: false, reason: "membershipRevoked", eventId: invite.event._id };
+  }
+
+  return { ok: true, invite, membership };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Audit                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Charge the failure and record why, for joins and previews alike.
+ *
+ * Separated from {@link reject} so `previewByCode` can reuse it and still
+ * return its own uniform `null`. The `preview` flag is the only thing that
+ * distinguishes the two in the log, and it is there because "somebody probed
+ * two hundred codes without ever trying to join" is a different story from
+ * "somebody mistyped".
+ */
+async function recordRejection(
+  ctx: MutationCtx,
+  params: {
+    keys: readonly string[];
+    userId: Id<"users">;
+    reason: JoinRejectionReason | "throttled";
+    via: "code" | "token";
+    preview?: boolean | undefined;
+    /** A throttled attempt is refused before it is read, so nothing is charged. */
+    charge?: boolean | undefined;
+    eventId?: Id<"events"> | undefined;
+    now: number;
+  },
+): Promise<void> {
+  if (params.charge !== false) await recordJoinFailure(ctx, params.keys, params.now);
+  await writeAuditEvent(ctx, {
+    action: AUDIT_ACTIONS.joinRejected,
+    subjectType: "membership",
+    actor: { userId: params.userId },
+    eventId: params.eventId,
+    metadata: {
+      reason: params.reason,
+      via: params.via,
+      ...(params.preview === true ? { preview: true } : {}),
+    },
+    now: params.now,
+  });
+}
 
 /**
  * Record a failure and return the one rejection value.
@@ -113,15 +244,7 @@ async function reject(
     now: number;
   },
 ): Promise<JoinResult<Id<"events">, Id<"memberships">>> {
-  await recordJoinFailure(ctx, params.keys, params.now);
-  await writeAuditEvent(ctx, {
-    action: AUDIT_ACTIONS.joinRejected,
-    subjectType: "membership",
-    actor: { userId: params.userId },
-    eventId: params.eventId,
-    metadata: { reason: params.reason, via: params.via },
-    now: params.now,
-  });
+  await recordRejection(ctx, params);
   return joinRejected();
 }
 
@@ -133,8 +256,9 @@ export const join = mutation({
   args: {
     invite: inviteArg,
     /**
-     * An opaque per-client value (the web route passes a hashed address). It is
-     * hashed again here and only ever adds a throttle key.
+     * An opaque per-client value (`apps/web`'s `/api/join` route passes a
+     * hashed forwarded address). Untrusted: it is hashed again here and can
+     * only ever *add* a throttle key. See {@link throttleKeys}.
      */
     networkKey: v.optional(v.string()),
   },
@@ -151,74 +275,38 @@ export const join = mutation({
 
     const throttle = await checkJoinThrottle(ctx, keys, now);
     if (!throttle.allowed) {
-      await writeAuditEvent(ctx, {
-        action: AUDIT_ACTIONS.joinRejected,
-        subjectType: "membership",
-        actor: { userId: user._id },
-        metadata: { reason: "throttled", via: input.via },
+      await recordRejection(ctx, {
+        keys,
+        userId: user._id,
+        reason: "throttled",
+        via: input.via,
+        charge: false,
         now,
       });
       return joinThrottled(throttle.retryAfterMs);
     }
 
-    const invite: ResolvedInvite | null =
-      input.via === "token"
-        ? await resolveInviteByToken(ctx, input.token)
-        : await resolveInviteByCode(ctx, input.code);
-
-    if (!invite) {
-      return await reject(ctx, {
-        keys,
-        userId: user._id,
-        reason: "unknownCredential",
-        via: input.via,
-        now,
-      });
-    }
-
-    const verdict = checkInviteJoinable(invite, now);
-    if (!verdict.joinable) {
+    const verdict = await evaluateCredential(ctx, input, user._id, now);
+    if (!verdict.ok) {
       return await reject(ctx, {
         keys,
         userId: user._id,
         reason: verdict.reason,
         via: input.via,
-        eventId: invite.event._id,
+        eventId: verdict.eventId,
         now,
       });
     }
-
-    const existing = await ctx.db
-      .query("memberships")
-      .withIndex("by_event_and_user", (q) =>
-        q.eq("eventId", invite.event._id).eq("userId", user._id),
-      )
-      .unique();
-
-    // A host removed this person. A fresh scan of the same QR must not undo
-    // that — only a co-host invite or a rotation that keeps memberships does.
-    if (existing?.status === "revoked") {
-      return await reject(ctx, {
-        keys,
-        userId: user._id,
-        reason: "membershipRevoked",
-        via: input.via,
-        eventId: invite.event._id,
-        now,
-      });
-    }
-
-    await recordJoinSuccess(ctx, keys, now);
 
     const result = await admit(ctx, {
       user,
-      invite,
-      existing,
+      invite: verdict.invite,
+      existing: verdict.membership,
       via: input.via,
       now,
     });
 
-    await adoptActiveEvent(ctx, user, invite.event._id, now);
+    await adoptActiveEvent(ctx, user, verdict.invite.event._id, now);
     return result;
   },
 });
@@ -246,6 +334,7 @@ async function admit(
   const { user, invite, existing, now } = params;
 
   const alreadyMember = existing?.status === "active";
+  const priorStatus = existing?.status ?? "none";
   let membershipId: Id<"memberships">;
 
   if (existing) {
@@ -273,7 +362,11 @@ async function admit(
     });
   }
 
-  if (!alreadyMember) {
+  // `membership.created` means a row appeared, and nothing else. Re-activating
+  // a `left` membership is not a creation — the row was already there, and
+  // logging it as one made "how many people joined this party" wrong and hid
+  // the more interesting fact that somebody came back.
+  if (existing === null) {
     await writeAuditEvent(ctx, {
       action: AUDIT_ACTIONS.membershipCreated,
       subjectType: "membership",
@@ -284,6 +377,25 @@ async function admit(
       now,
     });
   }
+
+  // …and this is written for *every* admitted attempt, including the repeat
+  // scans that change nothing. A credential being used is the audited event;
+  // whether it happened to create a row is a detail of that event, carried in
+  // the metadata rather than deciding whether there is a row at all.
+  await writeAuditEvent(ctx, {
+    action: AUDIT_ACTIONS.joinSucceeded,
+    subjectType: "membership",
+    subjectId: membershipId,
+    actor: { userId: user._id },
+    eventId: invite.event._id,
+    metadata: {
+      via: params.via,
+      inviteVersion: invite.version.version,
+      alreadyMember,
+      priorStatus,
+    },
+    now,
+  });
 
   // May upgrade the row just written to `cohost`, or unlock organiser powers.
   await applyVerifiedEmailMatching(ctx, user, { now });
@@ -319,12 +431,7 @@ const previewValidator = v.union(
   }),
 );
 
-async function preview(
-  ctx: ReadCtx,
-  invite: ResolvedInvite | null,
-  userId: Id<"users"> | null,
-  now: number,
-): Promise<{
+interface PreviewPayload {
   eventId: Id<"events">;
   name: string;
   state: Doc<"events">["state"];
@@ -335,27 +442,30 @@ async function preview(
   coverKey?: string;
   hostDisplayName: string;
   alreadyMember: boolean;
-} | null> {
-  if (!invite) return null;
-  if (!checkInviteJoinable(invite, now).joinable) return null;
+}
 
-  const owner = await ctx.db.get(invite.event.ownerUserId);
-  const membership = userId ? await getActiveMembership(ctx, invite.event._id, userId) : null;
+/**
+ * Render an accepted verdict as the thin payload a join screen shows.
+ *
+ * Deliberately thin: the name, when, and whose party it is. No counts, no
+ * guest list, no media — a preview is a "yes, this is the right party" check,
+ * not a window into it.
+ */
+async function renderPreview(ctx: ReadCtx, accepted: CredentialAccepted): Promise<PreviewPayload> {
+  const { event } = accepted.invite;
+  const owner = await ctx.db.get(event.ownerUserId);
 
-  // Deliberately thin: the name, when, and whose party it is. No counts, no
-  // guest list, no media — a preview is a "yes, this is the right party"
-  // check, not a window into it.
   return {
-    eventId: invite.event._id,
-    name: invite.event.name,
-    state: invite.event.state,
-    startsAt: invite.event.startsAt,
-    ...(invite.event.endsAt === undefined ? {} : { endsAt: invite.event.endsAt }),
-    timeZone: invite.event.timeZone,
-    ...(invite.event.accentColor === undefined ? {} : { accentColor: invite.event.accentColor }),
-    ...(invite.event.coverKey === undefined ? {} : { coverKey: invite.event.coverKey }),
+    eventId: event._id,
+    name: event.name,
+    state: event.state,
+    startsAt: event.startsAt,
+    ...(event.endsAt === undefined ? {} : { endsAt: event.endsAt }),
+    timeZone: event.timeZone,
+    ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
+    ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
     hostDisplayName: owner?.displayName ?? "The host",
-    alreadyMember: membership !== null,
+    alreadyMember: accepted.membership?.status === "active",
   };
 }
 
@@ -365,12 +475,13 @@ async function preview(
  * A **query**, and unauthenticated, because the token is 160 bits: there is
  * nothing to enumerate, and the join page has to render something before the
  * guest has signed in. `null` covers "no such token", "superseded" and "not
- * joinable" alike.
+ * joinable" alike. A query cannot write, so there is no throttle and no audit
+ * row here — the credential is its own protection.
  */
 export const previewByToken = query({
   args: { token: v.string() },
   returns: previewValidator,
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<PreviewPayload | null> => {
     const identityUser = await ctx.auth.getUserIdentity();
     const user = identityUser
       ? await ctx.db
@@ -378,8 +489,12 @@ export const previewByToken = query({
           .withIndex("by_authId", (q) => q.eq("authId", identityUser.subject))
           .unique()
       : null;
-    const invite = await resolveInviteByToken(ctx, args.token);
-    return await preview(ctx, invite, user?._id ?? null, Date.now());
+
+    const input = joinEventInputSchema.safeParse({ via: "token", token: args.token });
+    if (!input.success) return null;
+
+    const verdict = await evaluateCredential(ctx, input.data, user?._id ?? null, Date.now());
+    return verdict.ok ? await renderPreview(ctx, verdict) : null;
   },
 });
 
@@ -391,11 +506,17 @@ export const previewByToken = query({
  * oracle the whole join flow is built to deny. Only a mutation can spend a
  * throttle budget, so this one is authenticated, charged against the same keys
  * as a join, and returns the same `null` for every failure.
+ *
+ * It is audited on exactly the same terms as a join, and that is not
+ * decoration: this is the endpoint a code-walker actually calls, so a silent
+ * refusal here is a blind spot in the only mechanism that can tell a guesser
+ * from a guest. The uniform `null` is what the caller sees; the reason goes to
+ * the log.
  */
 export const previewByCode = mutation({
   args: { code: v.string(), networkKey: v.optional(v.string()) },
   returns: previewValidator,
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<PreviewPayload | null> => {
     const user = await requireActiveUser(ctx);
     const input = parseInput(joinEventInputSchema, { via: "code", code: args.code });
     if (input.via !== "code") return null;
@@ -403,22 +524,34 @@ export const previewByCode = mutation({
     const now = Date.now();
     const keys = await throttleKeys(user._id, args.networkKey);
 
-    if (!(await checkJoinThrottle(ctx, keys, now)).allowed) return null;
-
-    const invite = await resolveInviteByCode(ctx, input.code);
-    const result = await preview(ctx, invite, user._id, now);
-
-    if (result === null) {
-      await recordJoinFailure(ctx, keys, now);
-      await writeAuditEvent(ctx, {
-        action: AUDIT_ACTIONS.joinRejected,
-        subjectType: "membership",
-        actor: { userId: user._id },
-        metadata: { reason: "unknownCredential", via: "code", preview: true },
+    if (!(await checkJoinThrottle(ctx, keys, now)).allowed) {
+      await recordRejection(ctx, {
+        keys,
+        userId: user._id,
+        reason: "throttled",
+        via: "code",
+        preview: true,
+        charge: false,
         now,
       });
+      return null;
     }
 
-    return result;
+    const verdict = await evaluateCredential(ctx, input, user._id, now);
+
+    if (!verdict.ok) {
+      await recordRejection(ctx, {
+        keys,
+        userId: user._id,
+        reason: verdict.reason,
+        via: "code",
+        preview: true,
+        eventId: verdict.eventId,
+        now,
+      });
+      return null;
+    }
+
+    return await renderPreview(ctx, verdict);
   },
 });

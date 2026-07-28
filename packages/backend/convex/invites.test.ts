@@ -102,7 +102,7 @@ describe("code allocation", () => {
 
   it("redraws a code that was reissued while the event was archived", async () => {
     const first = await seedEvent(t, ownerId, { state: "archived" });
-    await seedInviteVersion(t, first, ownerId, { code: "482913" });
+    const stale = await seedInviteVersion(t, first, ownerId, { code: "482913" });
     // While it was away, somebody else got that number.
     const second = await seedEvent(t, ownerId, { state: "live" });
     await seedInviteVersion(t, second, ownerId, { code: "482913", version: 1 });
@@ -115,23 +115,70 @@ describe("code allocation", () => {
       if (!live) throw new Error("missing");
       return await ensureCodeIsFree(ctx, live, {
         now: Date.now(),
+        actorUserId: ownerId,
         randomBytes: bytesFor("777888"),
       });
     });
 
     expect(result?.reissuedCode).toBe("777888");
+    expect(result?.version).toBe(2);
+
+    // The historical row is untouched: memberships point at it, and it is the
+    // only record of which six digits were on the wall before the re-open.
+    const previous = await t.run(async (ctx) => ctx.db.get(stale.inviteVersionId));
+    expect(previous?.code).toBe("482913");
+    expect(previous?.token).toBe(stale.token);
+    expect(previous?.status).toBe("revoked");
+
+    // …and the live credential is a *new* row, with a new token as well as a
+    // new code, pointed at by the event.
+    const live = await t.run(async (ctx) => {
+      const event = await ctx.db.get(first);
+      return event?.activeInviteVersionId ? await ctx.db.get(event.activeInviteVersionId) : null;
+    });
+    expect(live?._id).not.toBe(stale.inviteVersionId);
+    expect(live?.code).toBe("777888");
+    expect(live?.token).not.toBe(stale.token);
+    expect(live?.status).toBe("active");
+  });
+
+  it("keeps guests in the party when re-opening forces a new version", async () => {
+    const guestId = await seedUser(t, { authId: "reopen-guest", email: "reopen@partybooth.test" });
+    const eventId = await seedEvent(t, ownerId, { state: "archived" });
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    const membershipId = await seedMembership(t, eventId, guestId, "guest");
+
+    const other = await seedEvent(t, ownerId, { state: "live" });
+    await seedInviteVersion(t, other, ownerId, { code: "482913", version: 1 });
+
+    await t.run(async (ctx) => {
+      await ctx.db.patch(eventId, { state: "live" });
+      const live = await ctx.db.get(eventId);
+      if (!live) throw new Error("missing");
+      await ensureCodeIsFree(ctx, live, {
+        now: Date.now(),
+        actorUserId: ownerId,
+        randomBytes: bytesFor("777888"),
+      });
+    });
+
+    expect((await t.run(async (ctx) => ctx.db.get(membershipId)))?.status).toBe("active");
   });
 
   it("leaves the code alone when there is no clash", async () => {
     const eventId = await seedEvent(t, ownerId, { state: "live" });
-    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    const seeded = await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
     const result = await t.run(async (ctx) => {
       const event = await ctx.db.get(eventId);
       if (!event) throw new Error("missing");
-      return await ensureCodeIsFree(ctx, event, { now: Date.now() });
+      return await ensureCodeIsFree(ctx, event, { now: Date.now(), actorUserId: ownerId });
     });
     // `t.run` serialises the return value, so an absent result arrives as null.
     expect(result ?? undefined).toBeUndefined();
+    // No clash means no new version — the QR on the wall keeps working.
+    const versions = await t.run(async (ctx) => ctx.db.query("inviteVersions").collect());
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?._id).toBe(seeded.inviteVersionId);
   });
 });
 
@@ -220,6 +267,93 @@ describe("mintInviteVersion", () => {
     expect(memberships.find((m) => m.userId === cohostId)?.status).toBe("active");
     expect(memberships.find((m) => m.userId === ownerId)?.status).toBe("active");
   });
+
+  it("audits every membership it revokes, one row per person", async () => {
+    await seedInviteVersion(t, eventId, ownerId);
+    const guestId = await seedUser(t, { authId: "guest", email: "g@partybooth.test" });
+    const otherId = await seedUser(t, { authId: "other", email: "o@partybooth.test" });
+    await seedMembership(t, eventId, guestId, "guest");
+    await seedMembership(t, eventId, otherId, "guest");
+
+    await t.run(async (ctx) => {
+      const event = await ctx.db.get(eventId);
+      if (!event) throw new Error("missing");
+      return mintInviteVersion(ctx, {
+        event,
+        createdByUserId: ownerId,
+        keepExistingMemberships: false,
+        now: Date.now(),
+      });
+    });
+
+    const revoked = (await auditRows(t)).filter(
+      (row) => row.action === AUDIT_ACTIONS.membershipRevoked,
+    );
+    expect(revoked).toHaveLength(2);
+    // `membership.revoked` is on AUDIT_ACTIONS_REQUIRING_REASON, and the bulk
+    // path has to supply one rather than skipping the row.
+    expect(revoked.every((row) => (row.reason ?? "").length > 0)).toBe(true);
+    expect(revoked.map((row) => row.metadata?.["revokedUserId"]).sort()).toEqual(
+      [guestId, otherId].sort(),
+    );
+    expect(revoked.every((row) => row.metadata?.["via"] === "inviteRotation")).toBe(true);
+  });
+
+  it("never redraws the code it is replacing", async () => {
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+
+    // A randomness source that only ever produces the outgoing code. Before,
+    // `ignoreEventId` excused this event's own version from the collision
+    // check and the draw handed the same six digits straight back.
+    await expect(
+      t.run(async (ctx) => {
+        const event = await ctx.db.get(eventId);
+        if (!event) throw new Error("missing");
+        return mintInviteVersion(ctx, {
+          event,
+          createdByUserId: ownerId,
+          now: Date.now(),
+          randomBytes: bytesFor("482913"),
+        });
+      }),
+    ).rejects.toThrow(CodeGenerationError);
+  });
+
+  it("refuses a specific code identical to the outgoing one", async () => {
+    await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
+    await expect(
+      t.run(async (ctx) => {
+        const event = await ctx.db.get(eventId);
+        if (!event) throw new Error("missing");
+        return mintInviteVersion(ctx, {
+          event,
+          createdByUserId: ownerId,
+          specificCode: "482913",
+          now: Date.now(),
+        });
+      }),
+    ).rejects.toThrow(/must change the code/i);
+  });
+
+  it("draws a fresh code for a draft event too", async () => {
+    // Draft events are not joinable, so their code is "free" by the uniqueness
+    // rule — which used to mean a rotation could legitimately redraw it.
+    const draftId = await seedEvent(t, ownerId, { state: "draft", name: "Draft" });
+    await seedInviteVersion(t, draftId, ownerId, { code: "482913" });
+
+    await expect(
+      t.run(async (ctx) => {
+        const event = await ctx.db.get(draftId);
+        if (!event) throw new Error("missing");
+        return mintInviteVersion(ctx, {
+          event,
+          createdByUserId: ownerId,
+          now: Date.now(),
+          randomBytes: bytesFor("482913"),
+        });
+      }),
+    ).rejects.toThrow(CodeGenerationError);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -291,6 +425,19 @@ describe("invites.rotate", () => {
       reason: "Poster reprinted",
     });
     expect(result.code).toBe("573926");
+  });
+
+  it("refuses an admin rotating to the code it is rotating away from", async () => {
+    await seedUser(t, { authId: "admin", email: ADMIN_EMAIL });
+    const as = t.withIdentity({ subject: "admin" });
+    await expect(
+      as.mutation(api.invites.rotate, { eventId, specificCode: "482913", reason: "typo" }),
+    ).rejects.toThrow(/rotating away from/i);
+
+    // Nothing happened: the version is still 1 and still active.
+    const versions = await t.run(async (ctx) => ctx.db.query("inviteVersions").collect());
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.status).toBe("active");
   });
 
   it("refuses a specific code already in use elsewhere", async () => {

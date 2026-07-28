@@ -50,7 +50,10 @@ export interface JoinAttemptState {
   failureCount: number;
   windowStartedAt: number;
   lastAttemptAt: number;
-  /** Set once the ceiling is hit; cleared by a success or by expiry. */
+  /**
+   * Set once the ceiling is hit. Cleared **only by time** — see
+   * {@link registerJoinFailure}. Nothing a caller can do on demand clears it.
+   */
   lockedUntil?: number | undefined;
 }
 
@@ -125,10 +128,25 @@ export function registerJoinFailure(
   };
 }
 
-/** The state after a *successful* join: the budget is handed back. */
-export function registerJoinSuccess(now: number): JoinAttemptState {
-  return { failureCount: 0, windowStartedAt: now, lastAttemptAt: now, lockedUntil: undefined };
-}
+/**
+ * There is deliberately **no `registerJoinSuccess`**.
+ *
+ * There used to be, and it returned `{ failureCount: 0, lockedUntil: undefined }`
+ * — a full reset of the budget on any admitted attempt. That is a complete
+ * bypass of the ceiling this module exists to impose, because an admitted
+ * attempt is not a scarce thing: `join` treats a *repeat* join by an existing
+ * member as a success, so anyone holding one valid credential for any event —
+ * their own party's code — could loop "nine wrong guesses, one replay of my own
+ * code" forever and never reach ten failures in a window. 10^6 codes went from
+ * years of guessing to an afternoon.
+ *
+ * Failures now age out one way only: {@link registerJoinFailure} starts a fresh
+ * window once {@link JOIN_POLICY.failureWindowMs} has elapsed, and a lockout
+ * ends when {@link JOIN_POLICY.lockoutMs} has elapsed. Time is the only thing
+ * that hands the budget back, and time is the one resource an attacker cannot
+ * manufacture. The cost to an honest guest is bounded and small: ten mistypes
+ * inside fifteen minutes, and even those are forgiven fifteen minutes later.
+ */
 
 /* -------------------------------------------------------------------------- */
 /* Rejection vocabulary                                                       */

@@ -1,4 +1,5 @@
 import {
+  AUDIT_ACTIONS,
   eventJoinability,
   generateInviteToken,
   generateUniqueEventCode,
@@ -10,6 +11,7 @@ import {
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { writeAuditEvent } from "./audit";
 import { getActiveMembership, type ReadCtx } from "./guards";
 
 /**
@@ -96,10 +98,26 @@ export async function isTokenTaken(ctx: ReadCtx, token: string): Promise<boolean
 
 export async function allocateJoinCode(
   ctx: ReadCtx,
-  options: InviteAllocationOptions & { ignoreEventId?: Id<"events"> | undefined } = {},
+  options: InviteAllocationOptions & {
+    ignoreEventId?: Id<"events"> | undefined;
+    /**
+     * Codes this draw must not return even though they look free.
+     *
+     * There is exactly one caller-visible reason for this and it is the whole
+     * point of a rotation: the outgoing version's own code. `ignoreEventId`
+     * takes the event's active version out of the "is it taken?" question so a
+     * rotation can proceed at all, and that exemption used to let the draw hand
+     * back the *same* six digits — a rotation that revokes the poster and then
+     * reprints it. Every replacement code must differ from the one it replaces.
+     */
+    excludeCodes?: readonly string[] | undefined;
+  } = {},
 ): Promise<string> {
+  const excluded = new Set((options.excludeCodes ?? []).map((code) => normalizeEventCode(code)));
   return await generateUniqueEventCode(
-    (candidate) => isCodeTaken(ctx, candidate, { ignoreEventId: options.ignoreEventId }),
+    async (candidate) =>
+      excluded.has(normalizeEventCode(candidate)) ||
+      (await isCodeTaken(ctx, candidate, { ignoreEventId: options.ignoreEventId })),
     {
       maxAttempts: CODE_ATTEMPTS,
       ...(options.randomBytes === undefined ? {} : { randomBytes: options.randomBytes }),
@@ -153,12 +171,34 @@ export interface MintInviteVersionResult {
 }
 
 /**
+ * A rotation that would leave the outgoing credential working.
+ *
+ * Thrown rather than quietly redrawn: the only way to reach it is an explicit
+ * `specificCode` naming the code already in use, and silently substituting a
+ * different one would tell the admin console their chosen value was applied
+ * when it was not.
+ */
+export class InviteCodeUnchangedError extends Error {
+  override readonly name = "InviteCodeUnchangedError";
+  constructor() {
+    super(
+      "A rotation must change the code. Reusing the outgoing six digits would leave the credential the rotation exists to kill still working.",
+    );
+  }
+}
+
+/**
  * Create the next invite version for an event and retire the current one.
  *
  * Rotation is **additive**: the old row is marked `revoked`, never edited into
  * the new one, so "which QR was on the wall in July" stays answerable. A join
  * against the old code or token is rejected because the version it resolves to
  * is no longer `active`, which is the whole "kill the printed poster" story.
+ *
+ * Both credentials always change. The token is redrawn from 160 bits, so it
+ * changes by construction; the code has to be *made* to change, because it is
+ * drawn from a space small enough to repeat and the draw deliberately ignores
+ * this event's own version — see {@link allocateJoinCode}.
  */
 export async function mintInviteVersion(
   ctx: MutationCtx,
@@ -169,6 +209,14 @@ export async function mintInviteVersion(
 
   const current = await getActiveInviteVersion(ctx, event);
 
+  if (
+    params.specificCode !== undefined &&
+    current !== null &&
+    normalizeEventCode(params.specificCode) === normalizeEventCode(current.code)
+  ) {
+    throw new InviteCodeUnchangedError();
+  }
+
   const code =
     params.specificCode ??
     (await allocateJoinCode(ctx, {
@@ -176,6 +224,8 @@ export async function mintInviteVersion(
       // The event's own outgoing code is about to be revoked, so it must not
       // block the draw — otherwise a specific-code rotation onto itself fails.
       ignoreEventId: event._id,
+      // …but "does not block the draw" must not become "may be drawn again".
+      ...(current === null ? {} : { excludeCodes: [current.code] }),
     }));
   const token = await allocateInviteToken(ctx, { randomBytes: params.randomBytes });
 
@@ -188,9 +238,11 @@ export async function mintInviteVersion(
     });
   }
 
+  const nextVersion = (current?.version ?? 0) + 1;
+
   const inviteVersionId = await ctx.db.insert("inviteVersions", {
     eventId: event._id,
-    version: (current?.version ?? 0) + 1,
+    version: nextVersion,
     code,
     token,
     status: "active",
@@ -203,6 +255,7 @@ export async function mintInviteVersion(
 
   const revokedMembershipIds: Id<"memberships">[] = [];
   if (!keep && current) {
+    const revokeReason = params.reason ?? "Invite rotated without keeping memberships.";
     const memberships = await ctx.db
       .query("memberships")
       .withIndex("by_event_and_status", (q) => q.eq("eventId", event._id).eq("status", "active"))
@@ -215,7 +268,27 @@ export async function mintInviteVersion(
         status: "revoked",
         revokedAt: now,
         revokedByUserId: params.createdByUserId,
-        revokeReason: params.reason ?? "Invite rotated without keeping memberships.",
+        revokeReason,
+      });
+      // One row per person, not one aggregate count on the rotation. "Who was
+      // removed from this party, and when" is the question the append-only log
+      // exists to answer, and a rotation is by far the largest producer of
+      // revocations in the product — the path that must not be the silent one.
+      // `membership.revoked` is on AUDIT_ACTIONS_REQUIRING_REASON; the same
+      // fallback sentence written to `revokeReason` satisfies it.
+      await writeAuditEvent(ctx, {
+        action: AUDIT_ACTIONS.membershipRevoked,
+        subjectType: "membership",
+        subjectId: membership._id,
+        actor: { userId: params.createdByUserId },
+        eventId: event._id,
+        reason: revokeReason,
+        metadata: {
+          via: "inviteRotation",
+          version: nextVersion,
+          revokedUserId: membership.userId,
+        },
+        now,
       });
       revokedMembershipIds.push(membership._id);
     }
@@ -223,7 +296,7 @@ export async function mintInviteVersion(
 
   return {
     inviteVersionId,
-    version: (current?.version ?? 0) + 1,
+    version: nextVersion,
     code,
     token,
     revokedMembershipIds,
@@ -237,8 +310,22 @@ export async function mintInviteVersion(
  * Only one path can break that invariant: an archived event going back to
  * `live` after its code was reissued to somebody else. Rather than refuse the
  * re-open — the after-party is a real thing, and the state machine allows it —
- * the code is quietly redrawn. The token is left alone: it did not collide, and
- * a working QR is worth keeping.
+ * the credential is replaced.
+ *
+ * **Replaced, not edited.** The obvious implementation is one `patch` that
+ * writes a fresh code onto the existing row, and it is wrong twice over: an
+ * `inviteVersions` row is the historical credential every membership admitted
+ * under it points at, so rewriting it makes the log say guests joined with a
+ * code that did not exist yet; and it silently rewrites a row the whole design
+ * treats as immutable. So the current version is revoked and a new one minted,
+ * exactly as a host-initiated rotation does, with memberships kept — nobody is
+ * thrown out of a party for the host re-opening it.
+ *
+ * The QR token changes with it. Keeping the old token would be nice for anyone
+ * still holding the printed sign, but it would mean one live version whose two
+ * credentials came from different rows, and "which QR was on the wall" stops
+ * having an answer. The re-open already tells the host their number changed;
+ * the sign has to be reprinted either way.
  *
  * Returns the new code when one was needed, so the caller can put it in the
  * audit row and tell the host their printed number changed.
@@ -246,20 +333,30 @@ export async function mintInviteVersion(
 export async function ensureCodeIsFree(
   ctx: MutationCtx,
   event: Doc<"events">,
-  options: InviteAllocationOptions & { now: number } = { now: Date.now() },
-): Promise<{ reissuedCode: string } | undefined> {
+  options: InviteAllocationOptions & {
+    now: number;
+    /** Who is answerable for the new version. The actor re-opening the event. */
+    actorUserId: Id<"users">;
+    reason?: string | undefined;
+  },
+): Promise<{ reissuedCode: string; version: number } | undefined> {
   const current = await getActiveInviteVersion(ctx, event);
   if (!current) return undefined;
 
   const clash = await isCodeTaken(ctx, current.code, { ignoreEventId: event._id });
   if (!clash) return undefined;
 
-  const code = await allocateJoinCode(ctx, {
-    randomBytes: options.randomBytes,
-    ignoreEventId: event._id,
+  const minted = await mintInviteVersion(ctx, {
+    event,
+    createdByUserId: options.actorUserId,
+    // Re-opening is not a purge. Everyone who was at the party stays at it.
+    keepExistingMemberships: true,
+    reason: options.reason ?? "Re-opened event: the six-digit code had been reissued elsewhere.",
+    now: options.now,
+    ...(options.randomBytes === undefined ? {} : { randomBytes: options.randomBytes }),
   });
-  await ctx.db.patch(current._id, { code });
-  return { reissuedCode: code };
+
+  return { reissuedCode: minted.code, version: minted.version };
 }
 
 /* -------------------------------------------------------------------------- */

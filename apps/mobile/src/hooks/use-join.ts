@@ -10,11 +10,17 @@
  * Success does **not** rely on the backend switching the active event: `join.join`
  * only adopts an event when the caller had no usable one (`adoptActiveEvent`), which
  * is right for a first join and wrong for the second. Someone who just scanned a QR
- * means *this* party, so the switch is explicit here.
+ * means *this* party, so the switch is explicit here — and because the backend
+ * deliberately preserves a still-valid existing selection, this switch is the **only**
+ * thing pointing the Camera at the new party for a guest who is already at another.
+ *
+ * That makes a failed switch a failed journey rather than a cosmetic hiccup, so it has
+ * its own terminal state and its own retry. Reporting `joined` and navigating to
+ * Camera anyway is how somebody ends up sending photos to last week's party.
  */
 
 import { useMutation } from "convex/react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { api, type EventId, type JoinInvite } from "../lib/api";
 import { describeError, type ErrorCopy } from "../lib/errors";
@@ -31,6 +37,18 @@ export type JoinPhase =
       /** `true` when nothing changed — the UI says "you're already in" rather than "welcome". */
       readonly alreadyMember: boolean;
     }
+  /**
+   * In the party, but the app is still pointed at a different one.
+   *
+   * The membership exists and nothing about it needs redoing; what failed is the
+   * active-event switch, which is retryable on its own.
+   */
+  | {
+      readonly status: "switch-failed";
+      readonly eventId: EventId;
+      readonly alreadyMember: boolean;
+      readonly copy: ErrorCopy;
+    }
   /** A rejection or a throttle: an expected outcome of a normal flow, not a fault. */
   | { readonly status: "refused"; readonly copy: JoinFailureCopy }
   /** The call itself failed — offline, signed out, locked account. */
@@ -40,6 +58,8 @@ export interface JoinController {
   readonly phase: JoinPhase;
   readonly busy: boolean;
   readonly attempt: (invite: JoinInvite) => Promise<JoinPhase>;
+  /** Retry the active-event switch alone, from `switch-failed`. */
+  readonly retrySwitch: () => Promise<JoinPhase>;
   readonly reset: () => void;
 }
 
@@ -47,6 +67,30 @@ export function useJoinEvent(): JoinController {
   const join = useMutation(api.join.join);
   const { selectEvent } = useSession();
   const [phase, setPhase] = useState<JoinPhase>({ status: "idle" });
+  /** Guards the retry against a double tap while a switch is in flight. */
+  const switching = useRef(false);
+
+  const landOn = useCallback(
+    async (eventId: EventId, alreadyMember: boolean): Promise<JoinPhase> => {
+      const outcome = await selectEvent(eventId);
+      const next: JoinPhase =
+        outcome.status === "ok"
+          ? { status: "joined", eventId, alreadyMember }
+          : {
+              status: "switch-failed",
+              eventId,
+              alreadyMember,
+              copy: {
+                title: "Almost in",
+                message: `You're in the party, but the app is still pointed at another one. ${outcome.message}`,
+                recovery: "retry",
+              },
+            };
+      setPhase(next);
+      return next;
+    },
+    [selectEvent],
+  );
 
   const attempt = useCallback(
     async (invite: JoinInvite): Promise<JoinPhase> => {
@@ -58,16 +102,7 @@ export function useJoinEvent(): JoinController {
         const result = parseJoinResult(await join({ invite }));
 
         if (result.outcome === "joined") {
-          // Failing to switch is not a failed join — they are in the party either
-          // way, and the header will catch up on the next `activeEvent` value.
-          await selectEvent(result.eventId);
-          const next: JoinPhase = {
-            status: "joined",
-            eventId: result.eventId,
-            alreadyMember: result.alreadyMember,
-          };
-          setPhase(next);
-          return next;
+          return await landOn(result.eventId, result.alreadyMember);
         }
 
         const next: JoinPhase = { status: "refused", copy: describeJoinFailure(result) };
@@ -82,10 +117,22 @@ export function useJoinEvent(): JoinController {
         return next;
       }
     },
-    [join, selectEvent],
+    [join, landOn],
   );
+
+  const retrySwitch = useCallback(async (): Promise<JoinPhase> => {
+    if (phase.status !== "switch-failed" || switching.current) return phase;
+    switching.current = true;
+    try {
+      // No second `join.join`: the membership is already there, and spending a
+      // throttle slot to re-learn that is the wrong kind of retry.
+      return await landOn(phase.eventId, phase.alreadyMember);
+    } finally {
+      switching.current = false;
+    }
+  }, [landOn, phase]);
 
   const reset = useCallback(() => setPhase({ status: "idle" }), []);
 
-  return { phase, busy: phase.status === "joining", attempt, reset };
+  return { phase, busy: phase.status === "joining", attempt, retrySwitch, reset };
 }

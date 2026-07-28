@@ -14,10 +14,12 @@ import {
   Screen,
   ScreenHeader,
 } from "@/components/ui";
+import { SetupRequired } from "@/components/setup-required";
+import { appConfig } from "@/env";
 import { useJoinEvent } from "@/hooks/use-join";
 import { useNow } from "@/hooks/use-now";
 import { api } from "@/lib/api";
-import { parseJoinLink } from "@/lib/deep-links";
+import { parseJoinLink, type JoinTarget } from "@/lib/deep-links";
 import { describeEventState, describeJoinWindow, describeSchedule } from "@/lib/events";
 import { JOIN_REJECTED_MESSAGE } from "@/lib/join";
 import { rememberPendingInvite } from "@/lib/pending-invite";
@@ -31,7 +33,8 @@ import { colors, spacing, typography } from "@/theme";
  * onto the same path, so there is nothing to branch on here:
  *
  *   - `https://<site>/join/<token>` — the printed QR, via iOS associated domains and
- *     Android verified App Links (both declared in `app.config.ts`)
+ *     Android verified App Links (both declared in `app.config.ts`, and both backed by
+ *     the association documents `apps/web` serves from `/.well-known/`)
  *   - `partybooth://join/<token>`   — app-to-app, and OAuth returning mid-join
  *   - `https://<site>/join?code=…`  — a code shared as a plain link
  *
@@ -43,44 +46,24 @@ import { colors, spacing, typography } from "@/theme";
  * there is nothing to enumerate, and a guest arriving from a QR needs to see whose
  * party this is before deciding to sign in. A typed code gets no preview — that
  * asymmetry is the enumeration protection, not an oversight.
+ *
+ * **The file is split in two**, and the split is load-bearing rather than tidiness.
+ * A universal link opens this route *directly*, bypassing `app/index.tsx` and its
+ * configuration gate — so on a build with an empty environment there is no
+ * `ConvexProvider` anywhere above it (see `src/providers/index.tsx`), and the first
+ * `useQuery`/`useMutation` throws "Could not find Convex client". Everything that
+ * touches a Convex hook therefore lives in {@link JoinByTokenLive}, which is only
+ * mounted once the configuration is known to exist.
  */
 export default function JoinRoute() {
   const router = useRouter();
   const { token: rawParam } = useLocalSearchParams<{ token: string }>();
-  const { state, configured } = useSession();
-  const { phase, busy, attempt } = useJoinEvent();
-  const now = useNow();
 
   const raw = typeof rawParam === "string" ? rawParam : "";
   // Put the segment back through the parser a full URL would take, so a token and a
   // code arriving by any door are classified by exactly one piece of code.
-  const target = parseJoinLink(`https://join.invalid/join/${encodeURIComponent(raw)}`);
-
-  const preview = useQuery(
-    api.join.previewByToken,
-    target?.kind === "token" ? { token: target.token } : "skip",
-  );
-
-  const signedIn = state.status === "signed-in";
-  const loadingPreview = target?.kind === "token" && preview === undefined;
-
-  const join = useCallback(async () => {
-    if (!target || busy) return;
-    await attempt(
-      target.kind === "token"
-        ? { via: "token", token: target.token }
-        : { via: "code", code: target.code },
-    );
-  }, [attempt, busy, target]);
-
-  useEffect(() => {
-    if (phase.status !== "joined") return;
-    // Landing on the party is the point of the whole flow, so the screen closes
-    // itself. The header and the Camera tab are already subscribed to the new active
-    // event by the time this fires.
-    const timer = setTimeout(() => router.replace("/camera"), 600);
-    return () => clearTimeout(timer);
-  }, [phase.status, router]);
+  const target =
+    raw.length === 0 ? null : parseJoinLink(`https://join.invalid/join/${encodeURIComponent(raw)}`);
 
   // A bare `/join` with nothing after it is the code-entry screen, not an error.
   if (raw.length === 0) return <Redirect href="/join" />;
@@ -118,8 +101,73 @@ export default function JoinRoute() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* A usable invite                                                    */
+  /* No backend to ask                                                  */
   /* ------------------------------------------------------------------ */
+
+  if (appConfig.status === "unconfigured") {
+    return (
+      <SetupRequired
+        missing={appConfig.missing}
+        title="This invite can't be opened yet"
+        subtitle="The link is fine — this build has no backend configured to check it against."
+      />
+    );
+  }
+
+  return <JoinByTokenLive target={target} />;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The live screen — Convex hooks live below this line only                   */
+/* -------------------------------------------------------------------------- */
+
+function JoinByTokenLive({ target }: { target: JoinTarget }) {
+  const router = useRouter();
+  const { state, configured } = useSession();
+  const { phase, busy, attempt, retrySwitch } = useJoinEvent();
+  const now = useNow();
+
+  const preview = useQuery(
+    api.join.previewByToken,
+    target.kind === "token" ? { token: target.token } : "skip",
+  );
+
+  const signedIn = state.status === "signed-in";
+  const needsOnboarding = state.status === "signed-in" && state.needsOnboarding;
+  const loadingPreview = target.kind === "token" && preview === undefined;
+
+  const join = useCallback(async () => {
+    if (busy) return;
+    await attempt(
+      target.kind === "token"
+        ? { via: "token", token: target.token }
+        : { via: "code", code: target.code },
+    );
+  }, [attempt, busy, target]);
+
+  useEffect(() => {
+    if (phase.status !== "joined") return;
+    // Landing on the party is the point of the whole flow, so the screen closes
+    // itself — but only once the active-event switch has actually succeeded, which is
+    // what `joined` now means. Navigating on a failed switch points the Camera tab at
+    // whichever party the guest was at before.
+    const timer = setTimeout(() => router.replace("/camera"), 600);
+    return () => clearTimeout(timer);
+  }, [phase.status, router]);
+
+  /* ------------------------------------------------------------------ */
+  /* Onboarding comes first                                             */
+  /* ------------------------------------------------------------------ */
+
+  // A guest whose sign-in completed but who never confirmed a name can reach this
+  // screen directly from a QR, and joining from here would put "j.smith82" in the
+  // host's moderation queue — the exact thing the name step exists to prevent. Park
+  // the invite and send them through it; `/onboarding` returns to `/`, which consumes
+  // the parked invite and lands them back here.
+  if (needsOnboarding) {
+    rememberPendingInvite(target);
+    return <Redirect href="/onboarding" />;
+  }
 
   const description = preview ? describeEventState(preview.state) : null;
   const windowNote = preview ? describeJoinWindow(preview, now) : null;
@@ -191,6 +239,21 @@ export default function JoinRoute() {
           </Notice>
         ) : null}
 
+        {/* In the party, pointed at the wrong one. Retrying the switch is a different
+            action from retrying the join, and costs nothing against the throttle. */}
+        {phase.status === "switch-failed" ? (
+          <>
+            <Notice tone="warning" title={phase.copy.title}>
+              <MutedText>{phase.copy.message}</MutedText>
+            </Notice>
+            <Button
+              label="Switch to this party"
+              icon="refresh"
+              onPress={() => void retrySwitch()}
+            />
+          </>
+        ) : null}
+
         {phase.status === "joined" ? (
           <Notice tone="success" title={phase.alreadyMember ? "You're already in" : "You're in"}>
             <MutedText>Taking you to the party…</MutedText>
@@ -202,7 +265,7 @@ export default function JoinRoute() {
             label={preview?.alreadyMember === true ? "Open the party" : "Join the party"}
             icon="arrow-forward"
             onPress={() => void join()}
-            disabled={phase.status === "joined" || deadToken}
+            disabled={phase.status === "joined" || phase.status === "switch-failed" || deadToken}
             busy={busy}
           />
         ) : (

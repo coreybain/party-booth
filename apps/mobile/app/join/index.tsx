@@ -1,9 +1,11 @@
-import { useRouter } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet } from "react-native";
 
 import { CodeField } from "@/components/code-field";
+import { SetupRequired } from "@/components/setup-required";
 import { BodyText, Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
+import { appConfig } from "@/env";
 import { useJoinEvent } from "@/hooks/use-join";
 import { readCodeInput, JOIN_CODE_LENGTH } from "@/lib/join";
 import { rememberPendingInvite } from "@/lib/pending-invite";
@@ -22,11 +24,33 @@ import { spacing } from "@/theme";
  * mutation precisely because answering "is this a real code?" has to cost the same
  * budget as joining does — so previewing and then joining would spend two slots to
  * learn one thing. Typing the code and being let in is one slot and one screen.
+ *
+ * Like `join/[token].tsx`, this route can be opened directly by a link, without ever
+ * passing `app/index.tsx`. Everything that touches a Convex hook therefore lives in
+ * {@link JoinByCodeLive}, below the configuration gate — an unconfigured build mounts
+ * no `ConvexProvider` at all, and `useMutation` under no provider throws.
  */
 export default function JoinByCodeRoute() {
+  if (appConfig.status === "unconfigured") {
+    return (
+      <SetupRequired
+        missing={appConfig.missing}
+        title="Join codes can't be checked yet"
+        subtitle="This build has no backend configured to check a code against."
+      />
+    );
+  }
+  return <JoinByCodeLive />;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The live screen — Convex hooks live below this line only                   */
+/* -------------------------------------------------------------------------- */
+
+function JoinByCodeLive() {
   const router = useRouter();
   const { state, configured } = useSession();
-  const { phase, busy, attempt, reset } = useJoinEvent();
+  const { phase, busy, attempt, retrySwitch, reset } = useJoinEvent();
   // The **sanitised** digits, not the raw keystroke. A controlled `TextInput` whose
   // `value` prop does not change after `onChangeText` can leave the rejected character
   // visible in the native view, so the field state and what the field renders have to
@@ -35,6 +59,7 @@ export default function JoinByCodeRoute() {
 
   const field = readCodeInput(digits);
   const signedIn = state.status === "signed-in";
+  const needsOnboarding = state.status === "signed-in" && state.needsOnboarding;
   /** Only a throttle carries a wait; a plain rejection is retryable straight away. */
   const throttled = phase.status === "refused" && phase.copy.retryAfterMs !== undefined;
 
@@ -44,8 +69,9 @@ export default function JoinByCodeRoute() {
   }, [attempt, busy, field.complete, field.digits]);
 
   // Landing on the party is the whole point, so the screen closes itself rather than
-  // asking for one more tap. The header and the Camera tab are already subscribed to
-  // the new active event by the time this runs.
+  // asking for one more tap — but only once the active-event switch has succeeded,
+  // which is what `joined` means. Leaving on a failed switch would drop the guest on a
+  // Camera tab still pointed at whichever party they were at before.
   useEffect(() => {
     if (phase.status !== "joined") return;
     const timer = setTimeout(() => router.replace("/camera"), 600);
@@ -61,6 +87,15 @@ export default function JoinByCodeRoute() {
     },
     [phase.status, reset],
   );
+
+  // Same rule as the QR route: a guest who signed in but never confirmed a name must
+  // do that before joining, or the host's queue fills with provider usernames. The
+  // typed code rides along so it is not lost to the detour — and so it does not cost a
+  // second slot from the throttle budget.
+  if (needsOnboarding) {
+    if (field.complete) rememberPendingInvite({ kind: "code", code: field.digits });
+    return <Redirect href="/onboarding" />;
+  }
 
   return (
     <Screen edges={["left", "right", "bottom"]}>
@@ -106,6 +141,19 @@ export default function JoinByCodeRoute() {
             </Notice>
           ) : null}
 
+          {phase.status === "switch-failed" ? (
+            <>
+              <Notice tone="warning" title={phase.copy.title}>
+                <MutedText>{phase.copy.message}</MutedText>
+              </Notice>
+              <Button
+                label="Switch to this party"
+                icon="refresh"
+                onPress={() => void retrySwitch()}
+              />
+            </>
+          ) : null}
+
           {phase.status === "joined" ? (
             <Notice tone="success" title={phase.alreadyMember ? "You're already in" : "You're in"}>
               <MutedText>Taking you to the party…</MutedText>
@@ -136,14 +184,20 @@ export default function JoinByCodeRoute() {
               onPress={() => void submit()}
               // Throttled means the next attempt is refused before it is read, so the
               // button stays down rather than spending a slot to say so again.
-              disabled={!field.complete || phase.status === "joined" || throttled}
+              disabled={
+                !field.complete ||
+                phase.status === "joined" ||
+                phase.status === "switch-failed" ||
+                throttled
+              }
               busy={busy}
             />
           )}
 
           <MutedText>
-            Scanning the QR code is quicker and never gets throttled. Codes change when the host
-            rotates the invite, so an old photo of a sign will not work.
+            Codes change when the host rotates the invite, so an old photo of a sign will not work.
+            Too many wrong tries locks the code box for a while — the wait is shown when that
+            happens, and scanning the QR does not skip it.
           </MutedText>
         </ScrollView>
       </KeyboardAvoidingView>

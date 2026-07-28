@@ -16,9 +16,18 @@ import { Badge, BodyText, Button, Card, MonoText, MutedText, Screen, ScreenHeade
 export function SetupRequired({
   missing,
   onContinueAnyway,
+  title = "PartyBooth isn't configured",
+  subtitle = "The app built fine — it just has no backend to talk to yet.",
 }: {
   missing: readonly string[];
-  onContinueAnyway: () => void;
+  /**
+   * Omitted where there is no shell worth exploring — a deep-linked join screen
+   * has nothing to fall through to, and offering the escape hatch there just
+   * lands the guest on this same screen again.
+   */
+  onContinueAnyway?: (() => void) | undefined;
+  title?: string;
+  subtitle?: string;
 }) {
   return (
     <Screen>
@@ -27,10 +36,7 @@ export function SetupRequired({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <ScreenHeader
-          title="PartyBooth isn't configured"
-          subtitle="The app built fine — it just has no backend to talk to yet."
-        />
+        <ScreenHeader title={title} subtitle={subtitle} />
 
         <Card>
           <Badge label="missing config" tone={colors.warning} />
@@ -58,13 +64,15 @@ export function SetupRequired({
           </MutedText>
         </Card>
 
-        <Button
-          label="Explore the shell anyway"
-          variant="secondary"
-          icon="arrow-forward"
-          onPress={onContinueAnyway}
-          accessibilityHint="Opens the app's navigation shell with every backend feature disabled."
-        />
+        {onContinueAnyway ? (
+          <Button
+            label="Explore the shell anyway"
+            variant="secondary"
+            icon="arrow-forward"
+            onPress={onContinueAnyway}
+            accessibilityHint="Opens the app's navigation shell with every backend feature disabled."
+          />
+        ) : null}
       </ScrollView>
     </Screen>
   );
