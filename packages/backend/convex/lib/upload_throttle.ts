@@ -12,7 +12,7 @@ import type { ReadCtx } from "./guards";
 /**
  * The persistence half of the upload-grant throttle.
  *
- * Same shape as `lib/join-throttle.ts` on purpose — all the policy lives in
+ * Same shape as `lib/join_throttle.ts` on purpose — all the policy lives in
  * `@partybooth/contracts/upload` and is pure, and this file only reads and
  * writes `uploadAttempts` rows. Two things differ, and both are deliberate:
  *

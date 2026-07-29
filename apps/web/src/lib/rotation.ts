@@ -33,7 +33,7 @@ export type { RotationChoice, RotationConsequence };
  *    app's Host tab — this file re-exports them so call sites here read one
  *    import, but it does not own them.
  * 3. **The budget is the backend's budget.** `canRotateInvite` and
- *    `registerRotation` are the pure functions `convex/lib/rotation-throttle.ts`
+ *    `registerRotation` are the pure functions `convex/lib/rotation_throttle.ts`
  *    persists, so the countdown on a greyed-out button and the `rateLimited`
  *    refusal cannot disagree. The client's copy is optimistic — it only knows
  *    about rotations *this session* performed — so the server's `retryAfterMs`

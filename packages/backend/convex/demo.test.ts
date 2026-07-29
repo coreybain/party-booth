@@ -18,7 +18,7 @@ import {
 } from "./testing.helpers";
 import { demoLogin, isDemoAddress, isDemoLogin, resetConfigWarnings } from "./lib/config";
 import { demoOtpFor, emailOtpPolicyOptions } from "./lib/otp";
-import { mirrorAuthUser } from "./lib/user-mirror";
+import { mirrorAuthUser } from "./lib/user_mirror";
 
 /**
  * The App Review demo login.

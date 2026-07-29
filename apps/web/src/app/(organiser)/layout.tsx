@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 
 import { PreviewModeBanner } from "@/components/backend-not-configured";
 import { AppShell } from "@/components/layout/app-shell";
-import { EventSwitcher } from "@/components/layout/event-switcher";
 import { OrganiserNav } from "@/components/layout/organiser-nav";
 import { PartyBoothWordmark } from "@/components/layout/centred-pane";
 import { SignOutButton } from "@/components/sign-out-button";
@@ -61,7 +60,6 @@ export default async function OrganiserLayout({ children }: { readonly children:
           <PartyBoothWordmark className="text-base" />
         </Link>
       }
-      headerCentre={<EventSwitcher />}
       headerRight={<SignOutButton redirectTo="/" />}
       nav={<OrganiserNav />}
     >

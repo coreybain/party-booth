@@ -403,7 +403,7 @@ export default defineSchema({
    *
    * `memberships` cannot hold this: its `userId` is required, and the whole
    * point is that the person may not exist in `users` at all. When they sign in
-   * and a **verified** address matches, `lib/email-matching.ts` turns the row
+   * and a **verified** address matches, `lib/email_matching.ts` turns the row
    * into a `cohost` membership. Until then it is a promise, not a permission.
    *
    * The invite-sending UI is Sprint 5; the model and the matching land now so
@@ -420,7 +420,7 @@ export default defineSchema({
      * High-entropy value that addresses the invitation in the email link.
      *
      * It is **not** a credential and it must never become one. Acceptance binds
-     * on a *verified* address matching `email` (`lib/email-matching.ts`), which
+     * on a *verified* address matching `email` (`lib/email_matching.ts`), which
      * is the whole reason this table can exist at all for a person who has no
      * account yet — so what the token buys is a link that lands on the right
      * party with the right explanation, not a seat. Anyone forwarding the email

@@ -356,7 +356,7 @@ export interface EnvVarReport {
 
 /**
  * Describe every declared variable and its current state. Values are never
- * included, so this is safe to log. See also `pnpm env:doctor`.
+ * included, so this is safe to log. See also `bun run env:doctor`.
  */
 export function describeEnv<TEnv extends object>(env: TEnv): readonly EnvVarReport[] {
   const state = stateOf(env);

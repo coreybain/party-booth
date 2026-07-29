@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { Card, Placeholder } from "@/components/layout/card";
 import { StorageCallouts } from "@/components/media/storage-callouts";
 import { FlaggedPanel } from "@/components/moderation/flagged-panel";
@@ -71,9 +71,9 @@ const QUERY_LIMIT = 200;
 
 export function ActiveEventModeration() {
   return (
-    <BackendGate>
+    <AuthenticatedBackendGate>
       <ActiveEventModerationLive />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

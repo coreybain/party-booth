@@ -3,7 +3,7 @@ import { AUDIT_ACTIONS } from "@partybooth/contracts";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
-import { expireGrantsForAccount } from "./upload-grants";
+import { expireGrantsForAccount } from "./upload_grants";
 
 /**
  * The account-deletion lifecycle — the **scheduling** half.

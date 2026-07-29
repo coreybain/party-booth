@@ -11,6 +11,7 @@ import { TextField } from "@/components/ui/text-field";
 import { ORGANISER_INVITE_COPY } from "@/lib/admin/actions";
 import { emailSchema } from "@/lib/contracts";
 import { adminApi } from "@/lib/convex-api";
+import { cn } from "@/lib/cn";
 
 /**
  * The only way into the private beta.
@@ -30,12 +31,11 @@ import { adminApi } from "@/lib/convex-api";
  * bespoke confirmation written in a hurry is how one action ends up without a
  * reason field — which is precisely what happened here.
  *
- * The invitation is claimed by the **address**, not by the link: matching binds
- * on a verified email, so forwarding the message gets somebody else nothing. The
- * form says so, because "just forward it to them" is otherwise the obvious thing
- * for an administrator to suggest.
+ * The invitation link is a single-use credential that signs its recipient in.
+ * The form says so because forwarding a bearer link is now equivalent to
+ * handing over organiser access.
  */
-export function OrganiserInviteForm() {
+export function OrganiserInviteForm({ layout = "card" }: { readonly layout?: "card" | "sheet" }) {
   const invite = useAction(adminApi.inviteOrganiser);
 
   const [email, setEmail] = useState("");
@@ -77,15 +77,16 @@ export function OrganiserInviteForm() {
     [invite, note, reviewing],
   );
 
-  return (
-    <Card>
-      <SectionHeading
-        title="Invite an organiser"
-        description="The only way into the private beta. Confirmed, reasoned and recorded, like everything else here."
-      />
-
+  const contents = (
+    <>
+      {layout === "card" ? (
+        <SectionHeading
+          title="Invite an organiser"
+          description="The only way into the private beta. Confirmed, reasoned and recorded, like everything else here."
+        />
+      ) : null}
       <form
-        className="mt-4 space-y-4"
+        className={cn(layout === "card" && "mt-4", "space-y-4")}
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
@@ -106,7 +107,7 @@ export function OrganiserInviteForm() {
             setEmailError(undefined);
           }}
           {...(emailError === undefined ? {} : { error: emailError })}
-          hint="They become an organiser the first time they sign in with this exact address, verified. Forwarding the email gets somebody else nothing."
+          hint="The email contains a single-use sign-in link. Anyone with that link can claim this organiser account."
         />
 
         <TextField
@@ -128,7 +129,7 @@ export function OrganiserInviteForm() {
         )}
 
         {reviewing === undefined ? (
-          <Button type="submit" disabled={email.trim().length === 0}>
+          <Button type="submit" fullWidth={layout === "sheet"} disabled={email.trim().length === 0}>
             {ORGANISER_INVITE_COPY.label}
           </Button>
         ) : null}
@@ -144,6 +145,8 @@ export function OrganiserInviteForm() {
           }}
         />
       )}
-    </Card>
+    </>
   );
+
+  return layout === "card" ? <Card>{contents}</Card> : <div className="mt-6">{contents}</div>;
 }

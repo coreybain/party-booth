@@ -4,7 +4,7 @@ import { useQuery } from "convex/react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { Card } from "@/components/layout/card";
 import { Placeholder } from "@/components/layout/card";
 import { backendApi } from "@/lib/convex-api";
@@ -37,9 +37,13 @@ export function OrganiserOnly({
   readonly fallback?: ReactNode;
 }) {
   return (
-    <BackendGate fallback={children}>
+    <AuthenticatedBackendGate
+      fallback={children}
+      loadingFallback={null}
+      signedOutFallback={fallback ?? null}
+    >
       <OrganiserOnlyLive fallback={fallback}>{children}</OrganiserOnlyLive>
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

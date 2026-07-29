@@ -147,7 +147,7 @@ export default function SettingsScreen() {
           <Notice tone="warning" title="Running without a backend">
             <MutedText>
               No Convex deployment is configured, so sign-in, uploads and galleries are disabled.
-              Run <MonoText>pnpm env:doctor</MonoText> at the repo root to see what is missing.
+              Run <MonoText>bun run env:doctor</MonoText> at the repo root to see what is missing.
             </MutedText>
           </Notice>
         ) : null}

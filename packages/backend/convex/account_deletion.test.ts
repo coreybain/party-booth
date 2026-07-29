@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./testing.helpers";
-import { ACCOUNT_DELETION_GRACE_MS, scheduleAccountDeletion } from "./lib/account-deletion";
+import { ACCOUNT_DELETION_GRACE_MS, scheduleAccountDeletion } from "./lib/account_deletion";
 import schema from "./schema";
 
 type T = TestConvex<SchemaDefinition<typeof schema.tables, true>>;

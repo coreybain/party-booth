@@ -24,7 +24,7 @@ deployment, which yields:
 
 That is the standard pre-`convex dev` state and it is enough to build against.
 It costs two casts in `auth.ts` (`internal.auth`, `components.betterAuth`),
-commented where they are. Once Corey runs `npx convex dev` against a real
+commented where they are. Once Corey runs `bunx convex dev` against a real
 project, codegen replaces these files with precise versions and the casts become
 no-ops.
 
@@ -35,14 +35,14 @@ the final network fetch, after the files are written):
 ```bash
 CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3210 \
 CONVEX_SELF_HOSTED_ADMIN_KEY='offline|0000' \
-pnpm --filter @partybooth/backend exec convex codegen --typecheck disable
+bunx convex codegen --typecheck disable
 ```
 
 The command **exits non-zero** — it retries the fetch six times and gives up. That is
 expected; check `git status` rather than the exit code. Verified during integration: the
 files it writes are byte-identical to the committed ones.
 
-Once there is a real project, just `pnpm --filter @partybooth/backend dev`.
+Once there is a real project, just `bun run --filter @partybooth/backend dev`.
 
 ## Layout
 
@@ -70,17 +70,17 @@ convex/
     validators.ts      Convex validators derived from @partybooth/contracts
     guards.ts          requireUser / requireEventActor / requirePermission
     audit.ts           the append-only audit writer
-    account-deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
+    account_deletion.ts  deletionScheduled + deletionJobs + audit, idempotent
     events.ts          code allocation, invite versions, joinability
     media.ts           media rows: create, reconcile, count, project for a client
     moderation.ts      applyModeration — the one writer of state on that path
     blocks.ts          loading and applying a viewer's blocklist
-    upload-grants.ts   minting, finding and atomically spending a grant
-    upload-throttle.ts the uploadAttempts rows behind the grant ceiling
+    upload_grants.ts   minting, finding and atomically spending a grant
+    upload_throttle.ts the uploadAttempts rows behind the grant ceiling
     storage/           the provider seam — adapter, fake, UploadThing, resolver
-    join-throttle.ts   the joinAttempts rows behind the contract's join policy
-    email-matching.ts  verified addresses → organiser / co-host roles
-    otp-throttle.ts    the shared per-address OTP send counter
+    join_throttle.ts   the joinAttempts rows behind the contract's join policy
+    email_matching.ts  verified addresses → organiser / co-host roles
+    otp_throttle.ts    the shared per-address OTP send counter
     input.ts           parseInput — contract zod schemas at the mutation edge
     profile.ts         who gets to name a user: choice beats provider default
     hash.ts            SHA-256 hex, via Web Crypto
@@ -97,12 +97,12 @@ Files with more than one dot in the name (`*.test.ts`, `auth.config.ts`,
 logs "Skipping … that contains multiple dots" — so tests and their fixtures sit
 next to the code without being deployed. The convex-test suites live at the root
 of `convex/` because convex-test finds the module map relative to `_generated`,
-and pnpm's hoisted `node_modules` defeats its automatic discovery;
+and Bun's hoisted `node_modules` defeats its automatic discovery;
 `testing.helpers.ts` passes `import.meta.glob` explicitly on their behalf.
 
 `testing.helpers.ts` also rebuilds the **typed** `api` from `ApiFromModules`,
 the way real codegen would. That is a stand-in for the generic `api.d.ts`
-described above and should be deleted the moment `npx convex dev` has run: until
+described above and should be deleted the moment `bunx convex dev` has run: until
 then it is the difference between tests that check their own argument types and
 tests full of hand-written casts.
 
@@ -342,7 +342,7 @@ Two brakes, because Better Auth's own one cannot be trusted inside Convex:
 ### Deletion
 
 Better Auth's `deleteUser` is enabled (Apple requires in-app account deletion).
-Its `onDelete` trigger routes through `lib/account-deletion.ts`, which moves the
+Its `onDelete` trigger routes through `lib/account_deletion.ts`, which moves the
 account to **`deletionScheduled`**, records a `deletionJobs` row due in 30 days
 and writes an audit row. Nothing in the codebase sets `deleted` — that belongs
 to the P1 purge worker, and reserving it is what keeps the restore window real
@@ -381,9 +381,9 @@ itself, because there is no mailbox behind it and `sendEmail` refusing is how
 Every use writes an `auth.demo_sign_in` audit row; if that action appears in a
 deployment real guests are using, that is the incident.
 
-`pnpm seed:demo` creates the demo party (`demo.seedDemoEvent`, an internal
+`bun run seed:demo` creates the demo party (`demo.seedDemoEvent`, an internal
 mutation, refuses to run unless both variables are set). Pass UploadThing keys to
-give the seeded rows thumbnails: `pnpm seed:demo key_one key_two key_three`.
+give the seeded rows thumbnails: `bun run seed:demo key_one key_two key_three`.
 **Unset both variables once the build is approved.**
 
 ### Sentry

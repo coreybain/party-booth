@@ -13,7 +13,7 @@ import { forbidden, invalidInput, rateLimited } from "./lib/errors";
 import { getActiveInviteVersion, isCodeTaken, mintInviteVersion } from "./lib/events";
 import { requireEventActor, requirePermission, toPermissionActor } from "./lib/guards";
 import { parseInput } from "./lib/input";
-import { checkRotationThrottle, recordRotation } from "./lib/rotation-throttle";
+import { checkRotationThrottle, recordRotation } from "./lib/rotation_throttle";
 
 /**
  * Invite versions: the six-digit code and the QR token, and rotating them.

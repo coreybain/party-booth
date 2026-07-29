@@ -19,6 +19,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { writeEventAudit } from "./lib/audit";
+import { ACCOUNT_DELETION_GRACE_MS } from "./lib/account_deletion";
 import { forbidden, invalidState, notFound } from "./lib/errors";
 import { ensureCodeIsFree, getActiveInviteVersion, mintInviteVersion } from "./lib/events";
 import {
@@ -32,6 +33,7 @@ import {
 import { parseInput } from "./lib/input";
 import { eventIsUsable } from "./lib/lock";
 import { notifyEventLifecycle } from "./lib/notifications";
+import { expireGrantsForEvent } from "./lib/upload_grants";
 import { eventState, moderationMode, storageRegion } from "./lib/validators";
 
 /**
@@ -474,6 +476,91 @@ export const setState = mutation({
     }
 
     return { state: to, ...(reissuedCode === undefined ? {} : { reissuedCode }) };
+  },
+});
+
+/**
+ * Let an owner remove their own event from the product.
+ *
+ * "Delete" enters the same thirty-day deletion lifecycle used by the admin
+ * console instead of trying to synchronously erase a party and every guest's
+ * media from a menu click. Access ends immediately through the event state, all
+ * outstanding upload grants are expired, and the scheduled job is what makes
+ * the eventual purge auditable.
+ */
+export const requestDeletion = mutation({
+  args: { eventId: v.id("events") },
+  returns: v.object({ state: eventState, scheduledAt: v.number() }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+
+    if (actor.user.accountState !== "active") {
+      throw forbidden("This account cannot delete the event right now.");
+    }
+
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.delete", {
+      kind: "event",
+      state: actor.event.state,
+    });
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.scheduleDeletion", {
+      kind: "event",
+      state: actor.event.state,
+    });
+
+    try {
+      eventStateMachine.assertTransition(actor.event.state, "deletionScheduled");
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) throw invalidState(error.message);
+      throw error;
+    }
+
+    const now = Date.now();
+    const scheduledAt = now + ACCOUNT_DELETION_GRACE_MS;
+    const reason = "Requested by the event owner.";
+    const expiredGrants = await expireGrantsForEvent(ctx, actor.event._id, now);
+
+    await ctx.db.patch(actor.event._id, {
+      state: "deletionScheduled",
+      deletionScheduledAt: now,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("deletionJobs", {
+      subjectType: "event",
+      subjectId: actor.event._id,
+      state: "scheduled",
+      scheduledAt,
+      requestedByUserId: actor.user._id,
+      reason,
+      createdAt: now,
+    });
+
+    if (actor.user.activeEventId === actor.event._id) {
+      await ctx.db.patch(actor.user._id, { activeEventId: undefined, updatedAt: now });
+    }
+
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventDeletionScheduled,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      reason,
+      metadata: { previousState: actor.event.state, scheduledAt, expiredGrants },
+      now,
+    });
+
+    if (actor.event.state === "live") {
+      const fresh = await ctx.db.get(actor.event._id);
+      if (fresh) {
+        await notifyEventLifecycle(ctx, {
+          event: fresh,
+          transition: "closed",
+          actorUserId: actor.user._id,
+          now,
+        });
+      }
+    }
+
+    return { state: "deletionScheduled" as const, scheduledAt };
   },
 });
 

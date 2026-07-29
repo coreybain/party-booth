@@ -13,7 +13,7 @@ import {
 } from "@partybooth/contracts/media";
 import { DENIAL_MESSAGES, explainCan } from "@partybooth/contracts/permissions";
 import { hasAcceptedTerms } from "@partybooth/contracts/terms";
-import type { Role } from "@partybooth/contracts/roles";
+import { isHostRole, type Role } from "@partybooth/contracts/roles";
 import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
 import {
   judgeVideoDuration,
@@ -89,8 +89,8 @@ import {
   findGrantBySecret,
   issueGrant,
   linkGrantToMedia,
-} from "./lib/upload-grants";
-import { checkUploadThrottle, recordGrantIssued } from "./lib/upload-throttle";
+} from "./lib/upload_grants";
+import { checkUploadThrottle, recordGrantIssued } from "./lib/upload_throttle";
 import {
   literalUnion,
   mediaFileRole,
@@ -143,7 +143,7 @@ import {
  * functions once, here, is the same cast `auth.ts` and `emails.ts` make and for
  * the same reason: a renamed argument becomes a compile error in one place
  * instead of a failed action on party night. It becomes a no-op once
- * `npx convex dev` has produced the precise api.
+ * `bunx convex dev` has produced the precise api.
  */
 const mediaFunctions = internal.media as unknown as {
   purgeStoredFile: FunctionReference<
@@ -1816,16 +1816,30 @@ export const eventMedia = query({
     const actor = await requireEventActor(ctx, args.eventId);
     const input = parseInput(listEventMediaInputSchema, args);
 
-    // A `globalAdmin` reaches this via `requireEventActor` without a membership
-    // and has no `media.*` capability at all — PLAN.md: admins never look at
-    // guests' photos. `visibleMediaStatesFor` gives them the empty set, so this
-    // is belt and braces, and it is the belt that produces the right error.
-    requirePermission(toPermissionActor(actor.user, actor.role), "media.viewApproved", {
-      kind: "media",
-      state: "approved",
-      isOwn: false,
-      event: { state: actor.event.state },
-    });
+    // Hosts use this query as their moderation queue even before a party is
+    // live. Checking `media.viewApproved` for everybody used to reject an owner
+    // of a draft or scheduled event because the public gallery is intentionally
+    // unavailable in those states. Host access is instead established through
+    // `media.viewPending`, which is the capability this screen actually needs.
+    //
+    // Guests still pass through the approved-gallery check, so a scheduled
+    // event does not expose its gallery early. A `globalAdmin` also lands in
+    // that branch and is refused because admins have no `media.*` capability.
+    if (isHostRole(actor.role)) {
+      requirePermission(toPermissionActor(actor.user, actor.role), "media.viewPending", {
+        kind: "media",
+        state: "pending",
+        isOwn: false,
+        event: { state: actor.event.state },
+      });
+    } else {
+      requirePermission(toPermissionActor(actor.user, actor.role), "media.viewApproved", {
+        kind: "media",
+        state: "approved",
+        isOwn: false,
+        event: { state: actor.event.state },
+      });
+    }
 
     // The default is "everything that is not a tombstone", because the *row*
     // filter below is what decides visibility and it needs ownership to do it —

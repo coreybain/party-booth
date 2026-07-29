@@ -85,8 +85,8 @@ key at a time. That is already done in `client.ts` / `mobile.ts` — but:
 1. Add it to `src/schema.ts` (`serverVars`, `clientVars` or `mobileVars`) with a `hint` that
    says **where Corey gets the value**.
 2. Add it to `/.env.example` with a comment line directly above it.
-3. `pnpm --filter @partybooth/env test` — the suite fails if the two drift apart, if a public
+3. `bun run --filter @partybooth/env test` — the suite fails if the two drift apart, if a public
    variable is missing its `NEXT_PUBLIC_`/`EXPO_PUBLIC_` prefix, or if a hint is too vague.
 
-`pnpm env:doctor` prints which variables are still unset, with the hint for each one. It never
+`bun run env:doctor` prints which variables are still unset, with the hint for each one. It never
 prints values.

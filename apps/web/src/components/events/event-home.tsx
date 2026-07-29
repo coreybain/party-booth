@@ -1,10 +1,9 @@
 "use client";
 
 import { useMutation, useQuery } from "convex/react";
-import Link from "next/link";
 import { useEffect } from "react";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { BackendNotConfigured } from "@/components/backend-not-configured";
 import { EventStateControl } from "@/components/events/event-state-control";
 import { EventStats } from "@/components/events/event-stats";
@@ -13,7 +12,6 @@ import { StateBadge } from "@/components/events/state-badge";
 import { UsersIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Card, SectionHeading } from "@/components/layout/card";
-import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
@@ -38,7 +36,7 @@ export function EventHome({
   readonly nowMs: number;
 }) {
   return (
-    <BackendGate
+    <AuthenticatedBackendGate
       fallback={
         <>
           <PageHeader title="Event" />
@@ -47,7 +45,7 @@ export function EventHome({
       }
     >
       <EventHomeLive eventId={eventId} nowMs={nowMs} />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 
@@ -76,18 +74,12 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         title={event.name}
         description={eventStatusLine(event, nowMs)}
         actions={
-          isHost ? (
-            <Link href={`/events/${event.id}/edit`}>
-              <Button variant="secondary" size="sm">
-                Edit
-              </Button>
-            </Link>
-          ) : undefined
+          isHost ? <EventStateControl event={event} isOwner={event.role === "owner"} /> : undefined
         }
       />
 
       <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted">
-        <StateBadge state={event.state} />
+        {event.state === "live" ? null : <StateBadge state={event.state} />}
         <span>
           {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
           <span className="text-faint">
@@ -122,18 +114,6 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
             )}
           </div>
         </Card>
-
-        {isHost ? (
-          <Card>
-            <SectionHeading
-              title="Status"
-              description="Guests can join while the event is scheduled, live or paused. Uploads need it live."
-            />
-            <div className="mt-4">
-              <EventStateControl eventId={event.id} state={event.state} />
-            </div>
-          </Card>
-        ) : null}
 
         {/*
           Sprint 4 replaces the two placeholders that stood here with the real

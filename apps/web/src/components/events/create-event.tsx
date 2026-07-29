@@ -4,7 +4,7 @@ import { useMutation } from "convex/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { EventForm } from "@/components/events/event-form";
 import { Button } from "@/components/ui/button";
 import { appErrorMessage } from "@/lib/app-errors";
@@ -23,9 +23,9 @@ import { backendApi } from "@/lib/convex-api";
  */
 export function CreateEvent({ nowMs }: { readonly nowMs: number }) {
   return (
-    <BackendGate>
+    <AuthenticatedBackendGate>
       <CreateEventLive nowMs={nowMs} />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

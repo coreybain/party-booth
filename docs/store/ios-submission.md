@@ -122,9 +122,9 @@ full review cycle.
 ### 4.1 Set the three variables on the deployment the reviewer will hit
 
 ```bash
-npx convex env set DEMO_LOGIN_EMAIL      "reviewer@partybooth.app"    # any address you control
-npx convex env set DEMO_LOGIN_OTP        "314159"                     # six digits
-npx convex env set DEMO_LOGIN_EXPIRES_AT "2026-08-20T00:00:00Z"       # ISO date; login fails closed after this
+bunx convex env set DEMO_LOGIN_EMAIL      "reviewer@partybooth.app"    # any address you control
+bunx convex env set DEMO_LOGIN_OTP        "314159"                     # six digits
+bunx convex env set DEMO_LOGIN_EXPIRES_AT "2026-08-20T00:00:00Z"       # ISO date; login fails closed after this
 ```
 
 All three must be set or the demo login does not exist at all (the backend returns `undefined`
@@ -136,7 +136,7 @@ Apple reviews the production build against production Convex.
 ### 4.2 Seed the demo party
 
 ```bash
-pnpm seed:demo <assetKey1> <assetKey2> <assetKey3>
+bun run seed:demo <assetKey1> <assetKey2> <assetKey3>
 ```
 
 ⚠️ **Without asset keys the demo party has rows but no thumbnails.** A Convex mutation
@@ -214,9 +214,9 @@ CONTACT
 ### 4.5 After approval
 
 ```bash
-npx convex env remove DEMO_LOGIN_EMAIL
-npx convex env remove DEMO_LOGIN_OTP
-npx convex env remove DEMO_LOGIN_EXPIRES_AT
+bunx convex env remove DEMO_LOGIN_EMAIL
+bunx convex env remove DEMO_LOGIN_OTP
+bunx convex env remove DEMO_LOGIN_EXPIRES_AT
 ```
 
 **Do not skip this.** A fixed-code login left on a production deployment is a permanent
@@ -401,7 +401,7 @@ the restriction unimplemented — that is the state this section used to describ
 
 ```bash
 # From the repo root.
-pnpm check                              # typecheck + lint + tests must be green first
+bun run check                              # typecheck + lint + tests must be green first
 
 cd apps/mobile
 eas build --profile production --platform ios

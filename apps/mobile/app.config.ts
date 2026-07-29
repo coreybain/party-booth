@@ -11,7 +11,7 @@ import type { ConfigContext, ExpoConfig } from "expo/config";
  * `src/env.ts` instead.
  *
  * Nothing here fails when a variable is missing: placeholders keep `expo config`,
- * `expo export` and `tsc` working offline with no credentials. `pnpm env:doctor` at
+ * `expo export` and `tsc` working offline with no credentials. `bun run env:doctor` at
  * the repo root lists what still needs filling in.
  */
 

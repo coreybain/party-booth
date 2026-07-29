@@ -5,20 +5,21 @@ import { serverEnv } from "@partybooth/env/server";
 import { APIError } from "better-auth/api";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { emailOTP } from "better-auth/plugins/email-otp";
+import { magicLink } from "better-auth/plugins/magic-link";
 import type { FunctionReference } from "convex/server";
 
 import { components, internal } from "./_generated/api";
 import type { DataModel, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import authConfig from "./auth.config";
-import { scheduleAccountDeletion } from "./lib/account-deletion";
-import { applyVerifiedEmailMatching } from "./lib/email-matching";
+import { scheduleAccountDeletion } from "./lib/account_deletion";
+import { applyVerifiedEmailMatching } from "./lib/email_matching";
 import { authBaseUrl, isAdminEmail, isDemoAddress, trustedOrigins } from "./lib/config";
 import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
 import { resolveDisplayName } from "./lib/profile";
 import { socialProviderConfig } from "./lib/providers";
-import { isPrivateRelayEmail, mirrorAuthUser, normaliseEmail } from "./lib/user-mirror";
+import { isPrivateRelayEmail, mirrorAuthUser, normaliseEmail } from "./lib/user_mirror";
 import { captureError } from "./lib/sentry";
 
 /* -------------------------------------------------------------------------- */
@@ -26,7 +27,7 @@ import { captureError } from "./lib/sentry";
 /* -------------------------------------------------------------------------- */
 
 /**
- * Until `npx convex dev` runs against a real deployment, `convex codegen`
+ * Until `bunx convex dev` runs against a real deployment, `convex codegen`
  * writes the *generic* `_generated/api.d.ts` (`AnyApi` / `AnyComponents`), whose
  * index access is `| undefined`. These two casts are what that costs; they
  * become no-ops once the precise API is generated, and neither weakens a check
@@ -46,6 +47,15 @@ const otpFunctions = internal.otp as unknown as {
     { allowed: boolean; reason?: OtpSendDenial; retryAfterMs: number }
   >;
   recordDemoSignIn: FunctionReference<"mutation", "internal", { email: string }, null>;
+};
+
+const organiserInvitationFunctions = internal.organiser_invitations as unknown as {
+  pendingTokenByEmail: FunctionReference<
+    "query",
+    "internal",
+    { email: string },
+    { token: string } | null
+  >;
 };
 
 /**
@@ -229,6 +239,29 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
 
     plugins: [
       convex({ authConfig }),
+      magicLink({
+        expiresIn: 10 * 60,
+        storeToken: "hashed",
+        generateToken: async (email) => {
+          if (!("runQuery" in ctx)) {
+            throw new APIError("FORBIDDEN", { message: "That invitation is not available." });
+          }
+          const invitation = await ctx.runQuery(organiserInvitationFunctions.pendingTokenByEmail, {
+            email: normaliseEmail(email),
+          });
+          if (!invitation) {
+            throw new APIError("FORBIDDEN", { message: "That invitation is not available." });
+          }
+          return invitation.token;
+        },
+        // Organiser links are delivered by `admin.inviteOrganiser`. This hook is
+        // used only to stage the standard Better Auth magic-link verification
+        // record after the recipient opens that already-delivered link.
+        sendMagicLink: ({ metadata }) => {
+          if (metadata?.["partyboothOrganiserInvite"] === true) return;
+          throw new APIError("FORBIDDEN", { message: "That invitation is not available." });
+        },
+      }),
       emailOTP({
         // Six digits, ten-minute expiry, five attempts, sixty-second resend
         // cooldown — see `lib/otp.ts`, which derives all of it from

@@ -1,12 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * seed:demo — create the App Review demo party in a Convex deployment.
  *
- *   pnpm seed:demo                            # rows with no thumbnails
- *   pnpm seed:demo key_abc123 key_def456      # rows pointing at real objects
- *   pnpm seed:demo --prod key_abc123          # against the production deployment
+ *   bun run seed:demo                            # rows with no thumbnails
+ *   bun run seed:demo key_abc123 key_def456      # rows pointing at real objects
+ *   bun run seed:demo --prod key_abc123          # against the production deployment
  *
- * It is a thin wrapper around `npx convex run`, and that is the whole design:
+ * It is a thin wrapper around `bunx convex run`, and that is the whole design:
  * the seeder itself is an `internalMutation` in `packages/backend/convex/demo.ts`
  * where it is transactional and unit-tested offline, and this file only decides
  * which deployment to point it at. Releases and deploys are the owner's
@@ -39,12 +39,12 @@ if (assetKeys.length === 0) {
   console.log(
     "No asset keys given, so the demo media rows will have no thumbnails.\n" +
       "Upload two or three innocuous images to the UploadThing app once and pass\n" +
-      "their keys: pnpm seed:demo key_one key_two key_three",
+      "their keys: bun run seed:demo key_one key_two key_three",
   );
 }
 
 const result = spawnSync(
-  "npx",
+  "bunx",
   ["convex", "run", ...(prod ? ["--prod"] : []), "demo:seedDemoEvent", payload],
   { cwd: BACKEND, stdio: "inherit" },
 );

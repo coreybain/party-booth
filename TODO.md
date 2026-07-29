@@ -8,7 +8,7 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 
 ## Sprint 1 — Tue 29 Jul: skeleton online
 
-- [x] Turborepo + pnpm workspaces, strict TS, shared eslint/prettier/vitest config, env validation (`t3-env` style)
+- [x] Turborepo + Bun workspaces, strict TS, shared eslint/prettier/vitest config, env validation (`t3-env` style)
 - [x] `packages/backend`: Convex schema v1 — users, organiserInvitations, events (incl. `storageRegion`), memberships, inviteVersions, media, moderationDecisions, pushDevices, deletionJobs, auditEvents (+ `otpChallenges` throttle table)
 - [x] `packages/contracts`: shared zod schemas, permission rules, role types
 - [x] Better Auth on Convex: email OTP provider wired (Resend), Google + Apple providers configured *(code complete; needs real keys)*
@@ -66,10 +66,10 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 - [x] Slideshow: fullscreen, live-updating, photos + muted video, pause/skip, shuffle/chronological, configurable photo timing *(`/slideshow`; two-layer crossfade, per-slide timing, videos play full duration and advance on `ended`, wake lock re-acquired on `visibilitychange`, and the feed re-read every five minutes so signed URLs stay valid across a five-hour show. Media that will not load is skipped permanently after a load budget.)*
 - [x] Organiser home: code/QR, status, pending count, recent submissions, totals *(two queries kept deliberately separate: `stats.overview` is numbers an admin may read, `stats.recentSubmissions` mints signed URLs and is host-only and not rendered for a non-host at all.)*
 - [x] App Review requirements: report-content flow, block-user flow, in-app account deletion (`deletionScheduled`, access revoked), privacy policy page, 18+ rating, reviewer demo login (fixed OTP) + seeded demo event *(**code complete on both sides; the deployment steps are owner actions, listed below.** `/privacy` exists in `apps/web`, is public, static and outside every shell, and prerenders in an empty-environment `next build`. App side — long-press or the "…" on any gallery tile that is not yours → report with a reason → confirmation, with a block offer straight after; blocking is also its own control and is listed and undoable in Settings → Blocked people; Settings → Delete account is two taps, revokes access immediately, signs out, and says in plain words that the purge is 30 days out and that photographs are kept but anonymised. The privacy link opens `<siteUrl>/privacy` in an in-app browser. Report and block copy is now one definition in `@partybooth/contracts/copy`, in two deliberate registers — the guest picking a reason and the host reading the queue want different sentences, but never different meanings.)*
-- [ ] **Submit iOS build #1 to App Store review (end of day, non-negotiable)** — ⚠️ **OWNER ACTION; deliberately not ticked.** Nothing in this repo can tick it: it is an App Store Connect record, an age-rating questionnaire, screenshots and an `eas submit`, none of which a build can perform or verify. *(Everything code-side is ready: `app.config.ts` final pass, EAS submit profiles with env-read `ascAppId`/`appleTeamId`, non-placeholder icon set (`pnpm icons`). The remaining work is entirely in App Store Connect and is written out step by step, with the review-notes template and every questionnaire answer, in [`docs/store/ios-submission.md`](docs/store/ios-submission.md).)*
+- [ ] **Submit iOS build #1 to App Store review (end of day, non-negotiable)** — ⚠️ **OWNER ACTION; deliberately not ticked.** Nothing in this repo can tick it: it is an App Store Connect record, an age-rating questionnaire, screenshots and an `eas submit`, none of which a build can perform or verify. *(Everything code-side is ready: `app.config.ts` final pass, EAS submit profiles with env-read `ascAppId`/`appleTeamId`, non-placeholder icon set (`bun run icons`). The remaining work is entirely in App Store Connect and is written out step by step, with the review-notes template and every questionnaire answer, in [`docs/store/ios-submission.md`](docs/store/ios-submission.md).)*
 - [ ] Upload Android build to Play **internal testing**; grab the opt-in link — ⚠️ **OWNER ACTION; deliberately not ticked**, for the same reason as the line above. *(Steps, forms and the assetlinks gotcha — the SHA-256 must be the **Play-signed** key, not the upload key — in [`docs/store/android-internal.md`](docs/store/android-internal.md).)*
 
-> **Integration status (Sprint 4).** The three streams are merged on `feat/sprint4` and the gate is green offline with an **empty environment**: `pnpm typecheck`, `pnpm lint` (0 errors), `pnpm test` — **1689 tests** (contracts 450, backend 498, web 316, mobile 390, env 35) — `pnpm format:check`, plus `next build` and `expo export --platform all`.
+> **Integration status (Sprint 4).** The three streams are merged on `feat/sprint4` and the gate is green offline with an **empty environment**: `bun run typecheck`, `bun run lint` (0 errors), `bun run test` — **1689 tests** (contracts 450, backend 498, web 316, mobile 390, env 35) — `bun run format:check`, plus `next build` and `expo export --platform all`.
 >
 > Every contract-change request the three builders raised was applied rather than deferred, because each was a *shared* number or string that had been written twice:
 >
@@ -107,11 +107,11 @@ Legend: `[ ]` todo · `[x]` done · **RC** = releasable checkpoint you verify be
 > the reviewer login does not exist. See `.env.example`.
 
 **RC4:** run a fake mini-party solo: phone uploads photo + video → approve on laptop → both appear on the TV slideshow live. iOS build shows "Waiting for Review".
-> **Mobile status (Sprint 4).** `apps/mobile` is code-complete for its Sprint 4 lines: video capture and playback, the client half of the derivative step (photo `preview` and video `poster`, each its own grant under the same `captureId`), the three App Review flows, the store-readiness pass, and the two submission checklists in `docs/store/`. **389 mobile tests** (was 289); `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm format:check` and `expo export --platform all` all pass with an **empty** environment.
+> **Mobile status (Sprint 4).** `apps/mobile` is code-complete for its Sprint 4 lines: video capture and playback, the client half of the derivative step (photo `preview` and video `poster`, each its own grant under the same `captureId`), the three App Review flows, the store-readiness pass, and the two submission checklists in `docs/store/`. **389 mobile tests** (was 289); `bun run typecheck`, `bun run lint`, `bun run test`, `bun run format:check` and `expo export --platform all` all pass with an **empty** environment.
 >
-> **Three things the app cannot do for itself**, in the order they block submission: (1) the deployed site must actually serve `/privacy` — the route exists in `apps/web`, Settings links to it, and App Review rejects a dead privacy URL; (2) the demo login variables and `pnpm seed:demo <keys…>` must be set on the deployment Apple reviews (backend note below); (3) the App Store Connect record, questionnaires and screenshots are owner-only — `docs/store/ios-submission.md` has every answer pre-filled.
+> **Three things the app cannot do for itself**, in the order they block submission: (1) the deployed site must actually serve `/privacy` — the route exists in `apps/web`, Settings links to it, and App Review rejects a dead privacy URL; (2) the demo login variables and `bun run seed:demo <keys…>` must be set on the deployment Apple reviews (backend note below); (3) the App Store Connect record, questionnaires and screenshots are owner-only — `docs/store/ios-submission.md` has every answer pre-filled.
 >
-> **Backend status (Sprint 4).** Everything the Sprint 4 lines above need from Convex is in and tested offline: derivative ingestion (`fileRole` on grant/ticket/completion, ADR 0008); moderation `approve`/`decline`/`revoke` with bulk and partial success (ADR 0005); the organiser-home stats queries; a cursored live slideshow feed; report-content, block-user and `users.requestAccountDeletion`; and the env-gated fixed-OTP demo login with `pnpm seed:demo`. **Two owner-action items before submission:** set `DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP` on the deployment Apple will review and run `pnpm seed:demo <key…>` with two or three uploaded asset keys (without keys the demo party has rows but no thumbnails, because a Convex mutation cannot put bytes in storage) — then **unset both variables once the build is approved**.
+> **Backend status (Sprint 4).** Everything the Sprint 4 lines above need from Convex is in and tested offline: derivative ingestion (`fileRole` on grant/ticket/completion, ADR 0008); moderation `approve`/`decline`/`revoke` with bulk and partial success (ADR 0005); the organiser-home stats queries; a cursored live slideshow feed; report-content, block-user and `users.requestAccountDeletion`; and the env-gated fixed-OTP demo login with `bun run seed:demo`. **Two owner-action items before submission:** set `DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP` on the deployment Apple will review and run `bun run seed:demo <key…>` with two or three uploaded asset keys (without keys the demo party has rows but no thumbnails, because a Convex mutation cannot put bytes in storage) — then **unset both variables once the build is approved**.
 
 ---
 
@@ -156,8 +156,8 @@ which is why the suite was green over the gap.
 gap is closed and the demos are covered offline, but nobody has yet held two phones and watched it.
 **RC5:** second account as co-host moderates from their phone; rotate the code mid-"event" and confirm the old QR is dead; lock the organiser from `/admin` and watch everything freeze.
 > **Backend status (Sprint 5).** Everything the lines above need from Convex is in and tested
-> offline — **627 backend tests**, 495 contracts tests, `pnpm typecheck` / `pnpm lint` (0 errors) /
-> `pnpm format:check` green with an **empty environment**. New surface: `convex/cohosts.ts` (invite
+> offline — **627 backend tests**, 495 contracts tests, `bun run typecheck` / `bun run lint` (0 errors) /
+> `bun run format:check` green with an **empty environment**. New surface: `convex/cohosts.ts` (invite
 > by email through the existing Resend sender, revoke the invitation, remove a co-host),
 > `convex/push.ts` + `convex/lib/push/` (device registration, per-category preferences, dispatch via
 > the scheduler, Expo HTTP behind an adapter with a fake), `convex/admin.ts` (accounts, events, job
@@ -201,7 +201,7 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 
 > **Mobile status (Sprint 5).** `apps/mobile` is code-complete for its two lines — the Host tab and
 > Expo push — plus the upload-queue reporting the failure/recovery ping needs. **489 mobile tests**
-> (was 390); `pnpm typecheck`, `pnpm lint`, `pnpm test` and `expo export --platform all` all pass
+> (was 390); `bun run typecheck`, `bun run lint`, `bun run test` and `expo export --platform all` all pass
 > with an **empty** environment.
 >
 > The **Host tab** replaces the Sprint 2 scaffold: the six-digit code spaced for reading aloud and a
@@ -263,8 +263,8 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 > the organiser layout; both now ask the same four-valued gate.
 
 > **Integration (Sprint 5).** Merged on `feat/sprint5` with the gate green: **2039 tests**
-> (contracts 505, backend 627, web 381, mobile 489, env 37), `pnpm typecheck`, `pnpm lint`,
-> `pnpm format:check`, plus `next build` and `expo export --platform all` with an **empty**
+> (contracts 505, backend 627, web 381, mobile 489, env 37), `bun run typecheck`, `bun run lint`,
+> `bun run format:check`, plus `next build` and `expo export --platform all` with an **empty**
 > environment.
 >
 > Four duplications were reconciled into `@partybooth/contracts` rather than left to drift:
@@ -410,7 +410,7 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 
 ### Phase B — wire and deploy the web/backend half
 
-- [ ] `npx convex dev` once from `packages/backend` — pushes the schema and replaces the generic `_generated` fallback with real types
+- [ ] `bunx convex dev` once from `packages/backend` — pushes the schema and replaces the generic `_generated` fallback with real types
 - [ ] Set env vars per `.env.example`. The ones with sharp edges:
   - `BETTER_AUTH_SECRET` — **identical** in Convex and Vercel, ≥32 chars
   - `BETTER_AUTH_URL` = the **`.convex.site`** origin, *not* your Vercel domain
@@ -420,12 +420,12 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
   - `ADMIN_EMAIL_ALLOWLIST` must contain **your** address — organiser access is invitation-gated, and without this RC1 sign-in shows you nothing
   - `DEPLOYMENT_ENVIRONMENT=production` + `NODE_ENV=production` on prod Convex — otherwise the console email sender and auth guards stay in dev mode
 - [ ] `vercel link` + deploy; confirm **`/privacy`, `/terms`, `/account/deletion` resolve on the live domain** (App Review auto-rejects a dead privacy URL; Play's data-safety form needs the deletion URL)
-- [ ] `APPLE_TEAM_ID` + `ANDROID_CERT_FINGERPRINTS` (Play Console → Setup → App signing → **SHA-256 of the Play-signed key, not the upload key**) so `/.well-known/` association routes go live, then `pnpm verify:app-links https://<domain>` — **before printing signage**; phones cache what they fetch at install time
+- [ ] `APPLE_TEAM_ID` + `ANDROID_CERT_FINGERPRINTS` (Play Console → Setup → App signing → **SHA-256 of the Play-signed key, not the upload key**) so `/.well-known/` association routes go live, then `bun run verify:app-links https://<domain>` — **before printing signage**; phones cache what they fetch at install time
 
 ### Phase C — the mobile half
 
 - [ ] `eas init` → sets `EAS_PROJECT_ID`; put it on **Convex** AND `EXPO_PUBLIC_EAS_PROJECT_ID` in the **app build env** — setting only one half silently breaks push delivery. Optional: `EXPO_ACCESS_TOKEN`
-- [ ] `npx expo prebuild --clean` once (materialises the expo-notifications Android metadata)
+- [ ] `bunx expo prebuild --clean` once (materialises the expo-notifications Android metadata)
 - [ ] EAS **development build** → install on your phone (this is the RC1 app half)
 
 ### Phase D — verify the RCs (the actual testing, in order)
@@ -438,7 +438,7 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 
 ### Phase E — store submissions (owner-only; each has a full walkthrough)
 
-- [ ] iOS: set `DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP` + `DEMO_LOGIN_EXPIRES_AT` on **prod** Convex, `pnpm seed:demo` with 2–3 uploaded asset keys, then follow [`docs/store/ios-submission.md`](docs/store/ios-submission.md) end to end (`APPLE_ID`, `ASC_APP_ID` for `eas submit`). Unset all three demo vars after approval.
+- [ ] iOS: set `DEMO_LOGIN_EMAIL` + `DEMO_LOGIN_OTP` + `DEMO_LOGIN_EXPIRES_AT` on **prod** Convex, `bun run seed:demo` with 2–3 uploaded asset keys, then follow [`docs/store/ios-submission.md`](docs/store/ios-submission.md) end to end (`APPLE_ID`, `ASC_APP_ID` for `eas submit`). Unset all three demo vars after approval.
 - [ ] Android: [`docs/store/android-internal.md`](docs/store/android-internal.md) → internal-testing track → grab the opt-in link.
 
 Done when: all five RC boxes above are ticked — then Sprint 6 (hardening + dress rehearsal) starts.

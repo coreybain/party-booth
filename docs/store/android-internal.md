@@ -53,7 +53,7 @@ The package name comes from the first upload and must be `com.partybooth.app`, m
 
 ```bash
 # From the repo root.
-pnpm check                              # green before anything is uploaded
+bun run check                              # green before anything is uploaded
 
 cd apps/mobile
 eas build --profile internal --platform android
@@ -244,7 +244,7 @@ Private photo and video sharing for one real party. Nothing public, ever.
 ```
 
 **Icon:** `apps/mobile/assets/icon.png` is 1024², opaque, and can be downscaled to 512²
-directly. (`pnpm icons` regenerates the set — see `scripts/make-icons.mjs`.)
+directly. (`bun run icons` regenerates the set — see `scripts/make-icons.mjs`.)
 
 **Feature graphic:** there is no generator for this. A flat `#FF2E88` field with the
 wordmark centred in white is fine and takes two minutes; Play only requires that one
@@ -291,7 +291,7 @@ Do this on a phone that has never had the app, and do it **before** printing sig
       **Play Console → Setup → App signing → App signing key certificate**. That
       fingerprint is the _Play-signed_ one, which is different from the upload key — using
       the wrong one is the usual reason app links silently fall back to the browser.
-- [ ] `pnpm verify:app-links https://<your-domain>` passes.
+- [ ] `bun run verify:app-links https://<your-domain>` passes.
 - [ ] Take a photo, hold for a video, both appear in My media.
 
 ---

@@ -19,6 +19,7 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  allowedDevOrigins: ["192.168.4.252"],
 
   /**
    * Workspace packages are consumed as TypeScript source (no build step), so
@@ -30,7 +31,7 @@ const nextConfig: NextConfig = {
 
   /**
    * Type errors fail the build. (Next.js 16 no longer runs ESLint during
-   * `next build` at all — `pnpm lint` is the Turborepo task that does.)
+   * `next build` at all — `bun run lint` is the Turborepo task that does.)
    */
   typescript: { ignoreBuildErrors: false },
 

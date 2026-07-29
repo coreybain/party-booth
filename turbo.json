@@ -2,7 +2,9 @@
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "stream",
   "globalDependencies": [
-    "pnpm-workspace.yaml",
+    "bun.lock",
+    "bunfig.toml",
+    "package.json",
     "tsconfig.json",
     "prettier.config.mjs",
     ".env.example",
@@ -40,7 +42,22 @@
     "dev": {
       "dependsOn": ["^build"],
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "env": [
+        "NEXT_PUBLIC_*",
+        "EXPO_PUBLIC_*",
+        "CONVEX_*",
+        "BETTER_AUTH_*",
+        "GOOGLE_CLIENT_*",
+        "APPLE_*",
+        "RESEND_*",
+        "UPLOADTHING_*",
+        "SENTRY_*",
+        "ADMIN_EMAIL_ALLOWLIST",
+        "DEMO_LOGIN_*",
+        "STORAGE_DEFAULT_REGION",
+        "EAS_PROJECT_ID"
+      ]
     },
     "lint": {
       "dependsOn": ["^topo"],

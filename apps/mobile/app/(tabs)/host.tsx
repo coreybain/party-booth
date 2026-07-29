@@ -119,7 +119,7 @@ export default function HostScreen() {
           <Notice tone="warning" title="Running without a backend">
             <MutedText>
               No Convex deployment is configured, so the queue and the invite are unavailable. Run{" "}
-              <MonoText>pnpm env:doctor</MonoText> at the repo root to see what is missing.
+              <MonoText>bun run env:doctor</MonoText> at the repo root to see what is missing.
             </MutedText>
           </Notice>
         ) : eventsLoading ? (

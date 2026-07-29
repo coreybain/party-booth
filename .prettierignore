@@ -3,7 +3,7 @@ PLAN.md
 TODO.md
 
 node_modules
-pnpm-lock.yaml
+bun.lock
 .turbo
 .next
 .expo

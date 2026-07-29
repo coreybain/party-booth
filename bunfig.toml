@@ -1,0 +1,4 @@
+[install]
+# Metro, Turbopack and Convex all resolve workspace dependencies reliably from
+# one flat tree. Keep Bun's linker explicit so local and CI installs agree.
+linker = "hoisted"

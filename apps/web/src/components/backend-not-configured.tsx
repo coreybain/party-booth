@@ -18,7 +18,7 @@ export function BackendNotConfigured({ className }: { readonly className?: strin
       </p>
       <p className="mt-2 text-muted">
         Copy <Code>.env.example</Code> to <Code>.env.local</Code>, then run{" "}
-        <Code>pnpm env:doctor</Code> to see what is still missing.
+        <Code>bun run env:doctor</Code> to see what is still missing.
       </p>
     </Callout>
   );

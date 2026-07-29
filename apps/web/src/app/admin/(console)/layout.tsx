@@ -61,14 +61,6 @@ export default async function AdminConsoleLayout({ children }: { readonly childr
           </span>
         </Link>
       }
-      headerCentre={
-        // Hidden on the narrowest screens: at 390 px it wraps and squeezes the
-        // wordmark. The palette and the ADMIN wordmark already carry the
-        // "you are in staff tooling" signal on their own.
-        <span className="hidden rounded-full border border-accent/40 bg-accent-soft px-3 py-1 text-xs font-medium text-accent sm:inline-block">
-          Staff tooling — every action is audited
-        </span>
-      }
       headerRight={<SignOutButton redirectTo="/admin/login" />}
       nav={<AdminNav />}
     >

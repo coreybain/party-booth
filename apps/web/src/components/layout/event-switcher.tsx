@@ -3,7 +3,7 @@
 import { useMutation, useQuery } from "convex/react";
 import { useParams, useRouter } from "next/navigation";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { ChevronDownIcon } from "@/components/icons";
 import { backendApi } from "@/lib/convex-api";
 import { cn } from "@/lib/cn";
@@ -34,9 +34,13 @@ const NEW_EVENT = "__new__";
  */
 export function EventSwitcher({ className }: EventSwitcherProps) {
   return (
-    <BackendGate fallback={<SwitcherPlaceholder className={className} />}>
+    <AuthenticatedBackendGate
+      fallback={<SwitcherPlaceholder className={className} />}
+      loadingFallback={<SwitcherPlaceholder className={className} />}
+      signedOutFallback={<SwitcherPlaceholder className={className} />}
+    >
       <EventSwitcherLive className={className} />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

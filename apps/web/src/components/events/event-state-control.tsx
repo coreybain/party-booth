@@ -1,50 +1,77 @@
 "use client";
 
 import { useMutation } from "convex/react";
+import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
+import { EventSettingsSheet } from "@/components/events/event-settings-sheet";
+import { MoreVerticalIcon, SettingsIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { appErrorMessage } from "@/lib/app-errors";
-import { backendApi } from "@/lib/convex-api";
-import { allowedNextStates, EVENT_STATE_COPY, STATE_ACTION_LABELS } from "@/lib/event-view";
-import type { EventState, HostSettableEventState } from "@/lib/contracts";
+import { backendApi, type EventSummary } from "@/lib/convex-api";
+import { isEditableEventState, type HostSettableEventState } from "@/lib/contracts";
+import { allowedNextStates } from "@/lib/event-view";
+
+type PendingAction = HostSettableEventState | "delete";
+type Confirmation = "archive" | "delete";
 
 /**
- * Moving an event through its lifecycle.
+ * The compact lifecycle control shown beside the event title.
  *
- * The buttons offered are exactly `eventStateMachine`'s legal transitions from
- * the current state, filtered to the ones a host may set — so the console and
- * Convex cannot disagree about whether `archived → live` is a thing (it is: the
- * after-party). Nothing here decides policy; it reads it.
+ * The product language deliberately collapses the state machine into the two
+ * answers a host needs in the moment: the event is either live, or it can be
+ * published. The backend still owns the detailed states:
  *
- * `archived` asks for a confirmation because it is the one transition with a
- * side effect the host cannot see: archiving frees the six-digit code for
- * another event, so the printed sign stops working even if they re-open later.
- * That is exactly what `reissuedCode` reports back, and it is surfaced rather
- * than swallowed.
+ * - Publish moves any legal non-live state to `live`.
+ * - Unpublish moves `live` to `paused`, keeping the gallery and memberships.
+ * - Archive remains the explicit end-of-event transition.
+ * - Delete enters the scheduled-deletion lifecycle rather than silently
+ *   destroying guests' submissions from a menu click.
+ *
+ * Radix owns menu focus, arrow-key navigation and Escape handling. Archive and
+ * Delete open confirmations because both remove access for other people.
  */
 export function EventStateControl({
-  eventId,
-  state,
+  event,
+  isOwner,
 }: {
-  readonly eventId: string;
-  readonly state: EventState;
+  readonly event: EventSummary;
+  readonly isOwner: boolean;
 }) {
+  const { id: eventId, state } = event;
+  const router = useRouter();
   const setState = useMutation(backendApi.events.setState);
-  const [pending, setPending] = useState<HostSettableEventState | undefined>(undefined);
-  const [confirming, setConfirming] = useState<HostSettableEventState | undefined>(undefined);
+  const requestDeletion = useMutation(backendApi.events.requestDeletion);
+  const [pending, setPending] = useState<PendingAction | undefined>(undefined);
+  const [confirming, setConfirming] = useState<Confirmation | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const [reissuedCode, setReissuedCode] = useState<string | undefined>(undefined);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const apply = useCallback(
+  const applyState = useCallback(
     async (next: HostSettableEventState) => {
       setPending(next);
       setError(undefined);
-      setConfirming(undefined);
       try {
         const result = await setState({ eventId, state: next });
         setReissuedCode(result.reissuedCode);
+        setConfirming(undefined);
       } catch (caught) {
         setError(appErrorMessage(caught));
       } finally {
@@ -54,74 +81,233 @@ export function EventStateControl({
     [eventId, setState],
   );
 
-  const options = allowedNextStates(state);
+  const deleteEvent = useCallback(async () => {
+    setPending("delete");
+    setError(undefined);
+    try {
+      await requestDeletion({ eventId });
+      router.replace("/dashboard");
+    } catch (caught) {
+      setError(appErrorMessage(caught));
+      setPending(undefined);
+    }
+  }, [eventId, requestDeletion, router]);
+
+  const live = state === "live";
+  const canPublish = state !== "live" && state !== "deletionScheduled";
+  const canEdit = isEditableEventState(state);
+  const canArchive = isOwner && allowedNextStates(state).includes("archived");
+  const canDelete = isOwner && state !== "deletionScheduled";
+  const canOpenSettings = state !== "deletionScheduled";
+  const hasMenu = canOpenSettings || live || canEdit || canArchive || canDelete;
 
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted">{EVENT_STATE_COPY[state].description}</p>
+    <>
+      <div className="flex flex-col items-end gap-2">
+        <div className="flex items-center gap-2">
+          {live ? (
+            <span
+              className="inline-flex h-10 items-center gap-2 rounded-full border border-accent/35 bg-accent-soft px-3 text-sm font-medium text-accent"
+              role="status"
+              aria-label="Event is live"
+            >
+              <span className="relative flex size-2.5" aria-hidden="true">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
+                <span className="relative inline-flex size-2.5 rounded-full bg-accent" />
+              </span>
+              Live event
+            </span>
+          ) : canPublish ? (
+            <Button
+              size="sm"
+              loading={pending === "live"}
+              disabled={pending !== undefined}
+              onClick={() => {
+                void applyState("live");
+              }}
+            >
+              Publish
+            </Button>
+          ) : null}
 
-      <div className="flex flex-wrap gap-2">
-        {options.map((next) => (
-          <Button
-            key={next}
-            variant={next === "live" ? "primary" : next === "archived" ? "danger" : "secondary"}
-            loading={pending === next}
-            disabled={pending !== undefined}
-            onClick={() => {
-              if (next === "archived") {
-                setConfirming("archived");
-                return;
-              }
-              void apply(next);
-            }}
-          >
-            {STATE_ACTION_LABELS[next]}
-          </Button>
-        ))}
+          {hasMenu ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="size-10 rounded-full px-0"
+                  disabled={pending !== undefined}
+                  aria-label="Event actions"
+                  title="Event actions"
+                >
+                  <MoreVerticalIcon size={18} />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {canOpenSettings ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setSettingsOpen(true);
+                    }}
+                  >
+                    <SettingsIcon size={16} className="mr-2 text-muted" />
+                    Settings
+                  </DropdownMenuItem>
+                ) : null}
+                {live ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      void applyState("paused");
+                    }}
+                  >
+                    Unpublish
+                  </DropdownMenuItem>
+                ) : null}
+                {canEdit ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      router.push(`/events/${eventId}/edit`);
+                    }}
+                  >
+                    Edit
+                  </DropdownMenuItem>
+                ) : null}
+                {(live || canEdit) && (canArchive || canDelete) ? <DropdownMenuSeparator /> : null}
+                {canArchive ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setError(undefined);
+                      setConfirming("archive");
+                    }}
+                  >
+                    Archive
+                  </DropdownMenuItem>
+                ) : null}
+                {canDelete ? (
+                  <DropdownMenuItem
+                    tone="danger"
+                    onSelect={() => {
+                      setError(undefined);
+                      setConfirming("delete");
+                    }}
+                  >
+                    Delete
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
+
+        {reissuedCode === undefined ? null : (
+          <p className="max-w-64 text-right text-xs leading-5 text-warning" role="status">
+            This event needed a new join code: {reissuedCode}
+          </p>
+        )}
+
+        {error === undefined || confirming !== undefined ? null : (
+          <p className="max-w-64 text-right text-xs leading-5 text-danger" role="alert">
+            {error}
+          </p>
+        )}
       </div>
 
-      {confirming === "archived" ? (
-        <Callout tone="warning" live="polite">
-          <p className="text-ink">Archive this event?</p>
-          <p className="mt-1">
-            The gallery and slideshow stay available to everyone who joined, but nobody new can get
-            in and the six-digit code becomes free for another event to use.
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => {
-                void apply("archived");
-              }}
-            >
-              Archive
-            </Button>
+      <EventSettingsSheet event={event} open={settingsOpen} onOpenChange={setSettingsOpen} />
+
+      <Dialog
+        open={confirming === "archive"}
+        onOpenChange={(open) => {
+          if (!open && pending === undefined) {
+            setConfirming(undefined);
+            setError(undefined);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Archive this event?</DialogTitle>
+            <DialogDescription>
+              The gallery and slideshow stay available, but nobody new can join and the current
+              six-digit code becomes available for another event.
+            </DialogDescription>
+          </DialogHeader>
+          {error === undefined ? null : (
+            <Callout tone="danger" live="assertive" className="mt-4">
+              {error}
+            </Callout>
+          )}
+          <DialogFooter>
             <Button
               variant="ghost"
-              size="sm"
+              disabled={pending !== undefined}
               onClick={() => {
                 setConfirming(undefined);
+                setError(undefined);
               }}
             >
-              Keep it open
+              Cancel
             </Button>
-          </div>
-        </Callout>
-      ) : null}
+            <Button
+              variant="danger"
+              loading={pending === "archived"}
+              disabled={pending !== undefined && pending !== "archived"}
+              onClick={() => {
+                void applyState("archived");
+              }}
+            >
+              Archive event
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {reissuedCode === undefined ? null : (
-        <Callout tone="warning" live="assertive">
-          Somebody else had taken this event's old code while it was archived, so it now has a new
-          one. Anything you printed with the old number is out of date.
-        </Callout>
-      )}
-
-      {error === undefined ? null : (
-        <Callout tone="danger" live="assertive">
-          {error}
-        </Callout>
-      )}
-    </div>
+      <Dialog
+        open={confirming === "delete"}
+        onOpenChange={(open) => {
+          if (!open && pending === undefined) {
+            setConfirming(undefined);
+            setError(undefined);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this event?</DialogTitle>
+            <DialogDescription>
+              It disappears from every host and guest immediately. The event and its submissions are
+              queued for permanent deletion after the recovery window.
+            </DialogDescription>
+          </DialogHeader>
+          {error === undefined ? null : (
+            <Callout tone="danger" live="assertive" className="mt-4">
+              {error}
+            </Callout>
+          )}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              disabled={pending !== undefined}
+              onClick={() => {
+                setConfirming(undefined);
+                setError(undefined);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={pending === "delete"}
+              disabled={pending !== undefined && pending !== "delete"}
+              onClick={() => {
+                void deleteEvent();
+              }}
+            >
+              Delete event
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

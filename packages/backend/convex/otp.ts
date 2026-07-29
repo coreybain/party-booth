@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { writeAuditEvent } from "./lib/audit";
 import { isDemoAddress } from "./lib/config";
-import { registerOtpSendFor } from "./lib/otp-throttle";
+import { registerOtpSendFor } from "./lib/otp_throttle";
 
 /**
  * The per-address OTP send throttle.

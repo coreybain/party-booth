@@ -12,7 +12,7 @@ import type { ReadCtx } from "./guards";
 /**
  * The persistence half of the invite-rotation budget.
  *
- * Same shape as `lib/upload-throttle.ts` — all the policy is pure and lives in
+ * Same shape as `lib/upload_throttle.ts` — all the policy is pure and lives in
  * `@partybooth/contracts/codes`, and this file only reads and writes
  * `rotationAttempts` rows. Like the upload one and unlike the join one it counts
  * **successes**, because the rotation is the scarce thing rather than the guess.

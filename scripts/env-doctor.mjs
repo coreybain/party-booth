@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * env:doctor — compare the current environment against .env.example and print
  * what is still missing, with the "where do I get this" note for each one.
  *
- *   pnpm env:doctor                 # checks process.env + .env.local
- *   pnpm env:doctor .env.production # checks process.env + that file
+ *   bun run env:doctor                 # checks process.env + .env.local
+ *   bun run env:doctor .env.production # checks process.env + that file
  *
  * Values are never printed. Zero dependencies on purpose: this must work before
- * `pnpm install` has ever run.
+ * `bun install` has ever run.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";

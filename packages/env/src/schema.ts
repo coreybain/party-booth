@@ -58,7 +58,7 @@ export const serverVars = {
   /* --- Convex ----------------------------------------------------------- */
   CONVEX_DEPLOYMENT: envVar(
     nonEmpty.optional(),
-    "Written automatically by `npx convex dev`; identifies the active deployment. Leave unset in production.",
+    "Written automatically by `bunx convex dev`; identifies the active deployment. Leave unset in production.",
   ),
   CONVEX_URL: envVar(
     httpUrl,

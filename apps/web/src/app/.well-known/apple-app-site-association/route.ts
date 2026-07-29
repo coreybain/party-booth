@@ -17,7 +17,7 @@ import { associationResponse, buildAppleAppSiteAssociation } from "@/lib/app-lin
  * Verify after every deploy:
  *   curl -sI https://<host>/.well-known/apple-app-site-association
  *   curl -s  https://<host>/.well-known/apple-app-site-association | jq .
- * Both are asserted by `pnpm verify:app-links` (scripts/verify-app-links.mjs).
+ * Both are asserted by `bun run verify:app-links` (scripts/verify-app-links.mjs).
  */
 export const dynamic = "force-dynamic";
 

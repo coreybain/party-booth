@@ -7,7 +7,7 @@ import type { AuthConfig } from "convex/server";
  *
  * The provider reads its JWKS from the Better Auth component's own table. A
  * static `JWKS` environment variable can be supplied later to skip that lookup
- * (`npx convex run auth:generateJwk | npx convex env set JWKS`); it is a
+ * (`bunx convex run auth:generateJwk | bunx convex env set JWKS`); it is a
  * latency optimisation, not a requirement.
  */
 export default {

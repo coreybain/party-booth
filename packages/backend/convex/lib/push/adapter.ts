@@ -62,7 +62,7 @@ export class PushNotConfiguredError extends Error {
   override readonly name = "PushNotConfiguredError";
   constructor() {
     super(
-      "Expo push is not configured on this deployment. Set EAS_PROJECT_ID (and optionally EXPO_ACCESS_TOKEN) — run `pnpm env:doctor` for the list.",
+      "Expo push is not configured on this deployment. Set EAS_PROJECT_ID (and optionally EXPO_ACCESS_TOKEN) — run `bun run env:doctor` for the list.",
     );
   }
 }

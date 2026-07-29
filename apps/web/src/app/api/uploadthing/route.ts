@@ -44,7 +44,7 @@ function unavailable(): Response {
       error: "upload_not_configured",
       message:
         `Uploads are unavailable: ${status.missing.join(", ")} ` +
-        "not set. Run `pnpm env:doctor` for where each value comes from.",
+        "not set. Run `bun run env:doctor` for where each value comes from.",
     },
     { status: 503, headers: { "Cache-Control": "no-store" } },
   );

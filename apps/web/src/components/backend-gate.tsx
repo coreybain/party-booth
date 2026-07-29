@@ -1,9 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useConvexAuth, useQuery } from "convex/react";
+import { useEffect, type ReactNode } from "react";
 
 import { BackendNotConfigured } from "@/components/backend-not-configured";
-import { isBackendConfigured } from "@/lib/backend";
+import { useSession } from "@/lib/auth-client";
+import { convexUrl, isBackendConfigured } from "@/lib/backend";
+import { backendApi } from "@/lib/convex-api";
 
 export interface BackendGateProps {
   readonly children: ReactNode;
@@ -29,5 +32,110 @@ export interface BackendGateProps {
  */
 export function BackendGate({ children, fallback }: BackendGateProps) {
   if (!isBackendConfigured) return <>{fallback ?? <BackendNotConfigured />}</>;
+  return <>{children}</>;
+}
+
+export interface AuthenticatedBackendGateProps extends BackendGateProps {
+  /** Shown while the Convex provider is installing the browser's identity token. */
+  readonly loadingFallback?: ReactNode;
+  /** Shown if the browser session has genuinely ended. */
+  readonly signedOutFallback?: ReactNode;
+}
+
+/**
+ * Structural boundary for authenticated Convex reads.
+ *
+ * A Server Component can confirm the Better Auth cookie before rendering a
+ * protected route, while the browser's Convex provider still needs a moment to
+ * exchange that session for a Convex identity token. The Better Auth adapter's
+ * `isAuthenticated` flag becomes true as soon as the browser session exists,
+ * which can be before Convex has installed that token. `users.currentUser` is
+ * deliberately safe while signed out, so it acts as the backend handshake:
+ * protected children stay unmounted until Convex itself can resolve the user.
+ */
+export function AuthenticatedBackendGate({
+  children,
+  fallback,
+  loadingFallback,
+  signedOutFallback,
+}: AuthenticatedBackendGateProps) {
+  return (
+    <BackendGate fallback={fallback}>
+      <ConvexAuthGate loadingFallback={loadingFallback} signedOutFallback={signedOutFallback}>
+        {children}
+      </ConvexAuthGate>
+    </BackendGate>
+  );
+}
+
+function ConvexAuthGate({
+  children,
+  loadingFallback,
+  signedOutFallback,
+}: {
+  readonly children: ReactNode;
+  readonly loadingFallback?: ReactNode;
+  readonly signedOutFallback?: ReactNode;
+}) {
+  const convexAuth = useConvexAuth();
+  const currentUser = useQuery(backendApi.users.currentUser, {});
+
+  // #region DEBUG
+  const betterAuth = useSession();
+  useEffect(() => {
+    void fetch("/api/debug/auth-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        convexLoading: convexAuth.isLoading,
+        convexAuthenticated: convexAuth.isAuthenticated,
+        backendIdentity:
+          currentUser === undefined ? "loading" : currentUser === null ? "missing" : "ready",
+        betterAuthPending: betterAuth.isPending,
+        betterAuthHasSession: betterAuth.data != null,
+        clientConvexHost: convexUrl === undefined ? "unset" : new URL(convexUrl).host,
+      }),
+    });
+  }, [
+    betterAuth.data,
+    betterAuth.isPending,
+    convexAuth.isAuthenticated,
+    convexAuth.isLoading,
+    currentUser,
+  ]);
+  // #endregion DEBUG
+
+  if (convexAuth.isLoading || (convexAuth.isAuthenticated && currentUser == null)) {
+    return (
+      <>
+        {loadingFallback !== undefined ? (
+          loadingFallback
+        ) : (
+          <p className="text-sm text-muted" role="status">
+            Connecting to your account…
+          </p>
+        )}
+      </>
+    );
+  }
+
+  if (!convexAuth.isAuthenticated) {
+    return (
+      <>
+        {signedOutFallback !== undefined ? (
+          signedOutFallback
+        ) : (
+          <div className="rounded-xl border border-warning/35 bg-warning/8 px-4 py-3 text-sm text-warning">
+            Your session has ended.{" "}
+            <a href="/" className="underline underline-offset-2">
+              Sign in again
+            </a>
+            .
+          </div>
+        )}
+      </>
+    );
+  }
+
   return <>{children}</>;
 }

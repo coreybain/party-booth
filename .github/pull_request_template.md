@@ -10,7 +10,7 @@ Sprint: <!-- e.g. Sprint 3 — Thu 31 Jul: the upload spine -->
 
 ## Checks
 
-- [ ] `pnpm check` passes locally (typecheck + lint + unit tests, offline)
+- [ ] `bun run check` passes locally (typecheck + lint + unit tests, offline)
 - [ ] Diff read line by line before pushing
 - [ ] New env vars added to **both** `packages/env/src/schema.ts` and `.env.example`
 - [ ] No secrets, no live credentials, nothing that only passes CI with a token

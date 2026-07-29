@@ -19,7 +19,7 @@ import { associationResponse, buildAssetLinks } from "@/lib/app-links";
  * Verify after every deploy (and after any signing-key change):
  *   curl -s https://<host>/.well-known/assetlinks.json | jq .
  *   https://developers.google.com/digital-asset-links/tools/generator
- * `pnpm verify:app-links` checks the served shape.
+ * `bun run verify:app-links` checks the served shape.
  */
 export const dynamic = "force-dynamic";
 

@@ -67,22 +67,22 @@ sitting — during launch week, a PR that sits overnight is a PR that blocks tom
 ## The gate
 
 ```bash
-pnpm check          # typecheck + lint + unit tests, across every package
-pnpm format         # then let Prettier have the last word
+bun run check          # typecheck + lint + unit tests, across every package
+bun run format         # then let Prettier have the last word
 ```
 
 Both must pass before you push. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every
 push to `main` and every PR and does the same four things —
-`pnpm typecheck` → `pnpm lint` → `pnpm test` → `pnpm format:check` — as separate steps, so one push
+`bun run typecheck` → `bun run lint` → `bun run test` → `bun run format:check` — as separate steps, so one push
 tells you everything that is wrong rather than one problem per round-trip. The root scripts also
-cover the repo-level config files that `pnpm check` skips, which is why CI calls them individually.
+cover the repo-level config files that `bun run check` skips, which is why CI calls them individually.
 
 **CI has no secrets, and that is a design constraint, not an oversight.** Everything in this repo
 typechecks and unit-tests **fully offline**, with an empty environment. If a change only passes with
 a live credential, the change is in the wrong place — move the credential behind
 `@partybooth/env`'s feature flags so the code path no-ops when it is absent.
 
-Formatting is Prettier's problem, not yours: `pnpm format` before you push, and never argue with it.
+Formatting is Prettier's problem, not yours: `bun run format` before you push, and never argue with it.
 `PLAN.md` and `TODO.md` are in `.prettierignore` because they are the owner's documents.
 
 ## Rules that matter more than they look
@@ -95,12 +95,12 @@ degrades to a no-op instead of a crash. Direct `process.env` access outside `*.c
 **Adding an environment variable means two files**, always in the same commit:
 `packages/env/src/schema.ts` and `.env.example`, with a real "where do I get this" hint. Tests fail
 if the two drift, if a public variable is missing its `NEXT_PUBLIC_` / `EXPO_PUBLIC_` prefix, or if
-the hint is too vague to act on. Run `pnpm env:doctor` to see what is still unset locally.
+the hint is too vague to act on. Run `bun run env:doctor` to see what is still unset locally.
 
 **Never commit a secret.** `.env*` is gitignored except the example; `*.p8`, `*.p12`, `*.jks` and
 `*.key` are gitignored outright. If one lands in a commit, rotate the credential — do not just amend.
 
-**Cross-cutting dependency versions go in the `catalog:`** block of `pnpm-workspace.yaml`. Write
+**Cross-cutting dependency versions go in the `catalog:`** block of `package.json`. Write
 `"zod": "catalog:"` in a package, not a range. Writing `catalog:` for something not yet catalogued
 fails the install; add it to the catalog first.
 

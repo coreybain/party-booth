@@ -6,9 +6,9 @@ import {
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
-import { scheduleAccountDeletion } from "./lib/account-deletion";
+import { scheduleAccountDeletion } from "./lib/account_deletion";
 import { isAdminEmail } from "./lib/config";
-import { applyVerifiedEmailMatching } from "./lib/email-matching";
+import { applyVerifiedEmailMatching } from "./lib/email_matching";
 import { forbidden, invalidInput } from "./lib/errors";
 import { getCurrentUser, requirePermission, requireUser, toPermissionActor } from "./lib/guards";
 import { requireActiveUser } from "./lib/guards";

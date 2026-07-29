@@ -14,7 +14,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { writeAuditEvent } from "./lib/audit";
-import { applyVerifiedEmailMatching } from "./lib/email-matching";
+import { applyVerifiedEmailMatching } from "./lib/email_matching";
 import {
   adoptActiveEvent,
   checkInviteJoinable,
@@ -30,7 +30,7 @@ import {
 } from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
-import { checkJoinThrottle, recordJoinFailure } from "./lib/join-throttle";
+import { checkJoinThrottle, recordJoinFailure } from "./lib/join_throttle";
 import { eventIsUsable } from "./lib/lock";
 import { eventState } from "./lib/validators";
 
@@ -68,7 +68,7 @@ import { eventState } from "./lib/validators";
  *    ceiling used to leave none at all, so an attacker went dark exactly when
  *    they were most interesting.
  * 3. **Nothing but time returns budget.** There is no success reset — see
- *    `lib/join-throttle.ts`.
+ *    `lib/join_throttle.ts`.
  */
 
 const inviteArg = v.union(

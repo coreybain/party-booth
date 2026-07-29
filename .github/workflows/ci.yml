@@ -29,14 +29,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # pnpm must exist before setup-node so `cache: pnpm` can find the store.
-      # Version comes from the `packageManager` field in package.json.
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+
+      # Keep the package-manager version identical locally and in CI.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
 
       # Turborepo's local cache. Unchanged packages are replayed instead of rerun.
       - name: Restore Turborepo cache
@@ -48,25 +48,25 @@ jobs:
 
       - name: Install
         id: install
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
       # The remaining steps run even after one fails, so a single push surfaces
       # every problem at once instead of one per round-trip.
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm typecheck
+        run: bun run typecheck
 
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm lint
+        run: bun run lint
 
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm test
+        run: bun run test
 
       - name: Formatting
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm format:check
+        run: bun run format:check
 
       # `next build` with a deliberately empty environment. It catches what unit
       # tests cannot — bundler resolution, RSC boundaries, and any code path that
@@ -74,4 +74,4 @@ jobs:
       # No secrets: a build that needs one has the read in the wrong place.
       - name: Build
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm build
+        run: bun run build

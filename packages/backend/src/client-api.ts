@@ -611,6 +611,13 @@ export type CohostInvitationId = string;
 export type OrganiserInvitationId = string;
 export type AuditEventId = string;
 
+/** Public, address-free view of an organiser invitation email link. */
+export interface OrganiserInvitationPreview {
+  readonly status: "pending" | "accepted";
+  readonly invitedByName: string;
+  readonly expiresAt: number;
+}
+
 /**
  * The co-host invitation lifecycle. It lives in the backend's schema validators
  * rather than in `@partybooth/contracts` (unlike `MembershipStatus`), so it is
@@ -755,6 +762,13 @@ export interface AccountDeletionResult {
 /* -------------------------------------------------------------------------- */
 
 export interface BackendApi {
+  readonly organiser_invitations: {
+    readonly preview: Query<{ token: string }, OrganiserInvitationPreview | null>;
+    readonly prepare: ConvexAction<
+      { token: string },
+      { ok: false } | { ok: true; verifyPath: string }
+    >;
+  };
   readonly users: {
     readonly currentUser: Query<NoArgs, CurrentUser | null>;
     readonly updateProfile: Mutation<
@@ -810,6 +824,10 @@ export interface BackendApi {
     readonly setState: Mutation<
       { eventId: EventId; state: HostSettableEventState; reason?: string },
       SetEventStateResult
+    >;
+    readonly requestDeletion: Mutation<
+      { eventId: EventId },
+      { state: EventState; scheduledAt: number }
     >;
     readonly setActiveEvent: Mutation<{ eventId: EventId | null }, null>;
     readonly myEvents: Query<NoArgs, EventSummary[]>;

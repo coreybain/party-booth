@@ -59,7 +59,7 @@ export function SetupRequired({
 
         <Card>
           <MutedText>
-            Run <MonoText>pnpm env:doctor</MonoText> from the repo root for the full list of
+            Run <MonoText>bun run env:doctor</MonoText> from the repo root for the full list of
             variables, including the optional ones (Sentry, push notifications).
           </MutedText>
         </Card>

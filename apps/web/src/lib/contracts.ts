@@ -31,7 +31,7 @@ export {
  * Invite rotation, Sprint 5.
  *
  * `canRotateInvite` and `registerRotation` are the **same** pure budget the
- * Convex mutation charges (`convex/lib/rotation-throttle.ts` persists what they
+ * Convex mutation charges (`convex/lib/rotation_throttle.ts` persists what they
  * compute). Running them client-side is what lets the rotate button grey itself
  * out with a countdown after the fifth rotation in an hour, instead of offering
  * a control whose only outcome is a `rateLimited` error — and because it is one

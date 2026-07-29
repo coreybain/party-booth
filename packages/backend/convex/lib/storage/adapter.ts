@@ -22,7 +22,7 @@ import type { SignedReadUrl, StorageObjectRef, StorageRegion } from "@partybooth
  * The other two halves of the pipeline are deliberately *not* here. Validating
  * and consuming a grant, and registering a completed upload, are database
  * operations against Convex — the provider has no opinion about either — so they
- * live in `lib/upload-grants.ts` and `lib/media.ts`. Putting them behind the
+ * live in `lib/upload_grants.ts` and `lib/media.ts`. Putting them behind the
  * provider interface would mean a fake provider could change what a grant means,
  * which is the one thing tests must not be able to do.
  *
@@ -83,7 +83,7 @@ export class StorageNotConfiguredError extends Error {
   override readonly name = "StorageNotConfiguredError";
   constructor(region: StorageRegion) {
     super(
-      `No storage credentials for region "${region}". Set UPLOADTHING_TOKEN on this deployment — run \`pnpm env:doctor\` for the list.`,
+      `No storage credentials for region "${region}". Set UPLOADTHING_TOKEN on this deployment — run \`bun run env:doctor\` for the list.`,
     );
   }
 }

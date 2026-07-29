@@ -66,7 +66,7 @@ export const rateLimited = (message: string, retryAfterMs: number): AppError =>
 export const notConfigured = (what: string): AppError =>
   new AppError(
     "notConfigured",
-    `${what} is not configured on this deployment. Set the matching environment variables — run \`pnpm env:doctor\` for the list.`,
+    `${what} is not configured on this deployment. Set the matching environment variables — run \`bun run env:doctor\` for the list.`,
   );
 
 export function isAppError(error: unknown): error is AppError {

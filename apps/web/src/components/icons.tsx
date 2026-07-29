@@ -146,12 +146,40 @@ export function ArrowRightIcon(props: IconProps) {
   );
 }
 
+export function ArrowLeftIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M19.5 12h-15M10.5 6l-6 6 6 6" />
+    </Icon>
+  );
+}
+
 export function UsersIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <circle cx="9.5" cy="8" r="3.5" />
       <path d="M3 20c0-3.3 2.9-5.5 6.5-5.5S16 16.7 16 20" />
       <path d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6M18 14.9c2 .8 3 2.6 3 5.1" />
+    </Icon>
+  );
+}
+
+export function UserPlusIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5" />
+      <path d="M18.5 8v7M15 11.5h7" />
+    </Icon>
+  );
+}
+
+export function MoreVerticalIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="5" r="1.25" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="19" r="1.25" fill="currentColor" stroke="none" />
     </Icon>
   );
 }

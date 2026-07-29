@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Draw PartyBooth's launch icon set, from code, with no dependencies.
  *
@@ -16,7 +16,7 @@
  * "regenerate the icons" is a command rather than an archaeology exercise:
  *
  * ```bash
- * pnpm icons          # rewrites apps/mobile/assets/*.png
+ * bun run icons          # rewrites apps/mobile/assets/*.png
  * ```
  *
  * ## Why no `sharp`, no `canvas`, no SVG rasteriser

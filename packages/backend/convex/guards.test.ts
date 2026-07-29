@@ -22,7 +22,7 @@ type T = TestConvex<SchemaDefinition<typeof schema.tables, true>>;
 
 /**
  * convex-test finds the function modules by looking for a `_generated`
- * directory. The workspace uses pnpm's hoisted node_modules at the repo root,
+ * directory. The workspace uses Bun's hoisted node_modules at the repo root,
  * so its "sibling to node_modules" heuristic does not fire — the module map is
  * passed explicitly instead. This is also why the convex-test suites sit at the
  * root of `convex/` rather than beside the code they exercise.

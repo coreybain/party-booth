@@ -3,7 +3,7 @@
 import { useQuery } from "convex/react";
 import Link from "next/link";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { StateBadge } from "@/components/events/state-badge";
 import { ArrowRightIcon, PlusIcon } from "@/components/icons";
 import { Card } from "@/components/layout/card";
@@ -20,9 +20,9 @@ import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
  */
 export function EventList() {
   return (
-    <BackendGate>
+    <AuthenticatedBackendGate>
       <EventListLive />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

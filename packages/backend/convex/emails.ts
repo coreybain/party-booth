@@ -13,13 +13,13 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action, internalMutation, mutation, query } from "./_generated/server";
 import { writeAuditEvent } from "./lib/audit";
-import { applyVerifiedEmailMatching } from "./lib/email-matching";
+import { applyVerifiedEmailMatching } from "./lib/email_matching";
 import { otpEmail, sendEmail } from "./lib/email";
 import { invalidInput, notConfigured, rateLimited, unauthenticated } from "./lib/errors";
 import { requireActiveUser, requireUser } from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
-import { registerOtpSendFor } from "./lib/otp-throttle";
+import { registerOtpSendFor } from "./lib/otp_throttle";
 import { userEmailStatus } from "./lib/validators";
 
 /**
@@ -45,7 +45,7 @@ import { userEmailStatus } from "./lib/validators";
 const CHALLENGE_FAILURE = "That code is not valid, or it has expired. Ask for a new one.";
 
 /**
- * Until `npx convex dev` runs against a real deployment, codegen writes the
+ * Until `bunx convex dev` runs against a real deployment, codegen writes the
  * *generic* `api.d.ts`, where index access is `| undefined` and untyped. Same
  * cast, same reason, as the two in `auth.ts`; it becomes a no-op once the
  * precise API is generated.

@@ -13,7 +13,7 @@ import type { Id } from "./_generated/dataModel";
 import { action, internalMutation, mutation, query } from "./_generated/server";
 import { writeAuditEvent, writeEventAudit } from "./lib/audit";
 import { siteUrl } from "./lib/config";
-import { COHOST_INVITATION_TTL_MS } from "./lib/email-matching";
+import { COHOST_INVITATION_TTL_MS } from "./lib/email_matching";
 import { cohostInviteEmail, sendEmail } from "./lib/email";
 import { forbidden, invalidInput, notConfigured, notFound, unauthenticated } from "./lib/errors";
 import {
@@ -25,7 +25,7 @@ import {
 } from "./lib/guards";
 import { assertEventNotFrozen } from "./lib/lock";
 import { parseInput } from "./lib/input";
-import { expireGrantsForUser } from "./lib/upload-grants";
+import { expireGrantsForUser } from "./lib/upload_grants";
 import { cohostInvitationStatus, eventRole, membershipStatus } from "./lib/validators";
 
 /**
@@ -37,7 +37,7 @@ import { cohostInvitationStatus, eventRole, membershipStatus } from "./lib/valid
  * The whole point is that the person may not have an account. `memberships`
  * cannot express that — its `userId` is required — so `cohostInvitations` holds
  * the promise until somebody with a **verified** matching address appears, at
- * which point `lib/email-matching.ts` turns it into a `cohost` membership. That
+ * which point `lib/email_matching.ts` turns it into a `cohost` membership. That
  * seam has existed since Sprint 2 and is untouched here; this file is the half
  * that creates rows for it to match, and the emails that tell somebody to go and
  * look.

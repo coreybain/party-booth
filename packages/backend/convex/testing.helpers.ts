@@ -51,7 +51,7 @@ export type T = TestConvex<SchemaDefinition<typeof schema.tables, true>>;
 
 /**
  * convex-test finds function modules by looking for a `_generated` directory.
- * pnpm's hoisted node_modules defeats its "sibling to node_modules" heuristic,
+ * Bun's hoisted node_modules defeats its "sibling to node_modules" heuristic,
  * so every suite passes the module map explicitly. `import.meta.glob` is
  * resolved relative to *this* file, which is why it lives at the root of
  * `convex/` alongside the suites.
@@ -78,7 +78,7 @@ export function makeTest(): T {
  * rather than from a hand-written table that can drift, and calling a function
  * that does not exist is a compile error.
  *
- * **Delete this block** once `npx convex dev` has run against a real project:
+ * **Delete this block** once `bunx convex dev` has run against a real project:
  * `_generated/api.d.ts` will then say the same thing, and the tests can import
  * from there like production code does.
  */

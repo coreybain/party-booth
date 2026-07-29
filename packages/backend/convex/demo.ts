@@ -28,7 +28,7 @@ import { mintInviteVersion } from "./lib/events";
  *
  * **It is an `internalMutation`.** There is no client path to it, so a seeder
  * cannot be called by an authenticated guest who guesses the name. The owner
- * runs it with `pnpm seed:demo`, which shells out to `npx convex run` — releases
+ * runs it with `bun run seed:demo`, which shells out to `bunx convex run` — releases
  * are driven by the owner, never by an agent or CI (CONTRIBUTING).
  *
  * **It refuses to run unless the demo login is configured.** `demoLogin()`

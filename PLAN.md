@@ -10,7 +10,7 @@ The guaranteed guest path is **mobile web**. The iOS and Android apps are built 
 
 ## Summary
 
-TypeScript/pnpm Turborepo:
+TypeScript/Bun Turborepo:
 
 - `apps/web`: Next.js site on Vercel — organiser console, global-admin console, **guest mobile-web capture**, and the join/deep-link fallback.
 - `apps/mobile`: Expo dev-build app, iOS 17+ / Android 10+, clean camera (no effects at launch).
@@ -88,7 +88,7 @@ As originally specified, with launch modes limited to `manual` and `automatic`; 
 
 ### Platform
 
-- Turborepo, pnpm, strict TS, env validation, shared schemas/permissions/types.
+- Turborepo, Bun, strict TS, env validation, shared schemas/permissions/types.
 - Convex US East; Better Auth on Convex; Convex subscriptions drive dashboards, galleries, slideshow.
 - UploadThing app: paid plan, region **pdx1**, **default ACL Private**, route handlers in `apps/web`. Mobile/web clients request a short-lived one-time upload grant from Convex (`eventId`, `captureId`, `mediaType`, `byteSize`, checksum, `storageRegion`); middleware validates before issuing the upload URL. Idempotent completion callbacks.
 - Resend for OTP + invites (DNS verified on day 1). Sentry with scrubbing as originally specified. Rate limits + enumeration protection on join and OTP as originally specified.

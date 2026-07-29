@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { OrganiserInviteSheet } from "@/components/admin/organiser-invite-sheet";
 import { cn } from "@/lib/cn";
 
 interface AdminNavItem {
@@ -36,27 +37,35 @@ export function AdminNav({ className }: { readonly className?: string }) {
 
   return (
     <nav aria-label="Admin sections" className={cn("flex justify-center", className)}>
-      <ul className="flex items-center gap-1 overflow-x-auto rounded-full border border-line bg-surface p-1">
-        {ADMIN_NAV.map(({ href, label }) => {
-          const active = isAdminNavItemActive(href, pathname);
-          return (
-            <li key={href}>
-              <Link
-                href={href}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex h-9 shrink-0 items-center rounded-full px-3.5 text-sm transition-colors",
-                  active
-                    ? "bg-accent-soft text-accent"
-                    : "text-muted hover:bg-raised hover:text-ink",
-                )}
-              >
-                {label}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex items-center rounded-full border border-line bg-surface p-1">
+        <ul className="flex items-center gap-1 overflow-x-auto">
+          {ADMIN_NAV.map(({ href, label }) => {
+            const active = isAdminNavItemActive(href, pathname);
+            return (
+              <li key={href}>
+                <Link
+                  href={href}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "flex h-9 shrink-0 items-center rounded-full px-3.5 text-sm transition-colors",
+                    active
+                      ? "bg-accent-soft text-accent"
+                      : "text-muted hover:bg-raised hover:text-ink",
+                  )}
+                >
+                  {label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+        <span
+          role="separator"
+          aria-orientation="vertical"
+          className="mx-1.5 h-6 w-px shrink-0 bg-line"
+        />
+        <OrganiserInviteSheet />
+      </div>
     </nav>
   );
 }

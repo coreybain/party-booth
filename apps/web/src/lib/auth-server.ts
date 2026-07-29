@@ -31,7 +31,7 @@ const convexSiteUrl = envOptional(serverEnv, "CONVEX_SITE_URL");
  * True when the server can reach Convex. Note this is the *server* view:
  * `isBackendConfigured` in `backend.ts` is the browser's view and keys off
  * `NEXT_PUBLIC_CONVEX_URL`. Both must be set for a working deployment;
- * `pnpm env:doctor` reports either being missing.
+ * `bun run env:doctor` reports either being missing.
  */
 export const isServerBackendConfigured: boolean =
   convexUrl !== undefined && convexSiteUrl !== undefined;
@@ -48,7 +48,7 @@ function unavailable(): Response {
       error: "backend_not_configured",
       message:
         "CONVEX_URL and CONVEX_SITE_URL are not set, so authentication is unavailable. " +
-        "Run `pnpm env:doctor` for what to fill in.",
+        "Run `bun run env:doctor` for what to fill in.",
     },
     { status: 503, headers: { "Cache-Control": "no-store" } },
   );
@@ -126,7 +126,7 @@ export interface AppUser {
 /**
  * `api.users.currentUser`, typed.
  *
- * Until `npx convex dev` runs against a real deployment, `_generated/api.d.ts`
+ * Until `bunx convex dev` runs against a real deployment, `_generated/api.d.ts`
  * is the generic fallback (`AnyApi`), whose index access is `| undefined`.
  * That is the same cast `packages/backend/convex/auth.ts` documents, for the
  * same reason, and it becomes a no-op once precise codegen lands.

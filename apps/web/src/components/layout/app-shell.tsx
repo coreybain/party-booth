@@ -12,11 +12,11 @@ export interface AppShellProps {
   readonly shell?: "admin";
   /** Left of the header: wordmark, usually wrapped in a `<Link href="/">`. */
   readonly brand: ReactNode;
-  /** Centre of the header: the event switcher on the organiser side. */
+  /** Optional centre control shown above the navigation. */
   readonly headerCentre?: ReactNode;
   /** Right of the header: account actions. */
   readonly headerRight?: ReactNode;
-  /** The centred icon nav, rendered on its own row under the header. */
+  /** The centred icon nav. It shares the header row when there is no centre control. */
   readonly nav?: ReactNode;
   /** Full-bleed strip above the header (preview mode, incidents, lock notices). */
   readonly banner?: ReactNode;
@@ -48,10 +48,21 @@ export function AppShell({
       <header className="sticky top-0 z-20 border-b border-line bg-canvas/85 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-3">
           <div className="flex shrink-0 items-center">{brand}</div>
-          <div className="flex min-w-0 flex-1 justify-center">{headerCentre}</div>
+          {headerCentre ? (
+            <div className="flex min-w-0 flex-1 justify-center">{headerCentre}</div>
+          ) : nav ? (
+            <div className="hidden min-w-0 flex-1 justify-center sm:flex">{nav}</div>
+          ) : (
+            <div className="flex-1" />
+          )}
           <div className="flex shrink-0 items-center justify-end">{headerRight}</div>
         </div>
-        {nav ? <div className="mx-auto w-full max-w-5xl px-4 pb-3">{nav}</div> : null}
+        {nav && headerCentre ? (
+          <div className="mx-auto w-full max-w-5xl px-4 pb-3">{nav}</div>
+        ) : null}
+        {nav && !headerCentre ? (
+          <div className="mx-auto w-full max-w-5xl px-4 pb-3 sm:hidden">{nav}</div>
+        ) : null}
       </header>
 
       <main

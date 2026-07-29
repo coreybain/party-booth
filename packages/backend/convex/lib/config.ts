@@ -36,6 +36,13 @@ export function trustedOrigins(): string[] {
   if (authUrl) origins.add(stripTrailingSlash(authUrl));
   const convexSite = envOptional(serverEnv, "CONVEX_SITE_URL");
   if (convexSite) origins.add(stripTrailingSlash(convexSite));
+  // `SITE_URL` may be the LAN address used by Expo while the browser uses the
+  // fixed Next.js development origin. Both are trusted only on a development
+  // deployment; neither localhost nor a private-network origin belongs in the
+  // production allowlist.
+  if (serverEnv.DEPLOYMENT_ENVIRONMENT === "development") {
+    origins.add("http://localhost:3000");
+  }
   // Expo dev builds and the shipped app return through the custom scheme.
   origins.add("partybooth://");
   return [...origins];

@@ -13,7 +13,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
 import { getActiveMembership, type ReadCtx } from "./guards";
-import { expireGrantsForUser } from "./upload-grants";
+import { expireGrantsForUser } from "./upload_grants";
 
 /**
  * Invite-version mechanics: allocating a six-digit code, minting a token, and

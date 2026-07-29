@@ -148,7 +148,7 @@ Moderation modes at launch are `manual` and `automatic`. The `ai` mode is post-l
 
 ## Platform
 
-Turborepo + pnpm, strict TypeScript, validated environment, shared schemas/permissions/types.
+Turborepo + Bun, strict TypeScript, validated environment, shared schemas/permissions/types.
 Convex in **US East (N. Virginia)** with Better Auth on Convex; Convex subscriptions drive the
 dashboards, galleries and slideshow. UploadThing on a paid plan in region **pdx1** with default ACL
 **Private**; the route handlers live in `apps/web`. Clients request a short-lived one-time upload

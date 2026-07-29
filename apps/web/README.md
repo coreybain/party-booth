@@ -95,9 +95,9 @@ video. The capture panel says so in as many words.
 ## Run it
 
 ```bash
-pnpm --filter @partybooth/web dev     # http://localhost:3000
-pnpm --filter @partybooth/web build
-pnpm --filter @partybooth/web test
+bun run --filter @partybooth/web dev     # http://localhost:3000
+bun run --filter @partybooth/web build
+bun run --filter @partybooth/web test
 ```
 
 Everything above works with **no environment variables at all**. With no
@@ -106,7 +106,7 @@ the Convex provider is skipped, the auth gates let you through behind a banner,
 and `/api/auth/*` answers 503 with an actionable message. Set `CONVEX_URL` and
 `CONVEX_SITE_URL` and the gates go live and fail closed.
 
-Run `pnpm env:doctor` from the repo root to see what is still unset.
+Run `bun run env:doctor` from the repo root to see what is still unset.
 
 ## Layout
 

@@ -740,7 +740,7 @@ address, and the audit trail — and the operational half of it is **unsetting b
 approved**, which is why that instruction is in `.env.example` next to the variables.
 
 `demo.seedDemoEvent` (internal, refuses unless both variables are set, idempotent) builds the party
-the reviewer lands in; `pnpm seed:demo <assetKey…>` drives it. The asset keys are supplied by hand
+the reviewer lands in; `bun run seed:demo <assetKey…>` drives it. The asset keys are supplied by hand
 because a Convex mutation cannot put bytes into storage — without them the demo party has rows and no
 thumbnails.
 

@@ -14,7 +14,7 @@ covers upload trouble, a party opening or closing, and a host's queue building u
 
 ```bash
 cp apps/mobile/.env.example apps/mobile/.env.local   # optional — the app runs without it
-pnpm --filter @partybooth/mobile dev                 # expo start --dev-client
+bun run --filter @partybooth/mobile dev                 # expo start --dev-client
 ```
 
 Without a `.env.local` the app boots to a **"PartyBooth isn't configured"** screen listing
@@ -29,8 +29,8 @@ all need native code that Expo Go does not carry. Build a dev client once per na
 change:
 
 ```bash
-pnpm --filter @partybooth/mobile eas:build:dev      # device
-pnpm --filter @partybooth/mobile prebuild           # or build locally
+bun run --filter @partybooth/mobile eas:build:dev      # device
+bun run --filter @partybooth/mobile prebuild           # or build locally
 ```
 
 ## Layout
@@ -68,7 +68,7 @@ src/
 
 Current stable. SDK 57 is the React Native 0.86 release and Expo state it is "intended to
 have no breaking changes from 0.85", so the usual reason to lag a release (churn) does not
-apply. Every module this app needs ships a stable 57.x. `npx expo-doctor` passes 20/20 —
+apply. Every module this app needs ships a stable 57.x. `bunx expo-doctor` passes 20/20 —
 keep it that way; it catches native version drift that only surfaces during an EAS build.
 
 `@sentry/react-native` is pinned to `~7.11.0` rather than the newer 8.x specifically
@@ -270,7 +270,7 @@ It never blocks a sign-out: a stale device row goes quiet by itself on the next
 
 ### Testing
 
-`pnpm --filter @partybooth/mobile test` runs Vitest in **two projects** (see
+`bun run --filter @partybooth/mobile test` runs Vitest in **two projects** (see
 `vitest.config.ts`):
 
 - **`mobile`** — plain Node, no React. `src/lib`, `src/push` and `src/upload`: deep links,
@@ -294,7 +294,7 @@ copy is the sharpest case — `describeJoinFailure` has a test asserting it show
 contract's single rejection sentence, so a well-meaning "be more helpful here" change
 fails a test instead of quietly becoming an enumeration oracle.
 
-The strongest offline check that the app actually works is `pnpm --filter
+The strongest offline check that the app actually works is `bun run --filter
 @partybooth/mobile build` (`expo export`) — it runs the real Metro graph and fails on any
 unresolved import.
 

@@ -26,7 +26,7 @@ Each package gets its own `"lint": "eslint ."` script; Turborepo runs them in pa
   Read config through `@partybooth/env` instead. If you genuinely need a raw read in app code,
   add a scoped `// eslint-disable-next-line no-restricted-syntax` with a reason.
 - **Type-aware linting is off on purpose** (no `projectService`). It roughly triples lint time
-  and needs per-package project wiring we do not need before 5 Aug. `pnpm typecheck` is the
+  and needs per-package project wiring we do not need before 5 Aug. `bun run typecheck` is the
   type gate.
 - `eslint-config-prettier` is applied last, so formatting is Prettier's job only.
 - Extend, don't fork:

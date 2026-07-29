@@ -27,7 +27,7 @@ export interface ConsoleEmailSenderOptions {
  * This is what runs when `RESEND_API_KEY` is unset — the entire state of the
  * world until the Resend domain verifies — so that the OTP sign-in flow is
  * developable on day one with no credentials: request a code, read it out of
- * `npx convex logs`, sign in.
+ * `bunx convex logs`, sign in.
  *
  * It does **not** pretend outside development. `getEmailSender` constructs it
  * with `refuse: true` unless `DEPLOYMENT_ENVIRONMENT` is `development`, and the

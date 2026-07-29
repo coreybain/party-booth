@@ -1,10 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * verify:app-links — prove that a deployment actually serves the two documents
  * that make a printed QR open the app.
  *
- *   pnpm verify:app-links                      # uses SITE_URL / NEXT_PUBLIC_SITE_URL
- *   pnpm verify:app-links https://partybooth.app
+ *   bun run verify:app-links                      # uses SITE_URL / NEXT_PUBLIC_SITE_URL
+ *   bun run verify:app-links https://partybooth.app
  *
  * Why a script and not a test: the association files are the one part of the
  * deep-link chain that no unit test can reach. `app.config.ts` declares
@@ -42,7 +42,7 @@ const origin = (
 if (!origin) {
   console.error(
     red("No origin."),
-    "Pass one (`pnpm verify:app-links https://partybooth.app`) or set SITE_URL.",
+    "Pass one (`bun run verify:app-links https://partybooth.app`) or set SITE_URL.",
   );
   process.exit(1);
 }

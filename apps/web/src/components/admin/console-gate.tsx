@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { Card } from "@/components/layout/card";
 import { Placeholder } from "@/components/layout/card";
 
@@ -19,7 +19,7 @@ import { Placeholder } from "@/components/layout/card";
  */
 export function AdminConsoleGate({ children }: { readonly children: ReactNode }) {
   return (
-    <BackendGate
+    <AuthenticatedBackendGate
       fallback={
         <Card>
           <Placeholder title="No deployment configured">
@@ -32,6 +32,6 @@ export function AdminConsoleGate({ children }: { readonly children: ReactNode })
       }
     >
       {children}
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }

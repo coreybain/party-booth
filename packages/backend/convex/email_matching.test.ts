@@ -2,7 +2,7 @@ import { AUDIT_ACTIONS, OTP_POLICY } from "@partybooth/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { Id } from "./_generated/dataModel";
-import { applyVerifiedEmailMatching, createCohostInvitation } from "./lib/email-matching";
+import { applyVerifiedEmailMatching, createCohostInvitation } from "./lib/email_matching";
 import {
   api,
   auditActions,

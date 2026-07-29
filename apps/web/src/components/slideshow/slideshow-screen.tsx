@@ -4,11 +4,11 @@ import { useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { Card, Placeholder } from "@/components/layout/card";
 import { Slide } from "@/components/slideshow/slide";
 import { SlideshowControls } from "@/components/slideshow/slideshow-controls";
-import { isHostRole } from "@/lib/contracts";
+import { isHostRole, isViewableEventState } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
 import {
   currentId,
@@ -58,9 +58,9 @@ const CONTROLS_IDLE_MS = 3_500;
 
 export function ActiveEventSlideshow() {
   return (
-    <BackendGate>
+    <AuthenticatedBackendGate>
       <ActiveEventSlideshowLive />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 
@@ -95,6 +95,22 @@ function ActiveEventSlideshowLive() {
       <Card>
         <Placeholder title="You're a guest at this party">
           The slideshow is run by the host. Switch to an event you host to present it.
+        </Placeholder>
+      </Card>
+    );
+  }
+
+  /*
+   * `slideshow.feed` intentionally requires a viewable event. Draft and
+   * scheduled parties have no public gallery yet, so mounting the feed in those
+   * states produces a correct backend refusal but an incorrect route crash.
+   * Keep the stage unmounted until the event goes live.
+   */
+  if (!isViewableEventState(active.state)) {
+    return (
+      <Card>
+        <Placeholder title="The slideshow isn't live yet">
+          It will be ready here when you take the event live.
         </Placeholder>
       </Card>
     );

@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { BackendGate } from "@/components/backend-gate";
+import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { EventForm } from "@/components/events/event-form";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -32,9 +32,9 @@ export function EditEvent({
   readonly nowMs: number;
 }) {
   return (
-    <BackendGate>
+    <AuthenticatedBackendGate>
       <EditEventLive eventId={eventId} nowMs={nowMs} />
-    </BackendGate>
+    </AuthenticatedBackendGate>
   );
 }
 

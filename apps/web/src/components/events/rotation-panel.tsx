@@ -48,7 +48,7 @@ import { useNow } from "@/lib/use-now";
  *   number still cached is a host standing at the door with nothing to show.
  * - **The button greys out with a countdown** rather than offering a rotation
  *   the backend will refuse. The budget is `canRotateInvite` from the contracts,
- *   which is the *same* function `convex/lib/rotation-throttle.ts` persists — and
+ *   which is the *same* function `convex/lib/rotation_throttle.ts` persists — and
  *   the server's own `retryAfterMs` overrides it, because a page that has just
  *   loaded has counted nothing.
  * - **Nothing is optimistic.** `invites.current` is a live subscription, so the

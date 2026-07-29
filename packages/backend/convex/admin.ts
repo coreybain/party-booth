@@ -20,7 +20,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { action, internalMutation, mutation, query } from "./_generated/server";
-import { scheduleAccountDeletion, ACCOUNT_DELETION_GRACE_MS } from "./lib/account-deletion";
+import { scheduleAccountDeletion, ACCOUNT_DELETION_GRACE_MS } from "./lib/account_deletion";
 import { writeAuditEvent, writeEventAudit } from "./lib/audit";
 import { isAdminEmail, siteUrl } from "./lib/config";
 import { organiserInviteEmail, sendEmail } from "./lib/email";
@@ -36,12 +36,12 @@ import { getActiveInviteVersion, isCodeTaken, mintInviteVersion } from "./lib/ev
 import { requireGlobalAdmin, requirePermission, toPermissionActor } from "./lib/guards";
 import { parseInput } from "./lib/input";
 import { storedBytesOf } from "./lib/media";
-import { checkRotationThrottle, recordRotation } from "./lib/rotation-throttle";
+import { checkRotationThrottle, recordRotation } from "./lib/rotation_throttle";
 import {
   expireGrantsForAccount,
   expireGrantsForEvent,
   expireGrantsForUser,
-} from "./lib/upload-grants";
+} from "./lib/upload_grants";
 import { accountState, eventState } from "./lib/validators";
 
 /**

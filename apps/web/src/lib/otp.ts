@@ -89,6 +89,9 @@ export function authErrorMessage(error: unknown): string {
   if (code.includes("EXPIRED")) {
     return "That code has expired. Ask for a new one.";
   }
+  if (code.includes("ORIGIN")) {
+    return "This sign-in page is not allowed by the backend configuration. Check SITE_URL and try again.";
+  }
   if (code.includes("INVALID") || code.includes("OTP") || status === 401 || status === 400) {
     return "That code was not right. Check the digits and try again.";
   }

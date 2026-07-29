@@ -818,6 +818,25 @@ describe("read paths", () => {
     ]);
   });
 
+  it.each(["draft", "scheduled"] as const)(
+    "lets an owner open the moderation queue while the event is %s",
+    async (state) => {
+      const f = await fixture({ state });
+      await seedMedia(f.t, f.eventId, f.guestId, { state: "pending" });
+
+      const seen = await f.t
+        .withIdentity({ subject: "owner" })
+        .query(api.media.eventMedia, { eventId: f.eventId });
+
+      expect(seen.map((item) => item.state)).toEqual(["pending"]);
+      await expect(
+        f.t.withIdentity({ subject: "guest" }).query(api.media.eventMedia, {
+          eventId: f.eventId,
+        }),
+      ).rejects.toThrow(/not available/i);
+    },
+  );
+
   it("never leaks across events", async () => {
     const f = await fixture();
     const otherEventId = await seedEvent(f.t, f.ownerId, { state: "live", name: "Other party" });

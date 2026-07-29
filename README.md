@@ -13,14 +13,13 @@ Everything below is the platform layer from **Sprints 1–2**.
 ## Quickstart
 
 ```bash
-# Node 26 and pnpm 10 are required (see .nvmrc / packageManager).
-corepack enable
-pnpm install
+# Node 26 and Bun 1.3 are required (see .nvmrc / packageManager).
+bun install
 
 cp .env.example .env.local     # then fill in what you have
-pnpm env:doctor                # shows what is still unset, and where to get it
+bun run env:doctor             # shows what is still unset, and where to get it
 
-pnpm check                     # typecheck + lint + test, the CI gate
+bun run check                  # typecheck + lint + test, the CI gate
 ```
 
 Nothing needs live credentials to typecheck or unit-test. Providers that are not configured
@@ -29,8 +28,9 @@ degrade to a no-op with a warning; a variable only ever throws when the code tha
 ### Running the apps
 
 ```bash
-pnpm --filter @partybooth/web dev      # http://localhost:3000
-pnpm --filter @partybooth/mobile dev   # Expo dev server
+bun run start          # backend + web + mobile together
+bun run start:web      # backend + web — http://localhost:3000
+bun run start:mobile   # backend + mobile — Expo dev server
 ```
 
 Both boot with an empty environment. `apps/web` renders its authenticated shells behind a
@@ -39,32 +39,36 @@ Both boot with an empty environment. `apps/web` renders its authenticated shells
 Two env files, on purpose: the root `.env.local` covers the server and the web app, while
 **Expo only reads env files sitting next to the app**, so mobile needs its own
 `apps/mobile/.env.local` (see `apps/mobile/.env.example`). The root `.env.example` remains
-the canonical list of every variable in the system — `pnpm env:doctor` reads it.
+the canonical list of every variable in the system — `bun run env:doctor` reads it.
 
 `packages/backend` has no deploy step in this sprint. `convex/_generated/` is committed so a
-fresh clone typechecks offline; `npx convex dev` regenerates it once a real deployment exists.
+fresh clone typechecks offline; `bunx convex dev` regenerates it once a real deployment exists.
 
 ## Commands
 
-| Command           | What it does                                           |
-| ----------------- | ------------------------------------------------------ |
-| `pnpm dev`        | every app's dev server (Turborepo, persistent)         |
-| `pnpm build`      | build everything in dependency order                   |
-| `pnpm typecheck`  | root config files, then every package's `tsc --noEmit` |
-| `pnpm lint`       | ESLint 10 flat config across the repo                  |
-| `pnpm test`       | each package's Vitest suite (this is the CI gate)      |
-| `pnpm test:watch` | one watch process spanning every package               |
-| `pnpm format`     | Prettier write · `pnpm format:check` in CI             |
-| `pnpm check`      | typecheck + lint + test in one go                      |
-| `pnpm env:doctor` | diff the current environment against `.env.example`    |
-| `pnpm seed:demo`  | seed the App Review demo party (needs the demo vars)   |
-| `pnpm icons`      | regenerate the app icon set from source                |
+| Command                 | What it does                                           |
+| ----------------------- | ------------------------------------------------------ |
+| `bun run dev`           | every app's dev server (Turborepo, persistent)         |
+| `bun run start`         | backend, web and mobile dev servers together           |
+| `bun run start:web`     | Convex backend and Next.js web dev server              |
+| `bun run start:mobile`  | Convex backend and Expo mobile dev server              |
+| `bun run build`         | build everything in dependency order                   |
+| `bun run typecheck`     | root config files, then every package's `tsc --noEmit` |
+| `bun run lint`          | ESLint 10 flat config across the repo                  |
+| `bun run test`          | each package's Vitest suite (this is the CI gate)      |
+| `bun run test:watch`    | one watch process spanning every package               |
+| `bun run convex:update` | push the backend once to the configured dev deployment |
+| `bun run format`        | Prettier write · `bun run format:check` in CI          |
+| `bun run check`         | typecheck + lint + test in one go                      |
+| `bun run env:doctor`    | diff the current environment against `.env.example`    |
+| `bun run seed:demo`     | seed the App Review demo party (needs the demo vars)   |
+| `bun run icons`         | regenerate the app icon set from source                |
 
 Scope a command to one package with `--filter`:
 
 ```bash
-pnpm --filter @partybooth/web dev
-pnpm --filter @partybooth/env test
+bun run --filter @partybooth/web dev
+bun run --filter @partybooth/env test
 ```
 
 ## Layout
@@ -148,7 +152,7 @@ thing that happens after reading a grant is that bytes get sent somewhere on the
 strength of it.
 
 **Dependency versions** — cross-cutting libraries live in the `catalog:` block of
-`pnpm-workspace.yaml`. Write `"zod": "catalog:"` instead of pinning a version, so every package
+`package.json`. Write `"zod": "catalog:"` instead of pinning a version, so every package
 moves together. Currently catalogued: `typescript`, `zod`, `vitest`, `@vitest/coverage-v8`,
 `eslint`, `prettier`, `convex`, `@types/node`.
 
@@ -230,11 +234,11 @@ const key = serverEnv.RESEND_API_KEY; // clear error if unset
 
 Values live in four places: `.env.local` for local dev, the **Convex dashboard** for backend
 functions, **Vercel → Environment Variables** for the web app, and **EAS secrets** for app
-builds. `pnpm env:doctor` tells you what is missing locally.
+builds. `bun run env:doctor` tells you what is missing locally.
 
 ## Toolchain
 
-Node 26 · pnpm 10 workspaces · Turborepo 2 · TypeScript 6 (strict) · ESLint 10 flat config ·
+Node 26 · Bun 1.3 workspaces · Turborepo 2 · TypeScript 6 (strict) · ESLint 10 flat config ·
 Prettier 3 · Vitest 4 · Zod 4.
 
 TypeScript is pinned to the 6.x line rather than the 7.x native port: `typescript-eslint` still
