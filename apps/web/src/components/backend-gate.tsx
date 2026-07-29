@@ -1,11 +1,10 @@
 "use client";
 
 import { useConvexAuth, useQuery } from "convex/react";
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { BackendNotConfigured } from "@/components/backend-not-configured";
-import { useSession } from "@/lib/auth-client";
-import { convexUrl, isBackendConfigured } from "@/lib/backend";
+import { isBackendConfigured } from "@/lib/backend";
 import { backendApi } from "@/lib/convex-api";
 
 export interface BackendGateProps {
@@ -79,31 +78,6 @@ function ConvexAuthGate({
 }) {
   const convexAuth = useConvexAuth();
   const currentUser = useQuery(backendApi.users.currentUser, {});
-
-  // #region DEBUG
-  const betterAuth = useSession();
-  useEffect(() => {
-    void fetch("/api/debug/auth-state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        convexLoading: convexAuth.isLoading,
-        convexAuthenticated: convexAuth.isAuthenticated,
-        backendIdentity:
-          currentUser === undefined ? "loading" : currentUser === null ? "missing" : "ready",
-        betterAuthPending: betterAuth.isPending,
-        betterAuthHasSession: betterAuth.data != null,
-        clientConvexHost: convexUrl === undefined ? "unset" : new URL(convexUrl).host,
-      }),
-    });
-  }, [
-    betterAuth.data,
-    betterAuth.isPending,
-    convexAuth.isAuthenticated,
-    convexAuth.isLoading,
-    currentUser,
-  ]);
-  // #endregion DEBUG
 
   if (convexAuth.isLoading || (convexAuth.isAuthenticated && currentUser == null)) {
     return (
