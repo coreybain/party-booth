@@ -323,6 +323,24 @@ export function envHasAll<TEnv extends object>(
 }
 
 /**
+ * True when the variable is **explicitly present in the environment** — a
+ * non-empty raw value was supplied by whoever configured the deployment.
+ *
+ * Deliberately *not* {@link envHas}. `envHas` asks "is there a usable value",
+ * and a `.default()` supplies one, so it answers `true` for a variable nobody
+ * set. That is right for a feature flag and wrong for a safety rail: a rail
+ * that widens trust when `DEPLOYMENT_ENVIRONMENT === "development"` must not
+ * fire on a deployment that never said it was a development deployment. Ask
+ * this whenever the *absence* of a value has to mean "no".
+ *
+ * Never throws and never validates: a value that is set but malformed is still
+ * "set". Pair it with a normal read when you also need the value.
+ */
+export function envIsSet<TEnv extends object>(env: TEnv, key: keyof TEnv & string): boolean {
+  return readRaw(stateOf(env), key) !== undefined;
+}
+
+/**
  * Eagerly validate a subset of variables — call this at a boundary (route
  * handler, Convex action, app bootstrap) to fail with one aggregated message
  * instead of a cascade of individual throws.

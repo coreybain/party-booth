@@ -94,6 +94,7 @@ export {
   envAssert,
   envHas,
   envHasAll,
+  envIsSet,
   envKeys,
   envOptional,
   EnvError,

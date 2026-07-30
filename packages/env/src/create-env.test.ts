@@ -7,6 +7,7 @@ import {
   envAssert,
   envHas,
   envHasAll,
+  envIsSet,
   envKeys,
   envOptional,
   EnvError,
@@ -103,6 +104,21 @@ describe("non-throwing helpers", () => {
     expect(envHas(makeEnv({}), "REQUIRED_URL")).toBe(false);
     expect(envHas(makeEnv({ REQUIRED_URL: "nope" }), "REQUIRED_URL")).toBe(false);
     expect(envHas(makeEnv({ REQUIRED_URL: "https://a.example" }), "REQUIRED_URL")).toBe(true);
+  });
+
+  it("envIsSet asks about raw presence, so a default does not count as set", () => {
+    // The distinction the localhost trusted-origin rail depends on: a variable
+    // nobody configured must not look like a deliberate choice.
+    expect(envHas(makeEnv({}), "WITH_DEFAULT")).toBe(true);
+    expect(envIsSet(makeEnv({}), "WITH_DEFAULT")).toBe(false);
+    expect(envIsSet(makeEnv({ WITH_DEFAULT: "chosen" }), "WITH_DEFAULT")).toBe(true);
+  });
+
+  it("envIsSet treats a blank value as unset, and an invalid one as set", () => {
+    expect(envIsSet(makeEnv({ WITH_DEFAULT: "  " }), "WITH_DEFAULT")).toBe(false);
+    // Set-but-malformed is still set: it is a wrong answer, not a missing one.
+    expect(envIsSet(makeEnv({ REQUIRED_URL: "nope" }), "REQUIRED_URL")).toBe(true);
+    expect(envHas(makeEnv({ REQUIRED_URL: "nope" }), "REQUIRED_URL")).toBe(false);
   });
 
   it("envHasAll requires every key", () => {

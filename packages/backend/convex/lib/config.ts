@@ -1,5 +1,5 @@
 import { constantTimeEqual } from "@partybooth/contracts";
-import { envOptional, serverEnv } from "@partybooth/env/server";
+import { envIsSet, envOptional, serverEnv } from "@partybooth/env/server";
 
 /**
  * Deployment-level configuration, read lazily so that importing a module never
@@ -37,10 +37,11 @@ export function trustedOrigins(): string[] {
   const convexSite = envOptional(serverEnv, "CONVEX_SITE_URL");
   if (convexSite) origins.add(stripTrailingSlash(convexSite));
   // `SITE_URL` may be the LAN address used by Expo while the browser uses the
-  // fixed Next.js development origin. Both are trusted only on a development
-  // deployment; neither localhost nor a private-network origin belongs in the
-  // production allowlist.
-  if (serverEnv.DEPLOYMENT_ENVIRONMENT === "development") {
+  // fixed Next.js development origin. localhost is trusted only on a deployment
+  // that has *said* it is a development deployment — see
+  // `isExplicitDevelopmentDeployment`. Neither localhost nor a private-network
+  // origin belongs in the production allowlist.
+  if (isExplicitDevelopmentDeployment()) {
     origins.add("http://localhost:3000");
   }
   // Expo dev builds and the shipped app return through the custom scheme.
@@ -50,6 +51,26 @@ export function trustedOrigins(): string[] {
 
 function stripTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+/**
+ * Is this deployment *explicitly* marked as development?
+ *
+ * `DEPLOYMENT_ENVIRONMENT` is declared with `.default("development")`
+ * (packages/env/src/schema.ts). That default is right for the rails that
+ * *tighten* on production — the console email sender refuses to fake a success
+ * unless it is development (`lib/email/index.ts`) — and exactly wrong for
+ * anything that *widens* trust, because it means a deployment nobody configured
+ * looks like a development deployment. `envIsSet` asks the only safe question
+ * here: did a human set the variable at all. A value the schema rejects is
+ * reported once and treated as "not development" rather than throwing out of the
+ * whole auth config.
+ */
+function isExplicitDevelopmentDeployment(): boolean {
+  if (!envIsSet(serverEnv, "DEPLOYMENT_ENVIRONMENT")) return false;
+  return (
+    tolerant("DEPLOYMENT_ENVIRONMENT", () => serverEnv.DEPLOYMENT_ENVIRONMENT) === "development"
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -64,10 +85,13 @@ const warned = new Set<string>();
  *
  * `envOptional` returns `undefined` for an unset variable but still throws for
  * one that fails validation, which is right for a variable on the critical
- * path. It is wrong for these two: a typo in `ADMIN_EMAIL_ALLOWLIST` must not
- * take down guest sign-in on party night, and a two-digit `DEMO_LOGIN_OTP` must
- * not do it either. Both fail closed instead — no admins, no demo bypass — and
- * say so in the logs.
+ * path. It is wrong for these three: a typo in `ADMIN_EMAIL_ALLOWLIST` must not
+ * take down guest sign-in on party night, a two-digit `DEMO_LOGIN_OTP` must not
+ * do it either, and a mistyped `DEPLOYMENT_ENVIRONMENT` (`dev`, `Development`)
+ * must not take down the whole auth config — `trustedOrigins` is built for every
+ * auth request, so a throw there 500s every `/api/auth/*` call rather than just
+ * the feature that read the variable. All three fail closed instead — no admins,
+ * no demo bypass, not a development deployment — and say so in the logs.
  */
 function tolerant<T>(key: string, read: () => T | undefined): T | undefined {
   try {

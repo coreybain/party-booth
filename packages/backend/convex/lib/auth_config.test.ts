@@ -23,6 +23,7 @@ import {
 } from "./providers";
 
 const KEYS = [
+  "DEPLOYMENT_ENVIRONMENT",
   "SITE_URL",
   "BETTER_AUTH_URL",
   "CONVEX_SITE_URL",
@@ -190,6 +191,41 @@ describe("URLs", () => {
   it("still returns the app scheme with nothing else configured", () => {
     clearEnv();
     expect(trustedOrigins()).toEqual(["partybooth://"]);
+  });
+
+  /*
+   * localhost is a *widening* of trust, so it has to key off a deliberate
+   * choice. `DEPLOYMENT_ENVIRONMENT` carries `.default("development")` — which
+   * the console email sender needs — so "the parsed value is development" is
+   * true of every deployment nobody configured, including production ones. The
+   * gate therefore asks whether the variable was set at all.
+   */
+  it("trusts localhost only when the deployment says it is development", () => {
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "development" });
+    expect(trustedOrigins()).toContain("http://localhost:3000");
+  });
+
+  it("does not trust localhost on an explicitly production deployment", () => {
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "production" });
+    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+  });
+
+  it("does not trust localhost when the marker is unset or blank", () => {
+    clearEnv();
+    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+
+    // `FOO=` in a dashboard or an .env file is an unset variable, not a choice.
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "" });
+    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+  });
+
+  it("fails closed on a mistyped marker instead of throwing out of the auth config", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "dev" });
+    // A typo must not 500 every /api/auth/* request on party night.
+    expect(() => trustedOrigins()).not.toThrow();
+    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+    expect(error.mock.calls.flat().join(" ")).toContain("DEPLOYMENT_ENVIRONMENT");
   });
 });
 
