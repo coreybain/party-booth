@@ -247,5 +247,9 @@ eight days before launch. Revisit after 5 Aug.
 
 ## CI
 
-`.github/workflows/ci.yml` runs typecheck → lint → unit tests → format check on every push and
-PR, with **no secrets**. If a change needs a live credential to pass CI, it is in the wrong place.
+`.github/workflows/ci.yml` runs typecheck → lint → unit tests → format check → build on every push
+and PR, with **no secrets**. If a change needs a live credential to pass CI, it is in the wrong place.
+
+The build step is the only one that bundles the Expo app for every platform
+(`expo export --platform all`), so a workspace-resolution failure surfaces there rather than in an
+EAS build — see [ADR 0011](docs/adr/0011-bun-package-manager.md).

@@ -72,15 +72,19 @@ bun run format         # then let Prettier have the last word
 ```
 
 Both must pass before you push. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every
-push to `main` and every PR and does the same four things —
-`bun run typecheck` → `bun run lint` → `bun run test` → `bun run format:check` — as separate steps, so one push
+push to `main` and every PR and does the same five things — `bun run typecheck` → `bun run lint` →
+`bun run test` → `bun run format:check` → `bun run build` — as separate steps, so one push
 tells you everything that is wrong rather than one problem per round-trip. The root scripts also
 cover the repo-level config files that `bun run check` skips, which is why CI calls them individually.
 
 **CI has no secrets, and that is a design constraint, not an oversight.** Everything in this repo
 typechecks and unit-tests **fully offline**, with an empty environment. If a change only passes with
 a live credential, the change is in the wrong place — move the credential behind
-`@partybooth/env`'s feature flags so the code path no-ops when it is absent.
+`@partybooth/env`'s feature flags so the code path no-ops when it is absent. Note that **CI is the
+only place that guarantee is enforced**: Bun auto-loads `.env.local`, so a local `bun run test` sees
+`CONVEX_DEPLOY_KEY` and `SENTRY_AUTH_TOKEN` through Turborepo's pass-through list, and `test:watch` /
+`test:coverage` bypass Turborepo and see everything in the file — see
+[ADR 0011](docs/adr/0011-bun-package-manager.md).
 
 Formatting is Prettier's problem, not yours: `bun run format` before you push, and never argue with it.
 `PLAN.md` and `TODO.md` are in `.prettierignore` because they are the owner's documents.
@@ -106,7 +110,8 @@ fails the install; add it to the catalog first.
 
 **Relative imports inside a package are extensionless** — `./schema`, never `./schema.js` (breaks
 Metro) and never `./schema.ts`. Internal packages are consumed as TypeScript source; see
-[ADR 0001](docs/adr/0001-monorepo-runtime.md).
+[ADR 0001](docs/adr/0001-monorepo-runtime.md), re-adopted unchanged by
+[ADR 0011](docs/adr/0011-bun-package-manager.md).
 
 **Every package exposes `lint`, `typecheck` and `test` scripts** so Turborepo can find them, plus
 `build` and `dev` for apps.

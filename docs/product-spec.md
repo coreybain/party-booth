@@ -156,7 +156,8 @@ grant from Convex (`eventId`, `captureId`, `mediaType`, `byteSize`, checksum, `s
 middleware validates it before an upload URL is issued; completion callbacks are idempotent. Resend
 sends OTP and invite mail. Sentry collects errors with scrubbing.
 
-See [ADR 0001](adr/0001-monorepo-runtime.md) and [ADR 0002](adr/0002-storage-region-adapter.md).
+See [ADR 0011](adr/0011-bun-package-manager.md), which supersedes
+[ADR 0001](adr/0001-monorepo-runtime.md), and [ADR 0002](adr/0002-storage-region-adapter.md).
 
 ## Explicitly deferred to post-launch
 
