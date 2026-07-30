@@ -1,6 +1,6 @@
 # 0001. Monorepo, package manager and runtime baseline
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0011](0011-bun-package-manager.md)
 - **Date:** 28 Jul 2026
 - **Sprint:** 1 — skeleton online
 
@@ -25,7 +25,7 @@ decision, which is what makes it worth recording alongside the runtime.
 
 ## Decision
 
-A single repository, **Bun 1.3 workspaces** over `apps/*` and `packages/*`, orchestrated by
+A single repository, **pnpm 10 workspaces** over `apps/*` and `packages/*`, orchestrated by
 **Turborepo 2**, on **Node 26** with **strict TypeScript**.
 
 Four choices inside that are load-bearing:
@@ -34,10 +34,10 @@ Four choices inside that are load-bearing:
   point straight at `src/*.ts`. Consumers transpile them (`transpilePackages` in Next.js, Metro's
   workspace resolution, esbuild in Convex). Relative imports inside a package are therefore
   **extensionless** — `./schema`, never `./schema.js` (breaks Metro) and never `./schema.ts`.
-- **`linker = "hoisted"`.** A flat `node_modules` is Expo's documented remedy for Bun monorepos,
-  and it keeps Metro, Turbopack and Convex's resolver out of symlink trouble. We give up Bun's
+- **`nodeLinker: hoisted`.** A flat `node_modules` is Expo's documented remedy for pnpm monorepos,
+  and it keeps Metro, Turbopack and Convex's resolver out of symlink trouble. We give up pnpm's
   strict phantom-dependency protection to get it.
-- **A Bun `catalog:`** is the single source of truth for cross-cutting versions — `typescript`,
+- **A pnpm `catalog:`** is the single source of truth for cross-cutting versions — `typescript`,
   `zod`, `vitest`, `eslint`, `prettier`, `convex`, `@types/node`. Packages write `"catalog:"` instead
   of a range, so the repo moves as one.
 - **TypeScript pinned to the 6.x line**, not the 7.x native port: `typescript-eslint` still declares
@@ -48,11 +48,11 @@ read** — so a missing Resend key is an error in the mail path and nothing at a
 Reading `process.env` anywhere else is a lint warning. This is what lets the whole repo typecheck and
 unit-test with **zero credentials**, which is in turn what lets CI run with **no secrets**.
 
-`bun run check` — typecheck, lint, unit tests — is the gate, and CI runs exactly that.
+`pnpm check` — typecheck, lint, unit tests — is the gate, and CI runs exactly that.
 
 ## Consequences
 
-**Easier.** One `bun install`. One atomic commit can change a Convex validator, the contract and
+**Easier.** One `pnpm install`. One atomic commit can change a Convex validator, the contract and
 both clients. Editor go-to-definition lands in real source, not a `.d.ts`. Turborepo caches by task
 so an unchanged package is replayed rather than rerun. New contributors get one command to trust.
 
@@ -69,7 +69,7 @@ so an unchanged package is replayed rather than rerun. New contributors get one 
   and CI will pass. We trade that for bundler sanity.
 - **Publishing any of these packages later means adding a build step**, because raw TS in `exports`
   is only viable for private consumers. Not a concern for a private beta.
-- **Node 26 and Bun 1.3 are hard requirements** (`.nvmrc`, `packageManager`, `engines`). CI reads
+- **Node 26 and pnpm 10 are hard requirements** (`.nvmrc`, `packageManager`, `engines`). CI reads
   `.nvmrc` so there is one place to change it.
 
 ## Alternatives considered
@@ -77,7 +77,7 @@ so an unchanged package is replayed rather than rerun. New contributors get one 
 | Option                                          | Why not                                                                                                                                         |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Separate repos per surface, shared types on npm | Publishing a package to change a permission rule, eight days from a party. Version skew between phone and server is the exact failure to avoid. |
-| Other workspace package managers               | Bun provides both the `catalog:` and workspace protocols while retaining the hoisted layout required by the app bundlers.                       |
+| npm or Yarn workspaces                          | pnpm's `catalog:` and workspace protocol are worth more than the familiarity, and Expo documents the pnpm setup.                                |
 | Nx instead of Turborepo                         | More capability than a four-package repo needs; Turborepo's `turbo.json` is small enough to read in one sitting.                                |
 | Build internal packages to `dist/` with tsup    | An extra watcher per package and a whole class of stale-artefact bugs, for no benefit while every consumer already transpiles.                  |
 | `@t3-oss/env-core` for environment validation   | Validates eagerly at `createEnv()`. That fails the offline requirement — the repo must typecheck and test with an empty `.env`.                 |
@@ -88,5 +88,5 @@ so an unchanged package is replayed rather than rerun. New contributors get one 
 
 - After **5 Aug 2026**: TypeScript 7 once `typescript-eslint` supports it.
 - If a second developer joins and phantom dependencies start costing real time, reconsider
-  `linker = "hoisted"` — likely by narrowing it to `apps/mobile` via `publicHoistPattern`.
+  `nodeLinker: hoisted` — likely by narrowing it to `apps/mobile` via `publicHoistPattern`.
 - If any package needs to be consumed outside this repo, it needs a build step first.
