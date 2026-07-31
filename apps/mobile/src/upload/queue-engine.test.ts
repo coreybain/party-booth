@@ -152,6 +152,16 @@ describe("readGrantResult", () => {
     expect(readGrantResult(grant)).toEqual({ kind: "granted", grant });
   });
 
+  it("carries the server media identity through an already-completed retry", () => {
+    expect(
+      readGrantResult({
+        outcome: "alreadyUploaded",
+        mediaId: "media_1",
+        state: "pending",
+      }),
+    ).toEqual({ kind: "alreadyUploaded", mediaId: "media_1", state: "pending" });
+  });
+
   it("turns a throttle into a wait of exactly the length the server asked for", () => {
     const outcome = readGrantResult({
       outcome: "throttled",

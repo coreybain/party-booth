@@ -113,6 +113,15 @@ export interface QueueDerivative {
  * the same file it was granted.
  */
 export interface QueueItem {
+  /**
+   * Better Auth user id that owned the session when this capture was made.
+   *
+   * Optional only for rows written by builds before queue ownership existed.
+   * Those legacy rows are quarantined by the provider: they are never shown or
+   * uploaded under whichever account happens to sign in next. A shared phone
+   * must not be able to attribute one guest's photograph to another guest.
+   */
+  readonly ownerUserId?: string | undefined;
   /** Client-generated, stable across retries. Uploads are idempotent on it. */
   readonly captureId: string;
   readonly eventId: string;

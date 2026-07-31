@@ -181,6 +181,7 @@ export function parseQueueItem(raw: unknown): QueueItem | null {
   const source = raw as Record<string, unknown>;
 
   const captureId = str(source.captureId);
+  const ownerUserId = str(source.ownerUserId);
   const eventId = str(source.eventId);
   const uri = str(source.uri);
   const mimeType = str(source.mimeType);
@@ -214,6 +215,9 @@ export function parseQueueItem(raw: unknown): QueueItem | null {
   const durationSeconds = optionalNum(source.durationSeconds);
 
   return {
+    // Absent means a pre-ownership row. Keep it so its local files are not
+    // silently lost, but never guess who owns it; the provider quarantines it.
+    ...(ownerUserId === null ? {} : { ownerUserId }),
     captureId,
     eventId,
     state,

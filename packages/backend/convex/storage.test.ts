@@ -103,7 +103,7 @@ describe("the fake adapter", () => {
     fake.put("two");
     expect(fake.keys()).toEqual(["one", "two"]);
 
-    expect(await fake.deleteFiles(["one"])).toEqual({ deleted: 1 });
+    expect(await fake.deleteFiles(["one"])).toEqual({ success: true, deleted: 1 });
     expect(fake.has("one")).toBe(false);
     expect(fake.has("two")).toBe(true);
     expect(fake.deleteCalls()).toEqual([["one"]]);
@@ -112,8 +112,15 @@ describe("the fake adapter", () => {
   it("treats deleting something already gone as a success", async () => {
     // Withdrawal must not be able to fail permanently on a retry.
     const fake = createFakeStorageAdapter();
-    expect(await fake.deleteFiles(["never-existed"])).toEqual({ deleted: 0 });
-    expect(await fake.deleteFiles([])).toEqual({ deleted: 0 });
+    expect(await fake.deleteFiles(["never-existed"])).toEqual({ success: true, deleted: 0 });
+    expect(await fake.deleteFiles([])).toEqual({ success: true, deleted: 0 });
+  });
+
+  it("can resolve without confirming a delete", async () => {
+    const fake = createFakeStorageAdapter({ refuseDeletes: true });
+    fake.put("still-there");
+    expect(await fake.deleteFiles(["still-there"])).toEqual({ success: false, deleted: 0 });
+    expect(fake.has("still-there")).toBe(true);
   });
 
   it("can be made to fail reads, for the degrade-don't-crash paths", async () => {

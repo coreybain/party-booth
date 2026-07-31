@@ -79,6 +79,16 @@ describe("queueItemFromDraft", () => {
     // Settings can change between the capture and the send; the row must not.
     expect(itemFrom({}, false).autoSend).toBe(false);
   });
+
+  it("stamps the authenticated owner onto a new capture", () => {
+    const item = queueItemFromDraft(
+      draft(),
+      { autoSend: true, undoDelayMs: DEFAULT_UNDO_DELAY_MS },
+      T0,
+      "user_a",
+    );
+    expect(item.ownerUserId).toBe("user_a");
+  });
 });
 
 describe("the undo window", () => {

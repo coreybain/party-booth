@@ -21,6 +21,7 @@ import {
   type FakeStorageOptions,
 } from "./lib/storage/fake";
 import type * as admin from "./admin";
+import type * as avatars from "./avatars";
 import type * as blocks from "./blocks";
 import type * as cohosts from "./cohosts";
 import type * as deletion from "./deletion";
@@ -84,6 +85,7 @@ export function makeTest(): T {
  */
 type FullApi = ApiFromModules<{
   admin: typeof admin;
+  avatars: typeof avatars;
   blocks: typeof blocks;
   cohosts: typeof cohosts;
   deletion: typeof deletion;

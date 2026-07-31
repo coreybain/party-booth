@@ -339,7 +339,14 @@ export function PushProvider({
         // The party first, the screen second. The Host tab renders whatever the
         // shell's active event is, so navigating first would show the wrong
         // party's queue — and if the switch then failed, keep showing it.
-        if (route.eventId !== null) await selectEvent(route.eventId);
+        if (route.eventId !== null) {
+          const outcome = await selectEvent(route.eventId);
+          // The active-event mutation rolls its optimistic update back when it
+          // fails. Following it with a navigation would then open the named tab
+          // for the *previous* party, which is worse than leaving the guest on
+          // the screen they already understand.
+          if (outcome.status !== "ok") return;
+        }
         router.navigate(route.path);
       })();
     },

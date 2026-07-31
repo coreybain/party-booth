@@ -277,6 +277,25 @@ describe("tapping a notification", () => {
     );
   });
 
+  it("does not navigate when the named party cannot be selected", async () => {
+    const adapter = createFakeNotificationsAdapter({ permission: "granted", canAskAgain: false });
+    fake.selectEvent.mockResolvedValueOnce({
+      status: "error",
+      message: "That party is no longer available.",
+    });
+    mount(adapter);
+    await waitFor(() => {
+      expect(adapter.calls.configure).toBe(1);
+    });
+
+    adapter.emitResponse({ kind: "hostPendingThreshold", eventId: "event_gone" });
+
+    await waitFor(() => {
+      expect(fake.selectEvent).toHaveBeenCalledWith("event_gone");
+    });
+    expect(fake.navigate).not.toHaveBeenCalled();
+  });
+
   it("sends an upload failure to My media and an opening to the camera", async () => {
     const adapter = createFakeNotificationsAdapter({ permission: "granted", canAskAgain: false });
     mount(adapter);

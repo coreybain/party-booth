@@ -12,7 +12,7 @@ import { colors } from "@/theme";
  * captured. It is a no-op when `EXPO_PUBLIC_SENTRY_DSN` is unset, which is the normal
  * state of a fresh checkout.
  */
-initSentry({
+const sentryEnabled = initSentry({
   dsn: appConfig.status === "ready" ? appConfig.sentryDsn : undefined,
 });
 
@@ -54,6 +54,7 @@ function RootLayout() {
   );
 }
 
-// `Sentry.wrap` installs the error boundary and touch/navigation instrumentation. It is
-// safe to apply even when `Sentry.init` was never called.
-export default Sentry.wrap(RootLayout);
+// `Sentry.wrap` installs the error boundary and touch/navigation instrumentation. The
+// SDK warns when it is wrapped before `Sentry.init`, so an intentionally unconfigured
+// checkout exports the ordinary layout instead.
+export default sentryEnabled ? Sentry.wrap(RootLayout) : RootLayout;

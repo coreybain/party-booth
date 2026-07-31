@@ -38,6 +38,11 @@
 
 import type { AccountState } from "@partybooth/contracts/accounts";
 import type {
+  AvatarUploadCompletionResult,
+  AvatarUploadRequest,
+  IssuedAvatarUploadGrant,
+} from "@partybooth/contracts/avatar";
+import type {
   EventState,
   HostSettableEventState,
   LaunchModerationMode,
@@ -61,7 +66,11 @@ import type { StorageRegion } from "@partybooth/contracts/storage";
 import type { GrantResult, UploadCompletionOutcome } from "@partybooth/contracts/upload";
 import type { DefaultFunctionArgs, FunctionReference } from "convex/server";
 
-import type { CohostInvitationStatus, MembershipStatus } from "../convex/lib/validators";
+import type {
+  CohostInvitationStatus,
+  MembershipStatus,
+  UserEmailStatus,
+} from "../convex/lib/validators";
 import { api as generatedApi } from "../convex/_generated/api";
 
 /* -------------------------------------------------------------------------- */
@@ -121,7 +130,9 @@ export interface CurrentUser {
   readonly email: string;
   readonly emailVerified: boolean;
   readonly displayName: string;
-  readonly avatarKey?: string;
+  /** Short-lived signed URL. Provider keys never cross this boundary. */
+  readonly avatarUrl?: string;
+  readonly avatarUrlExpiresAt?: number;
   /**
    * When this human confirmed their own name. Absent means they never have,
    * which is what both shells read to decide whether to show the onboarding
@@ -146,7 +157,6 @@ export interface CurrentUser {
 /** `users.updateProfile`. */
 export interface UpdateProfileResult {
   readonly displayName: string;
-  readonly avatarKey?: string;
   /** Stamped on the first confirmation and never moved afterwards. */
   readonly onboardedAt: number;
   readonly acceptedTermsVersion?: string;
@@ -166,6 +176,26 @@ export interface RefreshRolesResult {
   /** Events this account was upgraded to co-host on by a matched invitation. */
   readonly cohostEventIds: readonly EventId[];
 }
+
+/** `emails.myEmails` — an address this account has added for role matching. */
+export interface UserEmail {
+  readonly email: string;
+  readonly status: UserEmailStatus;
+  readonly verifiedAt?: number;
+}
+
+/** `emails.confirmVerification`; failures are values so attempt writes commit. */
+export type ConfirmEmailVerificationResult =
+  | {
+      readonly ok: true;
+      readonly organiserUnlocked: boolean;
+      readonly cohostEventIds: readonly EventId[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "invalid" | "tooManyAttempts";
+      readonly message: string;
+    };
 
 export interface EventCounts {
   readonly pending: number;
@@ -287,6 +317,8 @@ export interface MediaItem {
   readonly height?: number;
   readonly uploaderUserId: UserId;
   readonly uploaderDisplayName: string;
+  readonly uploaderAvatarUrl?: string;
+  readonly uploaderAvatarUrlExpiresAt?: number;
   readonly isOwn: boolean;
   readonly createdAt: number;
   readonly capturedAt?: number;
@@ -367,6 +399,11 @@ export interface UploadGrantRequestArgs {
    * can still vouch for. See `MetadataClaim` in `@partybooth/contracts/media`.
    */
   readonly sourceCarriesNoLocation?: boolean;
+}
+
+/** `avatars.requestUploadGrant`; the index signature is required by Convex. */
+export interface AvatarUploadRequestArgs extends AvatarUploadRequest {
+  readonly [key: string]: unknown;
 }
 
 /** `media.completeUpload` — the outcome of registering a stored file. */
@@ -623,7 +660,7 @@ export interface OrganiserInvitationPreview {
  * rather than in `@partybooth/contracts` (unlike `MembershipStatus`), so it is
  * re-exported here for the clients that render it.
  */
-export type { CohostInvitationStatus, MembershipStatus };
+export type { CohostInvitationStatus, MembershipStatus, UserEmailStatus };
 
 /** One row of `cohosts.list().members`. */
 export interface CohostMember {
@@ -770,9 +807,9 @@ export interface BackendApi {
     >;
   };
   readonly users: {
-    readonly currentUser: Query<NoArgs, CurrentUser | null>;
+    readonly currentUser: Query<{ urlRefreshKey?: number }, CurrentUser | null>;
     readonly updateProfile: Mutation<
-      { displayName: string; avatarKey?: string; acceptedTermsVersion?: string },
+      { displayName: string; acceptedTermsVersion?: string },
       UpdateProfileResult
     >;
     /**
@@ -797,6 +834,37 @@ export interface BackendApi {
      * lose the evening and a change of mind is still possible.
      */
     readonly requestAccountDeletion: Mutation<{ reason?: string }, AccountDeletionResult>;
+  };
+  readonly avatars: {
+    /** Bind one exact, re-encoded JPEG to this account for two minutes. */
+    readonly requestUploadGrant: Mutation<AvatarUploadRequestArgs, IssuedAvatarUploadGrant>;
+    /** Single-use authenticated UploadThing middleware preflight. */
+    readonly confirmUpload: Mutation<
+      { secret: string },
+      Pick<IssuedAvatarUploadGrant, "byteSize" | "mimeType" | "checksum">
+    >;
+    /** Server-only callback; the provider key is accepted nowhere else. */
+    readonly completeUpload: Mutation<
+      {
+        callbackSecret: string;
+        secret: string;
+        fileKey: string;
+        byteSize: number;
+        mimeType: string;
+        checksum: string;
+      },
+      AvatarUploadCompletionResult
+    >;
+  };
+  readonly emails: {
+    /** Send a six-digit proof challenge to an address this account wants to claim. */
+    readonly requestVerification: ConvexAction<{ email: string }, null>;
+    /** Prove the challenge and immediately apply organiser/co-host invitation matching. */
+    readonly confirmVerification: Mutation<
+      { email: string; code: string },
+      ConfirmEmailVerificationResult
+    >;
+    readonly myEmails: Query<NoArgs, UserEmail[]>;
   };
   readonly events: {
     readonly create: Mutation<
@@ -846,14 +914,17 @@ export interface BackendApi {
      */
     readonly requestUploadGrant: Mutation<
       UploadGrantRequestArgs,
-      GrantResult<UploadGrantId, EventId>
+      GrantResult<UploadGrantId, EventId, MediaId>
     >;
     /**
-     * The client says its own upload finished. Creates the media row if the
-     * provider callback has not got here first, and asserts nothing about what
-     * is actually in storage.
+     * Authenticated upload preflight and post-upload reconciliation.
      *
-     * It also answers with what the grant **authorised** — `mediaType`,
+     * The first call atomically reserves the grant before its start TTL and may
+     * create the processing row. A later call can reconcile `mediaId`/`state`
+     * for the phone, but returns null authorising facts so it cannot be replayed
+     * through the edge to mint a second provider URL.
+     *
+     * The reserving call answers with what the grant **authorised** — `mediaType`,
      * `byteSize`, `mimeType` — which is the only server-minted description of
      * the upload the UploadThing middleware in `apps/web` can get hold of. It
      * refuses a ticket that disagrees, before any bytes move. The caller has
@@ -892,9 +963,14 @@ export interface BackendApi {
     >;
     /** Submitter-only, any state, permanent. */
     readonly withdraw: Mutation<{ mediaId: MediaId; reason?: string }, { state: MediaState }>;
-    readonly myMedia: Query<{ eventId: EventId }, MediaItem[]>;
+    readonly myMedia: Query<{ eventId: EventId; urlRefreshKey?: number }, MediaItem[]>;
     readonly eventMedia: Query<
-      { eventId: EventId; states?: readonly MediaState[]; limit?: number },
+      {
+        eventId: EventId;
+        states?: readonly MediaState[];
+        limit?: number;
+        urlRefreshKey?: number;
+      },
       MediaItem[]
     >;
     readonly storageStatus: Query<{ eventId: EventId }, StorageStatus>;
@@ -919,7 +995,10 @@ export interface BackendApi {
       ModerationResult
     >;
     /** The host's queue: flagged first, then oldest first. */
-    readonly pending: Query<{ eventId: EventId; limit?: number }, MediaItem[]>;
+    readonly pending: Query<
+      { eventId: EventId; limit?: number; urlRefreshKey?: number },
+      MediaItem[]
+    >;
     /**
      * Report somebody else's item. Any member may; it **flags** the item for a
      * host and moderates nothing, because auto-hiding on report would hand any
@@ -933,7 +1012,10 @@ export interface BackendApi {
       { reportId: ReportId; status: "actioned" | "dismissed"; reason?: string },
       { status: ReportStatus; stillFlagged: boolean }
     >;
-    readonly flagged: Query<{ eventId: EventId; limit?: number }, FlaggedItem[]>;
+    readonly flagged: Query<
+      { eventId: EventId; limit?: number; urlRefreshKey?: number },
+      FlaggedItem[]
+    >;
   };
   readonly blocks: {
     /**

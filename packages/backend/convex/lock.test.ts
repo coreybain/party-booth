@@ -304,11 +304,14 @@ describe("a locked owner freezes every event they own", () => {
           checksum: "7".repeat(64),
         });
       if (issued.outcome !== "granted") throw new Error("expected a grant");
+      await t
+        .withIdentity({ subject: "guest" })
+        .mutation(api.media.confirmUpload, { secret: issued.secret });
 
       // Un-expire it, so what is being tested is the completion-time check and
       // not the sweep that has already been asserted above.
       await lockOwner();
-      await t.run(async (ctx) => ctx.db.patch(issued.grantId, { status: "issued" }));
+      await t.run(async (ctx) => ctx.db.patch(issued.grantId, { status: "started" }));
 
       const result = await t.mutation(api.media.completeUpload, {
         callbackSecret: CALLBACK_SECRET,
@@ -319,14 +322,17 @@ describe("a locked owner freezes every event they own", () => {
 
       expect(result.outcome).toBe("discarded");
       expect(result.reason).toBe("ownerLocked");
-      // Nothing landed: no media row, and the party's counters did not move.
+      // Nothing landed. Authenticated preflight already made the processing row,
+      // but the callback cannot attach a key or move it into moderation.
       const rows = await t.run(async (ctx) =>
         ctx.db
           .query("media")
           .withIndex("by_event_and_state", (q) => q.eq("eventId", firstEvent))
           .collect(),
       );
-      expect(rows.filter((row) => row.captureId === "capture-inflight")).toHaveLength(0);
+      const [processing] = rows.filter((row) => row.captureId === "capture-inflight");
+      expect(processing?.state).toBe("processing");
+      expect(processing?.storageKey).toBeUndefined();
     } finally {
       setCallbackSecret(undefined);
     }

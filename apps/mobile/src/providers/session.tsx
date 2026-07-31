@@ -24,6 +24,7 @@
  */
 
 import { TERMS_VERSION } from "@partybooth/contracts/terms";
+import { SIGNED_READ_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   createContext,
@@ -37,15 +38,25 @@ import {
 
 import type { OptimisticLocalStore } from "convex/browser";
 
+import { appConfig } from "../env";
+import { useSignedUrlRefreshKey } from "../hooks/use-signed-url-refresh";
 import { api, type EventId, type EventSummary } from "../lib/api";
-import { signOut as performSignOut, type ActionOutcome, type AuthClient } from "../lib/auth-client";
+import {
+  authCookieHeaders,
+  signOut as performSignOut,
+  type ActionOutcome,
+  type AuthClient,
+} from "../lib/auth-client";
 import { describeError } from "../lib/errors";
 import { resolveActiveEvent, sortEvents } from "../lib/events";
-import { clearLocalProfile, loadLocalProfile, saveLocalProfile } from "../lib/local-profile";
+import { clearLocalProfile, loadLocalProfile } from "../lib/local-profile";
 import { EMPTY_LOCAL_PROFILE, readDisplayName, type LocalProfile } from "../lib/profile";
 import { ANONYMOUS_ROLE_CONTEXT, type EventRole, type RoleContext } from "../lib/roles";
 import { captureHandledError } from "../lib/sentry";
+import { sessionGatesFor } from "../lib/session-gates";
 import { detachPushDevice } from "../push/detach";
+import { uploadAvatar } from "../upload/avatar-upload";
+import { isUploadCompletionError } from "../upload/transport";
 
 import type { ReactNode } from "react";
 
@@ -72,6 +83,8 @@ export type SessionState =
        * again on mobile web.
        */
       readonly needsOnboarding: boolean;
+      /** True when an established account has not accepted this terms version. */
+      readonly needsTermsAcceptance: boolean;
     };
 
 /** What the onboarding screen sends. `photoUri` is a device path — see `profile.ts`. */
@@ -95,10 +108,12 @@ export interface SessionValue {
   /** Persist a different active event. Resolves once the server has it. */
   readonly selectEvent: (eventId: EventId | null) => Promise<ActionOutcome>;
 
-  /** The locally-remembered avatar choice, until Sprint 3 can upload it. */
+  /** A legacy/local avatar fallback while its private server copy is unavailable. */
   readonly localProfile: LocalProfile;
-  /** Save the name (to Convex) and the photo (locally, until Sprint 3). */
+  /** Save the name and, when selected, upload a private account avatar. */
   readonly confirmProfile: (input: ProfileConfirmation) => Promise<ActionOutcome>;
+  /** Accept the current terms without making an established user reconfirm their profile. */
+  readonly acceptCurrentTerms: () => Promise<ActionOutcome>;
 
   readonly signOut: () => Promise<void>;
   /** `__DEV__` affordance for previewing the Host tab with no membership. */
@@ -274,6 +289,7 @@ export function LiveSessionProvider({
   const authUser = data?.user ?? null;
   const authUserId = authUser?.id ?? null;
   const signedIn = !isPending && authUser !== null;
+  const avatarUrlRefreshKey = useSignedUrlRefreshKey(SIGNED_READ_URL_TTL_SECONDS);
 
   // Every Convex call below is skipped until Convex itself says the caller is
   // authenticated. `events.myEvents` and friends call `requireUser`, which throws
@@ -282,7 +298,10 @@ export function LiveSessionProvider({
   // Auth's `signedIn` closes the window between the two. "skip" is the supported way
   // to say "not yet".
   const skip = isAuthenticated ? {} : "skip";
-  const currentUser = useQuery(api.users.currentUser, skip);
+  const currentUser = useQuery(
+    api.users.currentUser,
+    isAuthenticated ? { urlRefreshKey: avatarUrlRefreshKey } : "skip",
+  );
   const myEvents = useQuery(api.events.myEvents, skip);
   const serverActiveEvent = useQuery(api.events.activeEvent, skip);
 
@@ -291,6 +310,8 @@ export function LiveSessionProvider({
   );
   const refreshRoles = useMutation(api.users.refreshRoles);
   const updateProfile = useMutation(api.users.updateProfile);
+  const acceptTerms = useMutation(api.users.acceptTerms);
+  const requestAvatarUploadGrant = useMutation(api.avatars.requestUploadGrant);
 
   const { profile, loaded: profileLoaded, setProfile } = useLocalProfile(authUserId);
 
@@ -362,10 +383,6 @@ export function LiveSessionProvider({
       // the one `apps/web`'s name-confirm form writes too. It also stamps
       // `onboardedAt`, which is what makes "has this guest confirmed a name?" a
       // server-side fact rather than a device-local flag a reinstall loses.
-      //
-      // The photo does *not* go with it: `avatarKey` is an UploadThing key, and
-      // the picker hands back a `file://` path that no other device can resolve.
-      // Sprint 3 builds the upload, and the argument is already there for it.
       try {
         // Terms acceptance travels with the confirmation, because onboarding is
         // the one screen every account passes through before it can post and
@@ -380,14 +397,47 @@ export function LiveSessionProvider({
       }
 
       if (photoUri !== null) {
-        const next: LocalProfile = { photoUri };
-        setProfile(next);
-        await saveLocalProfile(authUserId, next);
+        if (appConfig.status !== "ready") {
+          return { status: "error", message: "This build cannot upload a profile photo." };
+        }
+        try {
+          await uploadAvatar({
+            sourceUri: photoUri,
+            siteUrl: appConfig.siteUrl,
+            requestGrant: (request) => requestAvatarUploadGrant(request),
+            // Resolve lazily: a refreshed Better Auth session must be used even
+            // when this provider has been mounted for hours at a party.
+            authHeaders: () => authCookieHeaders(authClient),
+          });
+          // Old builds persisted the picker URI. The server copy is now the
+          // authority, so remove that device-only fallback after registration.
+          setProfile(EMPTY_LOCAL_PROFILE);
+          await clearLocalProfile(authUserId);
+        } catch (error) {
+          captureHandledError(error, { scope: "session.confirmProfile.avatar" });
+          const message = isUploadCompletionError(error)
+            ? error.message
+            : describeError(error).message;
+          return {
+            status: "error",
+            message: `Your name was saved, but the photo did not upload. ${message}`,
+          };
+        }
       }
       return { status: "ok" };
     },
-    [authUserId, setProfile, updateProfile],
+    [authClient, authUserId, requestAvatarUploadGrant, setProfile, updateProfile],
   );
+
+  const acceptCurrentTerms = useCallback(async (): Promise<ActionOutcome> => {
+    try {
+      await acceptTerms({ version: TERMS_VERSION });
+      return { status: "ok" };
+    } catch (error) {
+      captureHandledError(error, { scope: "session.acceptTerms" });
+      return { status: "error", message: describeError(error).message };
+    }
+  }, [acceptTerms]);
 
   const signOut = useCallback(async () => {
     // Before the session goes, not after: `push.unregisterDevice` is an
@@ -424,19 +474,21 @@ export function LiveSessionProvider({
       currentUser?.displayName ??
       (authUser.name && authUser.name.trim().length > 0 ? authUser.name : null);
 
+    const gates = sessionGatesFor(currentUser);
+
     return {
       status: "signed-in",
       user: {
         id: authUser.id,
         name,
         email: currentUser?.email ?? authUser.email ?? null,
-        image: authUser.image ?? null,
+        image: currentUser?.avatarUrl ?? profile.photoUri ?? authUser.image ?? null,
       },
       // `null` means the mirrored row has not appeared yet, which is the same
       // situation as never having onboarded: there is nothing to skip past.
-      needsOnboarding: currentUser === null || currentUser.onboardedAt === undefined,
+      ...gates,
     };
-  }, [authUser, currentUser, isPending, profileLoaded]);
+  }, [authUser, currentUser, isPending, profile, profileLoaded]);
 
   const roles = useMemo(
     () =>
@@ -460,6 +512,7 @@ export function LiveSessionProvider({
       selectEvent,
       localProfile: profile,
       confirmProfile,
+      acceptCurrentTerms,
       signOut,
       setPreviewEventRole,
       previewEventRole,
@@ -474,6 +527,7 @@ export function LiveSessionProvider({
       selectEvent,
       profile,
       confirmProfile,
+      acceptCurrentTerms,
       signOut,
       setPreviewEventRole,
       previewEventRole,
@@ -518,6 +572,7 @@ export function OfflineSessionProvider({ children }: { children: ReactNode }) {
       selectEvent: async () => NOT_CONFIGURED,
       localProfile: EMPTY_LOCAL_PROFILE,
       confirmProfile: async () => NOT_CONFIGURED,
+      acceptCurrentTerms: async () => NOT_CONFIGURED,
       signOut: async () => {},
       setPreviewEventRole,
       previewEventRole,

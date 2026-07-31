@@ -359,6 +359,19 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 - [ ] **Evening: dress-rehearsal party — ~5 real people, real phones, home Wi-Fi + one phone on cellular; run the full night: join → capture → moderate → slideshow → rotation**
 - [ ] Log every rehearsal finding as a ticket before bed
 
+> **Mobile engineering checkpoint (Thu 31 Jul).** The Expo launch surface is complete locally:
+> native Google/Apple/email-code auth (including Apple's nonce and organiser-email verification),
+> server-backed profile photos, account-isolated durable uploads, authenticated native UploadThing
+> requests, authoritative callback/reconciliation handling, expiring signed media/avatar URLs, and
+> the Camera / Photos / conditional Host / Settings flows. Upload grants are reserved before bytes
+> move so an on-time transfer can finish after its two-minute start deadline; avatar and rejected-file
+> deletes retain durable purge records through bounded retries. The final empty-environment gate is
+> green: frozen install, **2,194 tests**, every package typecheck/lint, Prettier, Expo Doctor **20/20**,
+> all-platform Expo export, a clean native iOS build/install plus live Simulator render, and a local
+> Android release AAB build. This does **not** close RC6: deployed Playwright/security checks, two
+> physical phones, store credentials/submission, and the dress rehearsal remain the unchecked
+> owner/environment work above.
+
 **RC6:** rehearsal completes end-to-end with no intervention that a real host couldn't do. Findings list exists and is triaged (fix / accept / party-runbook note).
 
 ---

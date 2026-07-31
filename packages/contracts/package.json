@@ -20,6 +20,7 @@
     "./codes": "./src/codes.ts",
     "./otp": "./src/otp.ts",
     "./analytics": "./src/analytics.ts",
+    "./avatar": "./src/avatar.ts",
     "./scrub": "./src/scrub.ts",
     "./storage": "./src/storage.ts",
     "./terms": "./src/terms.ts",

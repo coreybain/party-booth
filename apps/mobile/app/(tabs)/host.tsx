@@ -42,6 +42,7 @@ import {
   type RotationChoice,
 } from "@partybooth/contracts/codes";
 import { REPORT_REASON_LABELS } from "@partybooth/contracts/copy";
+import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { useMutation, useQuery } from "convex/react";
 import { Image } from "expo-image";
 import { useCallback, useMemo, useState } from "react";
@@ -63,11 +64,12 @@ import {
 } from "@/components/ui";
 import { appConfig } from "@/env";
 import { useNow } from "@/hooks/use-now";
-import { api, type EventSummary, type MediaItem } from "@/lib/api";
+import { useSignedUrlRefreshKey } from "@/hooks/use-signed-url-refresh";
+import { api, type EventSummary, type FlaggedItem, type MediaItem } from "@/lib/api";
 import { buildJoinUrl } from "@/lib/deep-links";
 import { describeError } from "@/lib/errors";
 import { describeEventState, describeSchedule } from "@/lib/events";
-import { usableMediaUri } from "@/lib/media-view";
+import { usableMediaUri, usableUploaderAvatarUri } from "@/lib/media-view";
 import { canAccessHostTools, hostAbilities, type HostAbilities } from "@/lib/roles";
 import { captureHandledError } from "@/lib/sentry";
 import { useSession } from "@/providers/session";
@@ -577,7 +579,59 @@ function RotateModal({
  * card is clutter on a screen somebody opens to clear a queue.
  */
 function FlaggedSection({ event, abilities }: { event: EventSummary; abilities: HostAbilities }) {
-  const flagged = useQuery(api.moderation.flagged, { eventId: event.id, limit: 10 });
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_HOST_REVIEW_URL_TTL_SECONDS);
+  const flagged = useQuery(api.moderation.flagged, {
+    eventId: event.id,
+    limit: 10,
+    urlRefreshKey,
+  });
+  const resolveReport = useMutation(api.moderation.resolveReport);
+
+  const [resolving, setResolving] = useState<{
+    readonly mediaId: string;
+    readonly status: "actioned" | "dismissed";
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const resolveAll = useCallback(
+    (entry: FlaggedItem, status: "actioned" | "dismissed") => {
+      const open = entry.reports.filter((report) => report.status === "open");
+      if (open.length === 0 || resolving !== null) return;
+
+      setResolving({ mediaId: entry.media.id, status });
+      setError(null);
+      // `resolveReport` re-checks whether another open report remains after
+      // every write. Keeping these sequential avoids needless transaction
+      // conflicts and means a retry can continue with whatever is still open.
+      void (async () => {
+        let completed = 0;
+        try {
+          for (const report of open) {
+            await resolveReport({ reportId: report.id, status });
+            completed += 1;
+          }
+        } catch (caught) {
+          captureHandledError(caught, {
+            scope: "host.resolveReports",
+            mediaId: entry.media.id,
+            status,
+            completed,
+            total: open.length,
+          });
+          const message = describeError(caught).message;
+          setError(
+            completed === 0
+              ? message
+              : `${String(completed)} of ${String(open.length)} reports were updated. ${message}`,
+          );
+        } finally {
+          setResolving(null);
+        }
+      })();
+    },
+    [resolveReport, resolving],
+  );
+
   if (flagged === undefined || flagged.length === 0) return null;
 
   return (
@@ -587,15 +641,43 @@ function FlaggedSection({ event, abilities }: { event: EventSummary; abilities: 
         Someone in the party flagged these. Nothing has happened to them — reporting asks you to
         look, it does not hide anything.
       </MutedText>
-      {flagged.map((entry) => (
-        <QueueRow
-          key={entry.media.id}
-          event={event}
-          media={entry.media}
-          abilities={abilities}
-          note={entry.reports.map((report) => REPORT_REASON_LABELS[report.reason]).join(" · ")}
-        />
-      ))}
+      {error !== null ? (
+        <Notice tone="danger" title="Some reports are still open">
+          <MutedText>{error}</MutedText>
+        </Notice>
+      ) : null}
+      {flagged.map((entry) => {
+        const open = entry.reports.filter((report) => report.status === "open");
+        const resolvingThis = resolving?.mediaId === entry.media.id;
+        return (
+          <View key={entry.media.id} style={styles.flaggedItem}>
+            <QueueRow
+              event={event}
+              media={entry.media}
+              abilities={abilities}
+              note={entry.reports.map((report) => REPORT_REASON_LABELS[report.reason]).join(" · ")}
+            />
+            {abilities.moderate && open.length > 0 ? (
+              <View style={styles.flaggedActions}>
+                <Button
+                  label="Mark handled"
+                  variant="secondary"
+                  busy={resolvingThis && resolving?.status === "actioned"}
+                  disabled={resolving !== null}
+                  onPress={() => resolveAll(entry, "actioned")}
+                />
+                <Button
+                  label="Dismiss"
+                  variant="secondary"
+                  busy={resolvingThis && resolving?.status === "dismissed"}
+                  disabled={resolving !== null}
+                  onPress={() => resolveAll(entry, "dismissed")}
+                />
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
     </Card>
   );
 }
@@ -615,7 +697,12 @@ function FlaggedSection({ event, abilities }: { event: EventSummary; abilities: 
  * ago) comes back itemised rather than failing the lot.
  */
 function QueueSection({ event, abilities }: { event: EventSummary; abilities: HostAbilities }) {
-  const pending = useQuery(api.moderation.pending, { eventId: event.id, limit: QUEUE_LIMIT });
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_HOST_REVIEW_URL_TTL_SECONDS);
+  const pending = useQuery(api.moderation.pending, {
+    eventId: event.id,
+    limit: QUEUE_LIMIT,
+    urlRefreshKey,
+  });
   const moderate = useMutation(api.moderation.moderate);
 
   const [busy, setBusy] = useState(false);
@@ -724,6 +811,7 @@ function QueueRow({
   const [error, setError] = useState<string | null>(null);
 
   const uri = usableMediaUri(media, now);
+  const avatarUri = usableUploaderAvatarUri(media, now);
 
   const act = useCallback(
     (action: "approve" | "decline") => {
@@ -768,7 +856,25 @@ function QueueRow({
       </View>
 
       <View style={styles.rowBody}>
-        <Text style={styles.rowName}>{media.uploaderDisplayName}</Text>
+        <View style={styles.uploaderLine}>
+          <View style={styles.uploaderAvatar}>
+            {avatarUri === undefined ? (
+              <Text style={styles.uploaderInitial}>
+                {(media.uploaderDisplayName[0] ?? "?").toUpperCase()}
+              </Text>
+            ) : (
+              <Image
+                source={{ uri: avatarUri }}
+                style={styles.uploaderAvatarImage}
+                contentFit="cover"
+                accessibilityIgnoresInvertColors
+              />
+            )}
+          </View>
+          <Text style={styles.rowName} numberOfLines={1}>
+            {media.uploaderDisplayName}
+          </Text>
+        </View>
         <MutedText>
           {media.mediaType === "video" ? "Video" : "Photo"}
           {media.reportCount !== undefined && media.reportCount > 0
@@ -857,9 +963,28 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   rowBody: { flex: 1, gap: spacing.xs },
+  uploaderLine: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  uploaderAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: radius.pill,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accentSoft,
+  },
+  uploaderAvatarImage: { width: "100%", height: "100%" },
+  uploaderInitial: { ...typography.caption, color: colors.accent },
   rowName: { ...typography.body, color: colors.text },
   rowError: { ...typography.caption, color: colors.danger },
   rowActions: { flexDirection: "row", gap: spacing.sm },
+  flaggedItem: { gap: spacing.sm },
+  flaggedActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
   thumb: {
     width: 56,
     height: 56,

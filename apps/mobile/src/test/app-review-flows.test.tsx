@@ -46,6 +46,9 @@ const fake = vi.hoisted(() => ({
   push: vi.fn(),
   session: {} as Record<string, unknown>,
   openBrowserAsync: vi.fn(),
+  myEmails: [] as unknown[],
+  requestVerification: vi.fn(),
+  confirmVerification: vi.fn(),
 }));
 
 vi.mock("@expo/vector-icons", () => ({
@@ -73,12 +76,18 @@ vi.mock("expo-web-browser", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-  useQuery: (reference: { name: string }) =>
-    reference.name === "myBlocks" ? fake.myBlocks : undefined,
+  useQuery: (reference: { name: string }) => {
+    if (reference.name === "myBlocks") return fake.myBlocks;
+    if (reference.name === "myEmails") return fake.myEmails;
+    return undefined;
+  },
+  useAction: (reference: { name: string }) =>
+    reference.name === "requestVerification" ? fake.requestVerification : vi.fn(),
   useMutation: (reference: { name: string }) => {
     if (reference.name === "block") return fake.block;
     if (reference.name === "unblock") return fake.unblock;
     if (reference.name === "requestAccountDeletion") return fake.requestAccountDeletion;
+    if (reference.name === "confirmVerification") return fake.confirmVerification;
     return fake.report;
   },
 }));
@@ -89,6 +98,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...original,
     api: {
       users: { requestAccountDeletion: { name: "requestAccountDeletion" } },
+      emails: {
+        myEmails: { name: "myEmails" },
+        requestVerification: { name: "requestVerification" },
+        confirmVerification: { name: "confirmVerification" },
+      },
       moderation: { report: { name: "report" } },
       push: {
         preferences: { name: "preferences" },
@@ -151,6 +165,13 @@ beforeEach(() => {
   });
   fake.signOut.mockResolvedValue(undefined);
   fake.myBlocks = [];
+  fake.myEmails = [];
+  fake.requestVerification.mockReset().mockResolvedValue(null);
+  fake.confirmVerification.mockReset().mockResolvedValue({
+    ok: true,
+    organiserUnlocked: false,
+    cohostEventIds: [],
+  });
   fake.session = {
     state: {
       status: "signed-in",
@@ -164,6 +185,77 @@ beforeEach(() => {
     activeEvent: null,
     events: [],
   };
+});
+
+/* -------------------------------------------------------------------------- */
+/* Settings: verified invitation addresses                                   */
+/* -------------------------------------------------------------------------- */
+
+describe("Settings — verified invitation addresses", () => {
+  it("lists claimed addresses and their verification state", async () => {
+    fake.myEmails = [
+      { email: "host@example.com", status: "verified", verifiedAt: 1 },
+      { email: "other@example.com", status: "pending" },
+    ];
+    await renderSettings();
+
+    expect(screen.getByText("host@example.com")).toBeTruthy();
+    expect(screen.getByText("other@example.com")).toBeTruthy();
+    expect(screen.getByText("VERIFIED")).toBeTruthy();
+    expect(screen.getByText("PENDING")).toBeTruthy();
+  });
+
+  it("requests and confirms a code, then says which roles were unlocked", async () => {
+    fake.confirmVerification.mockResolvedValue({
+      ok: true,
+      organiserUnlocked: true,
+      cohostEventIds: ["event_1"],
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("Address to verify"), {
+      target: { value: " Invited@Example.com " },
+    });
+    fireEvent.click(screen.getByLabelText("Send verification code"));
+
+    await waitFor(() => {
+      expect(fake.requestVerification).toHaveBeenCalledWith({ email: "invited@example.com" });
+    });
+    fireEvent.change(screen.getByLabelText("Six-digit verification code"), {
+      target: { value: "123456" },
+    });
+    fireEvent.click(screen.getByLabelText("Verify email"));
+
+    await waitFor(() => {
+      expect(fake.confirmVerification).toHaveBeenCalledWith({
+        email: "invited@example.com",
+        code: "123456",
+      });
+      expect(screen.getByText(/unlocked organiser access and 1 co-host role/i)).toBeTruthy();
+    });
+  });
+
+  it("shows committed wrong-code failures instead of claiming success", async () => {
+    fake.confirmVerification.mockResolvedValue({
+      ok: false,
+      reason: "invalid",
+      message: "That code is not valid, or it has expired. Ask for a new one.",
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("Address to verify"), {
+      target: { value: "invited@example.com" },
+    });
+    fireEvent.click(screen.getByLabelText("Send verification code"));
+    await screen.findByLabelText("Six-digit verification code");
+    fireEvent.change(screen.getByLabelText("Six-digit verification code"), {
+      target: { value: "654321" },
+    });
+    fireEvent.click(screen.getByLabelText("Verify email"));
+
+    expect(await screen.findByText(/code is not valid/i)).toBeTruthy();
+    expect(screen.queryByText(/This unlocked/i)).toBeNull();
+  });
 });
 
 /* -------------------------------------------------------------------------- */

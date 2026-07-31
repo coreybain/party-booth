@@ -25,7 +25,7 @@
  * so nothing here imports `expo-camera` and a test needs no native module.
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useReducer, useRef, useState } from "react";
 
 import { VIDEO_MAX_BYTES, VIDEO_MAX_DURATION_SECONDS } from "@partybooth/contracts/media";
 
@@ -226,7 +226,16 @@ export function useShutter(input: UseShutterInput): ShutterController {
   /* Recording                                                        */
   /* ---------------------------------------------------------------- */
 
-  const beginRecording = useCallback(() => {
+  /*
+   * This is an Effect Event rather than a memoized render callback. Recording
+   * starts only from the arming effect, and it must read whichever recorder the
+   * ref contains at that moment. Putting a mutable `camera.current` behind
+   * `useCallback([camera])` describes the wrong dependency to the React
+   * Compiler: the ref object is stable while its current value is deliberately
+   * not. Effect Events are built for exactly this "latest value, effect-only"
+   * boundary.
+   */
+  const beginRecording = useEffectEvent(() => {
     void (async () => {
       const recorder = camera.current;
       if (recorder === null) {
@@ -266,7 +275,7 @@ export function useShutter(input: UseShutterInput): ShutterController {
         callbacks.current.onRecordingEnd?.();
       }
     })();
-  }, [camera]);
+  });
 
   /* ---------------------------------------------------------------- */
   /* Effects the machine asked for                                    */
@@ -301,7 +310,7 @@ export function useShutter(input: UseShutterInput): ShutterController {
       default:
         return;
     }
-  }, [machine.seq, machine.effect, beginRecording, camera]);
+  }, [machine.seq, machine.effect, camera]);
 
   /**
    * Armed, and the camera has come up in video mode. Go.
@@ -320,7 +329,7 @@ export function useShutter(input: UseShutterInput): ShutterController {
     if (readyTick <= armedAtTick.current) return;
     pendingArm.current = false;
     beginRecording();
-  }, [machine.state.phase, readyTick, beginRecording]);
+  }, [machine.state.phase, readyTick]);
 
   /**
    * The clock, running only when there is something to time.

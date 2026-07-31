@@ -7,6 +7,7 @@ import {
 } from "@partybooth/contracts/media";
 import type { Role } from "@partybooth/contracts/roles";
 import { SIGNED_READ_URL_TTL_SECONDS, type SignedReadUrl } from "@partybooth/contracts/storage";
+import { serverEnv } from "@partybooth/env/server";
 import { v } from "convex/values";
 
 import type { Doc, Id } from "../_generated/dataModel";
@@ -341,6 +342,9 @@ export interface MediaView {
   height?: number;
   uploaderUserId: Id<"users">;
   uploaderDisplayName: string;
+  /** Private avatar URL, minted alongside the media URL for authorised readers. */
+  uploaderAvatarUrl?: string;
+  uploaderAvatarUrlExpiresAt?: number;
   isOwn: boolean;
   createdAt: number;
   capturedAt?: number;
@@ -388,6 +392,8 @@ export const mediaViewValidator = v.object({
   height: v.optional(v.number()),
   uploaderUserId: v.id("users"),
   uploaderDisplayName: v.string(),
+  uploaderAvatarUrl: v.optional(v.string()),
+  uploaderAvatarUrlExpiresAt: v.optional(v.number()),
   isOwn: v.boolean(),
   createdAt: v.number(),
   capturedAt: v.optional(v.number()),
@@ -573,13 +579,21 @@ export async function projectMedia(
   const posterKey =
     !isAdmin && mayServeDerivative(media, "poster", viewer) ? media.posterKey : undefined;
 
-  const [original, preview, poster] = await Promise.all([
+  const avatarKey =
+    !isAdmin &&
+    uploader?.accountState !== "deletionScheduled" &&
+    uploader?.accountState !== "deleted"
+      ? uploader?.avatarKey
+      : undefined;
+
+  const [original, preview, poster, uploaderAvatar] = await Promise.all([
     safeUrl(media.storageRegion, originalKey, ttl),
     // A photo with no preview yet falls back to its poster only because a video
     // that has a poster and no clip should still render *something*; a photo has
     // no poster, so this is a no-op for photos.
     safeUrl(media.storageRegion, previewKey ?? posterKey, ttl),
     safeUrl(media.storageRegion, posterKey, ttl),
+    safeUrl(uploader?.avatarStorageRegion ?? serverEnv.STORAGE_DEFAULT_REGION, avatarKey, ttl),
   ]);
 
   return {
@@ -596,6 +610,12 @@ export async function projectMedia(
     ...(media.height === undefined ? {} : { height: media.height }),
     uploaderUserId: media.uploaderUserId,
     uploaderDisplayName: uploaderNameFor(uploader),
+    ...(uploaderAvatar === undefined
+      ? {}
+      : {
+          uploaderAvatarUrl: uploaderAvatar.url,
+          uploaderAvatarUrlExpiresAt: uploaderAvatar.expiresAt,
+        }),
     isOwn,
     createdAt: media.createdAt,
     ...(media.capturedAt === undefined ? {} : { capturedAt: media.capturedAt }),

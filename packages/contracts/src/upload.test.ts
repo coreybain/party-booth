@@ -9,6 +9,7 @@ import {
   checkGrantEligibility,
   checkTicketAgainstFiles,
   checkTicketAgainstGrant,
+  describesSameFile,
   grantExpiresAt,
   grantHasExpired,
   GRANT_POLICY,
@@ -19,6 +20,7 @@ import {
   isIssuedGrant,
   isPermanentRejection,
   matchesGrant,
+  parseUploadCallbackResult,
   parseGrantResult,
   registerGrantIssued,
   TICKET_MISMATCH_MESSAGES,
@@ -27,6 +29,7 @@ import {
   UPLOAD_ROUTE_PATH,
   UPLOAD_ROUTE_SLUG,
   uploadReasonForFile,
+  uploadCallbackSucceeded,
   uploadTicketSchema,
   type GrantAttemptState,
 } from "./upload";
@@ -229,6 +232,12 @@ describe("isGrantUsable", () => {
     });
   });
 
+  it("keeps a grant usable after the start deadline once preflight reserved it", () => {
+    expect(isGrantUsable({ status: "started", expiresAt: NOW - 1 }, NOW)).toEqual({
+      usable: true,
+    });
+  });
+
   it("expires two minutes after issue", () => {
     expect(grantExpiresAt(NOW)).toBe(NOW + 2 * 60 * 1000);
   });
@@ -258,6 +267,25 @@ describe("matchesGrant", () => {
 
   it("does not require a checksum it was never given", () => {
     expect(matchesGrant(grant, { fileKey: "k", byteSize: 1_234 })).toEqual({ ok: true });
+  });
+});
+
+describe("describesSameFile", () => {
+  const video = {
+    mediaType: "video" as const,
+    mimeType: "video/mp4",
+    byteSize: 1_234,
+    checksum: CHECKSUM,
+    durationSeconds: 5.2,
+  };
+
+  it("keeps identity stable when storage replaces the phone's duration estimate", () => {
+    expect(describesSameFile(video, { ...video, durationSeconds: 5.08 })).toBe(true);
+  });
+
+  it("still refuses different bytes", () => {
+    expect(describesSameFile(video, { ...video, checksum: "b".repeat(64) })).toBe(false);
+    expect(describesSameFile(video, { ...video, byteSize: video.byteSize + 1 })).toBe(false);
   });
 });
 
@@ -401,10 +429,27 @@ const ISSUED = {
 } as const;
 
 describe("parseGrantResult", () => {
-  it("accepts all three documented outcomes", () => {
+  it("accepts all four documented outcomes", () => {
     expect(parseGrantResult(ISSUED).outcome).toBe("granted");
+    expect(
+      parseGrantResult({ outcome: "alreadyUploaded", mediaId: "media_1", state: "pending" })
+        .outcome,
+    ).toBe("alreadyUploaded");
     expect(parseGrantResult(grantRejected("tooLarge")).outcome).toBe("rejected");
     expect(parseGrantResult(grantThrottled(1_000)).outcome).toBe("throttled");
+  });
+
+  it("accepts only settled, non-deleted states for an existing upload", () => {
+    for (const state of ["pending", "approved", "declined"] as const) {
+      expect(
+        parseGrantResult({ outcome: "alreadyUploaded", mediaId: "media_1", state }),
+      ).toMatchObject({ outcome: "alreadyUploaded", state });
+    }
+    for (const state of ["processing", "deleted"] as const) {
+      expect(() =>
+        parseGrantResult({ outcome: "alreadyUploaded", mediaId: "media_1", state }),
+      ).toThrow();
+    }
   });
 
   it("accepts every rejection reason the contract declares", () => {
@@ -439,6 +484,27 @@ describe("grantHasExpired", () => {
     expect(grantHasExpired({ expiresAt: NOW + 1 }, NOW)).toBe(false);
     expect(grantHasExpired({ expiresAt: NOW }, NOW)).toBe(true);
     expect(grantHasExpired({ expiresAt: NOW - 1 }, NOW)).toBe(true);
+  });
+});
+
+describe("upload callback result", () => {
+  it("accepts only authoritative success outcomes", () => {
+    const registered = parseUploadCallbackResult({ outcome: "registered", state: "pending" });
+    const duplicate = parseUploadCallbackResult({ outcome: "duplicate", state: "approved" });
+    const discarded = parseUploadCallbackResult({
+      outcome: "discarded",
+      state: null,
+      reason: "withdrawn",
+    });
+
+    expect(uploadCallbackSucceeded(registered)).toBe(true);
+    expect(uploadCallbackSucceeded(duplicate)).toBe(true);
+    expect(uploadCallbackSucceeded(discarded)).toBe(false);
+  });
+
+  it("fails closed on malformed provider server data", () => {
+    expect(() => parseUploadCallbackResult({ outcome: "surprise" })).toThrow();
+    expect(() => parseUploadCallbackResult(null)).toThrow();
   });
 });
 

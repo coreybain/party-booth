@@ -68,6 +68,7 @@ export function queueItemFromDraft(
   draft: CaptureDraft,
   policy: AdmissionPolicy,
   now: number,
+  ownerUserId?: string,
 ): QueueItem {
   const undoDelayMs = normaliseDelayMs(policy.undoDelayMs);
   const sendAt = sendAtFor(draft.capturedAt, undoDelayMs);
@@ -76,6 +77,7 @@ export function queueItemFromDraft(
 
   return {
     ...capture,
+    ...(ownerUserId === undefined ? {} : { ownerUserId }),
     state: "captured",
     autoSend: policy.autoSend,
     undoDelayMs,

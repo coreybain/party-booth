@@ -12,23 +12,57 @@
  */
 
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
-import { createContext, useContext } from "react";
-import { ConvexProvider } from "convex/react";
+import { createContext, useCallback, useContext } from "react";
+import { ConvexProvider, useConvexAuth } from "convex/react";
 
 import type { AuthClient as ConvexCompatibleAuthClient } from "@convex-dev/better-auth/react";
 
 import { appConfig } from "../env";
-import { getAuthClient, type AuthClient } from "../lib/auth-client";
+import { authCookieHeaders, getAuthClient, type AuthClient } from "../lib/auth-client";
 import { getConvexClient } from "../lib/convex";
 import { ConnectedPushProvider } from "../push/provider";
 import { ConnectedUploadQueue, OfflineUploadQueue } from "../upload/queue-provider";
 
-import { LiveSessionProvider, OfflineSessionProvider } from "./session";
+import { LiveSessionProvider, OfflineSessionProvider, useSession } from "./session";
 
 import type { ReadyAppConfig } from "../lib/config";
 import type { ReactNode } from "react";
 
 const AuthClientContext = createContext<AuthClient | null>(null);
+
+/**
+ * Services that must know exactly which authenticated account owns their local
+ * state. This component is rendered below `LiveSessionProvider`, so it can pass
+ * the Better Auth user id and Convex's independently-restored auth readiness to
+ * the durable queue instead of letting the queue guess from configuration.
+ */
+function ConnectedServices({
+  config,
+  children,
+}: {
+  readonly config: ReadyAppConfig;
+  readonly children: ReactNode;
+}) {
+  const { state } = useSession();
+  const { isAuthenticated } = useConvexAuth();
+  const authClient = useAuthClient();
+  const ownerUserId = state.status === "signed-in" ? state.user.id : null;
+  const uploadAuthHeaders = useCallback(
+    () => (authClient === null ? {} : authCookieHeaders(authClient)),
+    [authClient],
+  );
+
+  return (
+    <ConnectedUploadQueue
+      siteUrl={config.siteUrl}
+      authHeaders={uploadAuthHeaders}
+      ownerUserId={ownerUserId}
+      enabled={isAuthenticated && ownerUserId !== null}
+    >
+      <ConnectedPushProvider projectId={config.easProjectId}>{children}</ConnectedPushProvider>
+    </ConnectedUploadQueue>
+  );
+}
 
 /**
  * The Better Auth client, or `null` when the app is unconfigured.
@@ -71,19 +105,11 @@ function ConfiguredProviders({
       >
         <AuthClientContext.Provider value={authClient}>
           <LiveSessionProvider authClient={authClient}>
-            {/* Inside Convex (it needs `useMutation`) and inside the session
-                (a grant is only issued to an authenticated member), but above
-                the router, because the queue outlives any screen — a capture
-                keeps uploading while the guest is on the Photos tab. */}
-            <ConnectedUploadQueue siteUrl={config.siteUrl}>
-              {/* Same three reasons, plus one of its own: a notification tap
-                  navigates, so this has to sit above the router that answers
-                  it. `projectId` undefined means the build has no EAS project
-                  and the whole subsystem stays inert. */}
-              <ConnectedPushProvider projectId={config.easProjectId}>
-                {children}
-              </ConnectedPushProvider>
-            </ConnectedUploadQueue>
+            {/* The queue outlives every screen, but it does not outlive its
+                owner: ConnectedServices gates it on Convex auth and scopes its
+                persisted rows to the Better Auth user id. Push stays above the
+                router because a notification tap navigates. */}
+            <ConnectedServices config={config}>{children}</ConnectedServices>
           </LiveSessionProvider>
         </AuthClientContext.Provider>
       </ConvexBetterAuthProvider>

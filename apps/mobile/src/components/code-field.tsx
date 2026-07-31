@@ -25,6 +25,9 @@ export function CodeField({
   editable = true,
   autoFocus = false,
   invalid = false,
+  length = JOIN_CODE_LENGTH,
+  accessibilityLabel = "Six-digit join code",
+  accessibilityHint = "Type the code printed under the QR sign.",
 }: {
   value: string;
   onChangeText: (next: string) => void;
@@ -32,11 +35,14 @@ export function CodeField({
   editable?: boolean;
   autoFocus?: boolean;
   invalid?: boolean;
+  length?: number;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
 }) {
   const inputRef = useRef<TextInput>(null);
-  const slots = Array.from({ length: JOIN_CODE_LENGTH }, (_, index) => value[index] ?? "");
+  const slots = Array.from({ length }, (_, index) => value[index] ?? "");
   // The caret sits on the first empty box, or on the last one when the code is full.
-  const caretIndex = Math.min(value.length, JOIN_CODE_LENGTH - 1);
+  const caretIndex = Math.min(value.length, length - 1);
 
   return (
     <Pressable
@@ -53,10 +59,7 @@ export function CodeField({
             style={[
               styles.slot,
               invalid && styles.slotInvalid,
-              editable &&
-                index === caretIndex &&
-                value.length < JOIN_CODE_LENGTH &&
-                styles.slotActive,
+              editable && index === caretIndex && value.length < length && styles.slotActive,
             ]}
           >
             <Text style={styles.slotText}>{digit}</Text>
@@ -75,14 +78,14 @@ export function CodeField({
         // large keys are the difference between one attempt and three in a dark room.
         keyboardType="number-pad"
         inputMode="numeric"
-        maxLength={JOIN_CODE_LENGTH}
+        maxLength={length}
         returnKeyType="go"
         // Nothing here should be remembered, suggested or capitalised.
         autoCapitalize="none"
         autoCorrect={false}
         autoComplete="off"
-        accessibilityLabel="Six-digit join code"
-        accessibilityHint="Type the code printed under the QR sign."
+        accessibilityLabel={accessibilityLabel}
+        accessibilityHint={accessibilityHint}
         // Transparent and stretched over the boxes so the platform's own caret,
         // selection and paste menu all still work.
         style={styles.input}

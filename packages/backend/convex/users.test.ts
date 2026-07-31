@@ -1,7 +1,15 @@
+import { SIGNED_READ_URL_TTL_SECONDS } from "@partybooth/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { Id } from "./_generated/dataModel";
-import { api, makeTest, seedUser, type T } from "./testing.helpers";
+import {
+  api,
+  clearFakeStorage,
+  makeTest,
+  seedUser,
+  useFakeStorage,
+  type T,
+} from "./testing.helpers";
 
 /**
  * `users.updateProfile` is the single writer of the name a host reads in the
@@ -66,18 +74,23 @@ describe("users.updateProfile", () => {
     ).rejects.toThrow();
   });
 
-  it("carries an avatar key, and keeps the old one when none is sent", async () => {
-    await asGuest().mutation(api.users.updateProfile, {
-      displayName: "Sam",
-      avatarKey: "avatars/sam.jpg",
-    });
-    expect((await readUser())?.avatarKey).toBe("avatars/sam.jpg");
-
-    // Sprint 3 uploads the avatar separately from the name, so a later name
-    // edit from Settings must not silently remove the photo.
+  it("keeps a server-confirmed avatar when the name changes", async () => {
+    await t.run(async (ctx) =>
+      ctx.db.patch(userId, { avatarKey: "avatars/sam.jpg", avatarStorageRegion: "pdx1" }),
+    );
     const kept = await asGuest().mutation(api.users.updateProfile, { displayName: "Sam T" });
-    expect(kept.avatarKey).toBe("avatars/sam.jpg");
+    expect(kept).not.toHaveProperty("avatarKey");
     expect((await readUser())?.avatarKey).toBe("avatars/sam.jpg");
+  });
+
+  it("rejects a client trying to set an arbitrary provider key", async () => {
+    await expect(
+      asGuest().mutation(api.users.updateProfile, {
+        displayName: "Sam",
+        avatarKey: "somebody-elses-private-file",
+      } as never),
+    ).rejects.toThrow();
+    expect((await readUser())?.avatarKey).toBeUndefined();
   });
 
   it("refuses a locked account", async () => {
@@ -110,5 +123,32 @@ describe("users.currentUser", () => {
     const after = await guest.query(api.users.currentUser, {});
     expect(after?.displayName).toBe("Sam");
     expect(after?.onboardedAt).toBeGreaterThan(0);
+  });
+
+  it("returns a short-lived signed avatar URL and never its provider key", async () => {
+    const now = 1_900_000_000_000;
+    useFakeStorage({ now: () => now });
+    try {
+      const t = makeTest();
+      const userId = await seedUser(t, {
+        authId: "guest-avatar",
+        email: "avatar@example.com",
+      });
+      await t.run(async (ctx) =>
+        ctx.db.patch(userId, {
+          avatarKey: "private/avatar.jpg",
+          avatarStorageRegion: "pdx1",
+        }),
+      );
+
+      const current = await t
+        .withIdentity({ subject: "guest-avatar" })
+        .query(api.users.currentUser, { urlRefreshKey: 1 });
+      expect(current?.avatarUrl).toContain("private%2Favatar.jpg");
+      expect(current?.avatarUrlExpiresAt).toBe(now + SIGNED_READ_URL_TTL_SECONDS * 1_000);
+      expect(current).not.toHaveProperty("avatarKey");
+    } finally {
+      clearFakeStorage();
+    }
   });
 });

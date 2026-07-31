@@ -93,8 +93,6 @@ export type VerifyOtpInput = z.infer<typeof verifyOtpInputSchema>;
 
 export const updateProfileInputSchema = z.object({
   displayName: displayNameSchema,
-  /** UploadThing key of the confirmed avatar, if the user set one. */
-  avatarKey: z.string().min(1).optional(),
 });
 export type UpdateProfileInput = z.infer<typeof updateProfileInputSchema>;
 

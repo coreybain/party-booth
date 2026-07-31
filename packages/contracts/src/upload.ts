@@ -4,7 +4,9 @@ import { acceptsUploads, type EventState } from "./events";
 import {
   isDerivativeRole,
   maxBytesForRole,
+  MODERATABLE_MEDIA_STATES,
   mediaFileRoleSchema,
+  mediaStateSchema,
   mediaTypeSchema,
   MEDIA_SOURCES,
   metadataClaimOf,
@@ -13,6 +15,7 @@ import {
   type MediaFileRole,
   type MediaRejectionReason,
   type MediaSource,
+  type MediaState,
   type MediaType,
 } from "./media";
 import { captureIdSchema, checksumSchema } from "./schemas";
@@ -169,16 +172,20 @@ export function registerGrantIssued(
 /* -------------------------------------------------------------------------- */
 
 /**
- * - `issued` — minted and not yet spent. The only usable state.
+ * - `issued` — minted, but no authenticated upload preflight has started yet.
+ * - `started` — an authenticated preflight reserved the capability before its
+ *   TTL. The provider callback may finish after `expiresAt`; the timestamp is a
+ *   deadline for starting, not for transferring the bytes.
  * - `consumed` — an upload was accepted against it. Terminal.
- * - `expired` — the TTL ran out before anything arrived, or the capture it
- *   belonged to was withdrawn before the bytes did. Terminal.
+ * - `expired` — the start TTL ran out, or an explicit revocation (withdrawal,
+ *   membership removal, account lock) cancelled an issued or started upload.
+ *   Terminal.
  *
  * Expiry is a **fact about the clock**, so `isGrantUsable` treats a still-`issued`
  * row past its `expiresAt` as unusable whether or not anything has got round to
  * writing the status. The status is the tidying; the timestamp is the rule.
  */
-export const GRANT_STATUSES = ["issued", "consumed", "expired"] as const;
+export const GRANT_STATUSES = ["issued", "started", "consumed", "expired"] as const;
 
 export type GrantStatus = (typeof GRANT_STATUSES)[number];
 
@@ -215,7 +222,7 @@ export function isGrantUsable(
   now: number,
 ): GrantUsability {
   if (grant.status === "consumed") return { usable: false, reason: "alreadyConsumed" };
-  if (grant.status === "expired" || now > grant.expiresAt) {
+  if (grant.status === "expired" || (grant.status === "issued" && now > grant.expiresAt)) {
     return { usable: false, reason: "expired" };
   }
   return { usable: true };
@@ -298,17 +305,17 @@ export interface CaptureFileFacts {
  * first cannot drift past the second.
  *
  * MIME types are normalised (`image/jpeg` vs `image/jpeg; charset=…`) because
- * that difference is a client's serialisation, not a different body. Duration is
- * compared including its absence — a photo has none, and a video that has lost
- * one has changed.
+ * that difference is a client's serialisation, not a different body. Duration
+ * is deliberately not identity: once the stored video is inspected, the server
+ * replaces the phone's estimate with the container's measured value. Equal
+ * SHA-256, byte size, type and MIME still prove that those are the same bytes.
  */
 export function describesSameFile(a: CaptureFileFacts, b: CaptureFileFacts): boolean {
   return (
     a.mediaType === b.mediaType &&
     normaliseMime(a.mimeType) === normaliseMime(b.mimeType) &&
     a.byteSize === b.byteSize &&
-    a.checksum === b.checksum &&
-    (a.durationSeconds ?? null) === (b.durationSeconds ?? null)
+    a.checksum === b.checksum
   );
 }
 
@@ -648,8 +655,26 @@ export interface ThrottledGrant {
   retryAfterMs: number;
 }
 
-export type GrantResult<TGrantId extends string = string, TEventId extends string = string> =
-  IssuedGrant<TGrantId, TEventId> | RejectedGrant | ThrottledGrant;
+/**
+ * The original already landed before the client received its success response.
+ *
+ * This is intentionally identity-bearing where `duplicateCapture` is not. The
+ * server returns it only to the authenticated uploader, only when every bound
+ * file fact still matches, and only after the row has left `processing`. A
+ * client may therefore settle its durable queue without guessing that an
+ * ambiguous capture-id collision belongs to the current account.
+ */
+export interface AlreadyUploaded<TMediaId extends string = string> {
+  outcome: "alreadyUploaded";
+  mediaId: TMediaId;
+  state: Exclude<MediaState, "processing" | "deleted">;
+}
+
+export type GrantResult<
+  TGrantId extends string = string,
+  TEventId extends string = string,
+  TMediaId extends string = string,
+> = IssuedGrant<TGrantId, TEventId> | AlreadyUploaded<TMediaId> | RejectedGrant | ThrottledGrant;
 
 export function grantRejected(reason: UploadRejectionReason): RejectedGrant {
   return { outcome: "rejected", reason, message: UPLOAD_REJECTION_MESSAGES[reason] };
@@ -671,7 +696,7 @@ export function grantThrottled(retryAfterMs: number): ThrottledGrant {
  * anything a client **branches on** gets re-parsed with a real schema at the
  * call site. `parseJoinResult` in `./join` is the precedent; this is its upload
  * twin, and it lives here rather than in either app because both apps branch on
- * the same three outcomes.
+ * the same four outcomes.
  *
  * It fails **closed**: an unrecognised payload throws rather than being treated
  * as a grant, because the next thing that happens to a grant is that bytes get
@@ -712,13 +737,20 @@ const throttledGrantSchema = z.object({
   retryAfterMs: z.number().int().nonnegative(),
 });
 
+const alreadyUploadedSchema = z.object({
+  outcome: z.literal("alreadyUploaded"),
+  mediaId: z.string().min(1),
+  state: z.enum(MODERATABLE_MEDIA_STATES),
+});
+
 export const grantResultSchema = z.discriminatedUnion("outcome", [
   issuedGrantSchema,
+  alreadyUploadedSchema,
   rejectedGrantSchema,
   throttledGrantSchema,
 ]);
 
-/** Throws on anything that is not one of the three documented outcomes. */
+/** Throws on anything that is not one of the four documented outcomes. */
 export function parseGrantResult(value: unknown): GrantResult {
   return grantResultSchema.parse(value) as GrantResult;
 }
@@ -1019,6 +1051,23 @@ export const UPLOAD_COMPLETION_OUTCOMES = [
 ] as const;
 
 export type UploadCompletionOutcome = (typeof UPLOAD_COMPLETION_OUTCOMES)[number];
+
+/** Safe serverData returned to an uploading client; provider keys are excluded. */
+export const uploadCallbackResultSchema = z.object({
+  outcome: z.enum(UPLOAD_COMPLETION_OUTCOMES),
+  state: mediaStateSchema.nullable().optional(),
+  reason: z.string().min(1).optional(),
+});
+
+export type UploadCallbackResult = z.infer<typeof uploadCallbackResultSchema>;
+
+export function parseUploadCallbackResult(value: unknown): UploadCallbackResult {
+  return uploadCallbackResultSchema.parse(value);
+}
+
+export function uploadCallbackSucceeded(result: Pick<UploadCallbackResult, "outcome">): boolean {
+  return result.outcome === "registered" || result.outcome === "duplicate";
+}
 
 export type UploadCompletionRejection =
   "unknownGrant" | "expired" | "alreadyConsumed" | GrantMismatchReason;

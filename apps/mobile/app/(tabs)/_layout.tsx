@@ -1,9 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Tabs } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 
 import { EventHeader } from "@/components/event-header";
 import { canAccessHostTools } from "@/lib/roles";
-import { useRoles } from "@/providers/session";
+import { useSession } from "@/providers/session";
 import { colors } from "@/theme";
 
 import type { ComponentProps } from "react";
@@ -19,7 +19,13 @@ function icon(name: IconName) {
 }
 
 export default function TabsLayout() {
-  const roles = useRoles();
+  const { state, roles } = useSession();
+
+  // Deep links and restored tab state can bypass the entry route. Keep the
+  // content-creation shell behind the same profile/terms gate as `/` and join.
+  if (state.status === "signed-in" && (state.needsOnboarding || state.needsTermsAcceptance)) {
+    return <Redirect href="/onboarding" />;
+  }
 
   // The Host tab is conditional, not merely disabled: a guest should never see that
   // host tools exist. `href: null` removes the button while leaving `/host` reachable

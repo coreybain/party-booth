@@ -12,6 +12,7 @@
 
 export * from "./accounts";
 export * from "./analytics";
+export * from "./avatar";
 export * from "./capture";
 export * from "./codes";
 export * from "./copy";

@@ -25,13 +25,24 @@ const fake = vi.hoisted(() => ({
   session: {} as Record<string, unknown>,
   enableNotifications: vi.fn(),
   permission: "granted" as string,
+  emails: [] as unknown[],
+  requestVerification: vi.fn(),
+  confirmVerification: vi.fn(),
 }));
 
 vi.mock("convex/react", () => ({
-  useQuery: (reference: { name: string }) =>
-    reference.name === "preferences" ? fake.preferences : undefined,
-  useMutation: (reference: { name: string }) =>
-    reference.name === "updatePreferences" ? fake.updatePreferences : vi.fn(),
+  useQuery: (reference: { name: string }) => {
+    if (reference.name === "preferences") return fake.preferences;
+    if (reference.name === "myEmails") return fake.emails;
+    return undefined;
+  },
+  useAction: (reference: { name: string }) =>
+    reference.name === "requestVerification" ? fake.requestVerification : vi.fn(),
+  useMutation: (reference: { name: string }) => {
+    if (reference.name === "updatePreferences") return fake.updatePreferences;
+    if (reference.name === "confirmVerification") return fake.confirmVerification;
+    return vi.fn();
+  },
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -40,6 +51,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...original,
     api: {
       users: { requestAccountDeletion: { name: "requestAccountDeletion" } },
+      emails: {
+        myEmails: { name: "myEmails" },
+        requestVerification: { name: "requestVerification" },
+        confirmVerification: { name: "confirmVerification" },
+      },
       blocks: { unblock: { name: "unblock" }, myBlocks: { name: "myBlocks" } },
       push: {
         preferences: { name: "preferences" },
@@ -112,6 +128,13 @@ beforeEach(() => {
   fake.session = aSession([{ role: "guest" }]);
   fake.updatePreferences.mockReset().mockResolvedValue({ optOut: [], pendingThreshold: 5 });
   fake.enableNotifications.mockReset();
+  fake.emails = [];
+  fake.requestVerification.mockReset().mockResolvedValue(null);
+  fake.confirmVerification.mockReset().mockResolvedValue({
+    ok: true,
+    organiserUnlocked: false,
+    cohostEventIds: [],
+  });
 });
 
 describe("notification categories", () => {

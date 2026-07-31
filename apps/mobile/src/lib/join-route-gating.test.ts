@@ -60,6 +60,7 @@ describe.each(Object.entries(ROUTES))("%s", (name, relative) => {
     // PLAN.md: "Apple or Google sign-in, **then** name + photo confirmation". A guest
     // who joins before that lands in the host's moderation queue as "j.smith82".
     expect(source).toContain("needsOnboarding");
+    expect(source).toContain("needsTermsAcceptance");
     expect(source).toContain('href="/onboarding"');
     // …and the invite is parked, so the detour does not lose the party.
     expect(source).toContain("rememberPendingInvite");

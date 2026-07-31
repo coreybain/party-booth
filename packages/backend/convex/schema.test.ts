@@ -94,6 +94,9 @@ describe("tables", () => {
         // The short-lived single-use capability a guest exchanges for the right
         // to put one exact file in storage. Its secret is stored hashed.
         "uploadGrants",
+        // Same security boundary for a profile photo, scoped to an account
+        // rather than to an event capture.
+        "avatarUploadGrants",
         // The per-account grant counter. Separate from `joinAttempts` because
         // it throttles successes, not failures — see the schema comment.
         "uploadAttempts",
@@ -120,6 +123,9 @@ describe("tables", () => {
         // The invite-rotation budget. Counts successes, per event: a held-down
         // rotate button writes one audit row per guest it removes.
         "rotationAttempts",
+        // Durable keys for avatar/orphan deletes that have no retained media
+        // row to surface a bounded provider failure.
+        "storagePurgeJobs",
       ].sort(),
     );
   });
@@ -146,6 +152,8 @@ describe("enums come from @partybooth/contracts", () => {
     ["uploadGrants", "status", GRANT_STATUSES],
     ["uploadGrants", "mediaType", MEDIA_TYPES],
     ["uploadGrants", "storageRegion", STORAGE_REGIONS],
+    ["avatarUploadGrants", "status", GRANT_STATUSES],
+    ["avatarUploadGrants", "storageRegion", STORAGE_REGIONS],
     ["auditEvents", "action", AUDIT_ACTION_NAMES],
   ])("%s.%s matches the contract", (table, field, expected) => {
     expect(unionValues(table, field)).toEqual([...expected]);
@@ -202,10 +210,12 @@ describe("indexes", () => {
         "by_status_and_expiresAt",
       ],
     ],
+    ["avatarUploadGrants", ["by_secretHash", "by_user_and_status", "by_user_and_issuedAt"]],
     ["uploadAttempts", ["by_key"]],
     ["moderationDecisions", ["by_media", "by_event"]],
     ["pushDevices", ["by_user", "by_token"]],
     ["deletionJobs", ["by_state", "by_subject"]],
+    ["storagePurgeJobs", ["by_state"]],
     ["auditEvents", ["by_action", "by_actor", "by_event", "by_subject"]],
     ["joinAttempts", ["by_key"]],
     ["cohostInvitations", ["by_email", "by_event", "by_event_and_email", "by_email_and_status"]],
@@ -230,13 +240,16 @@ describe("indexes", () => {
     expect(index?.fields).toEqual(["eventId", "captureId"]);
   });
 
-  it("can find a grant by the hash of the secret its holder presents", () => {
-    // By hash, and only by hash: the plaintext never reaches a query, so a leak
-    // of `uploadGrants` is not a leak of usable capabilities.
-    const index = indexesOf("uploadGrants").find((i) => i.indexDescriptor === "by_secretHash");
-    expect(index?.fields).toEqual(["secretHash"]);
-    expect(Object.keys(tables["uploadGrants"]?.validator.fields ?? {})).not.toContain("secret");
-  });
+  it.each(["uploadGrants", "avatarUploadGrants"])(
+    "can find a %s row by the hash of the secret its holder presents",
+    (table) => {
+      // By hash, and only by hash: the plaintext never reaches a query, so a leak
+      // of a grant table is not a leak of usable capabilities.
+      const index = indexesOf(table).find((i) => i.indexDescriptor === "by_secretHash");
+      expect(index?.fields).toEqual(["secretHash"]);
+      expect(Object.keys(tables[table]?.validator.fields ?? {})).not.toContain("secret");
+    },
+  );
 
   it("names every index by_<fields>", () => {
     for (const table of Object.keys(schema.tables)) {

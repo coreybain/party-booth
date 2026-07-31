@@ -89,7 +89,7 @@ import {
   type CaptureSettings,
 } from "./settings";
 import { createUploadThingTransport } from "./transport-uploadthing";
-import { isUploadCancelled, type UploadTransport } from "./transport";
+import { isUploadCancelled, isUploadCompletionError, type UploadTransport } from "./transport";
 import { EMPTY_QUEUE, type CaptureDraft, type QueueDerivative, type QueueItem } from "./types";
 
 import type { MediaFileRole, MediaSource, MediaType } from "@partybooth/contracts/media";
@@ -111,6 +111,21 @@ const PERSIST_DEBOUNCE_MS = 400;
  */
 const FORGET_POLICY = { uploadedKeepMs: 5 * 60_000, cancelledKeepMs: 5_000 } as const;
 
+/**
+ * Default scope for low-level provider tests and embedders that predate account
+ * scoping. Production providers always pass an explicit user id (or `null`).
+ */
+const DEFAULT_QUEUE_OWNER = "__partybooth_local_queue__";
+
+/** Only rows owned by the currently authenticated account may be visible or run. */
+export function queueItemsForOwner(
+  items: readonly QueueItem[],
+  ownerUserId: string | null,
+): QueueItem[] {
+  if (ownerUserId === null) return [];
+  return items.filter((item) => item.ownerUserId === ownerUserId);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Context                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -122,6 +137,8 @@ export interface UploadQueueValue {
   readonly hydrated: boolean;
   /** True when the app has no backend and nothing can be sent. */
   readonly offline: boolean;
+  /** Account that owns captures admitted at this instant. */
+  readonly ownerUserId: string | null;
 
   readonly settings: CaptureSettings;
   readonly setAutoSend: (mediaType: MediaType, enabled: boolean) => void;
@@ -129,6 +146,11 @@ export interface UploadQueueValue {
 
   /** Admit a finished derivative into the queue. Returns the row it created. */
   readonly enqueue: (draft: CaptureDraft) => QueueItem;
+  /**
+   * Admit only if the account captured before preparation still owns the queue.
+   * Returns null after sign-out or an A -> B switch.
+   */
+  readonly enqueueForOwner: (draft: CaptureDraft, expectedOwnerUserId: string) => QueueItem | null;
   /** Skip the rest of the undo window, or send something auto-send held back. */
   readonly sendNow: (captureId: string) => void;
   /** Inside the undo window. Deletes the files. */
@@ -227,10 +249,16 @@ export interface UploadBackend {
 export function UploadQueueProvider({
   backend,
   transport,
+  ownerUserId = DEFAULT_QUEUE_OWNER,
+  enabled = true,
   children,
 }: {
   readonly backend: UploadBackend | null;
   readonly transport: UploadTransport | null;
+  /** Better Auth user id whose captures this provider may expose and send. */
+  readonly ownerUserId?: string | null;
+  /** False until Convex has restored authentication for that account. */
+  readonly enabled?: boolean;
   readonly children: ReactNode;
 }) {
   const [state, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
@@ -267,6 +295,51 @@ export function UploadQueueProvider({
   /** The one capture currently being attempted. Concurrency is deliberately 1. */
   const runningRef = useRef<string | null>(null);
   const abortsRef = useRef(new Map<string, AbortController>());
+  const ownerUserIdRef = useRef<string | null>(ownerUserId);
+  const enabledRef = useRef(enabled);
+  /**
+   * Set when Convex says the session is no longer valid before its auth hook has
+   * caught up. It prevents a tight unauthenticated retry loop; a false -> true
+   * auth transition clears it.
+   */
+  const authPausedOwnerRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const previousOwner = ownerUserIdRef.current;
+    const wasEnabled = enabledRef.current;
+    const ownerChanged = previousOwner !== ownerUserId;
+
+    ownerUserIdRef.current = ownerUserId;
+    enabledRef.current = enabled;
+
+    if (ownerChanged || (!wasEnabled && enabled)) authPausedOwnerRef.current = null;
+
+    // A request that began under A must not continue after sign-out or after B
+    // becomes active. Aborting unwinds the transport, while `resume` restores
+    // both original and derivative states to something A can retry later.
+    if (ownerChanged || !enabled) {
+      for (const controller of abortsRef.current.values()) controller.abort();
+      abortsRef.current.clear();
+      dispatch({ type: "resume", now: Date.now() });
+      setClock((value) => value + 1);
+    }
+  }, [enabled, ownerUserId]);
+
+  const mayRunFor = useCallback((item: QueueItem): boolean => {
+    const owner = ownerUserIdRef.current;
+    return (
+      enabledRef.current &&
+      owner !== null &&
+      authPausedOwnerRef.current !== owner &&
+      item.ownerUserId === owner
+    );
+  }, []);
+
+  const pauseForAuthentication = useCallback((item: QueueItem) => {
+    authPausedOwnerRef.current = item.ownerUserId ?? null;
+    dispatch({ type: "resume", now: Date.now() });
+    setClock((value) => value + 1);
+  }, []);
 
   /* ---------------------------------------------------------------- */
   /* Hydration                                                        */
@@ -346,7 +419,7 @@ export function UploadQueueProvider({
    */
   const attemptDerivative = useCallback(
     async (item: QueueItem, derivative: QueueDerivative): Promise<void> => {
-      if (backend === null || transport === null) return;
+      if (backend === null || transport === null || !mayRunFor(item)) return;
 
       dispatch({
         type: "derivativeStarted",
@@ -354,6 +427,12 @@ export function UploadQueueProvider({
         role: derivative.role,
         now: Date.now(),
       });
+
+      // Derivatives have no user-facing cancel button, but authentication and
+      // account switches still have to stop their network request. The same
+      // controller map serves both kinds of upload.
+      const controller = new AbortController();
+      abortsRef.current.set(item.captureId, controller);
 
       try {
         const answer = await backend.requestGrant({
@@ -375,7 +454,26 @@ export function UploadQueueProvider({
             : { durationSeconds: derivative.durationSeconds }),
         });
 
+        if (!mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
+
         const parsed = parseGrantResult(answer);
+        if (parsed.outcome === "alreadyUploaded") {
+          // This outcome is reserved for an original. Treating it as proof that
+          // a preview/poster landed would make the queue forget bytes the
+          // server never claimed to have, so fail this impossible response
+          // closed and leave the original reconciliation semantics isolated.
+          dispatch({
+            type: "derivativeFailed",
+            captureId: item.captureId,
+            role: derivative.role,
+            permanent: true,
+            now: Date.now(),
+          });
+          return;
+        }
         if (parsed.outcome !== "granted") {
           const permanent =
             parsed.outcome === "rejected" ? isPermanentRejection(parsed.reason) : false;
@@ -415,7 +513,13 @@ export function UploadQueueProvider({
             height: derivative.height,
             durationSeconds: derivative.durationSeconds,
           }),
+          signal: controller.signal,
         });
+
+        if (!mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
 
         dispatch({
           type: "derivativeSucceeded",
@@ -424,27 +528,47 @@ export function UploadQueueProvider({
           now: Date.now(),
         });
       } catch (error) {
+        if (isUploadCancelled(error) || !mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
+        if (isUploadCompletionError(error)) {
+          dispatch({
+            type: "derivativeFailed",
+            captureId: item.captureId,
+            role: derivative.role,
+            permanent: error.permanent,
+            now: Date.now(),
+          });
+          return;
+        }
         // Not reported to Sentry at `error` level and not shown to the guest: a
         // thumbnail that did not upload is not an incident, and there is nothing
         // for them to do about it. The breadcrumb is enough to notice a pattern.
         captureHandledError(error, { scope: "upload.derivative", role: derivative.role });
         const copy = describeError(error);
+        if (copy.recovery === "signIn") {
+          pauseForAuthentication(item);
+          return;
+        }
         dispatch({
           type: "derivativeFailed",
           captureId: item.captureId,
           role: derivative.role,
-          permanent: copy.recovery === "none" || copy.recovery === "signIn",
+          permanent: copy.recovery === "none",
           ...(copy.retryAfterMs === undefined ? {} : { retryAfterMs: copy.retryAfterMs }),
           now: Date.now(),
         });
+      } finally {
+        abortsRef.current.delete(item.captureId);
       }
     },
-    [backend, transport],
+    [backend, mayRunFor, pauseForAuthentication, transport],
   );
 
   const attempt = useCallback(
     async (item: QueueItem): Promise<void> => {
-      if (backend === null || transport === null) return;
+      if (backend === null || transport === null || !mayRunFor(item)) return;
 
       dispatch({ type: "uploadStarted", captureId: item.captureId, now: Date.now() });
 
@@ -471,10 +595,29 @@ export function UploadQueueProvider({
           ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds }),
         });
 
-        // Fails closed: an answer that is not one of the three documented
+        if (!mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
+
+        // Fails closed: an answer that is not one of the four documented
         // outcomes throws into the catch below and is treated as a retryable
         // failure, rather than being read as a grant it is not.
         const outcome = readGrantResult(parseGrantResult(answer));
+        if (outcome.kind === "alreadyUploaded") {
+          // UploadThing's completion callback won the race with the client
+          // response on an earlier attempt. The authenticated backend has
+          // proved this exact file is already settled, so finish the durable
+          // row without sending bytes or confirming a grant that no longer
+          // exists.
+          dispatch({
+            type: "uploadSucceeded",
+            captureId: item.captureId,
+            mediaId: outcome.mediaId,
+            now: Date.now(),
+          });
+          return;
+        }
         if (outcome.kind === "failed") {
           dispatch({
             type: "uploadFailed",
@@ -531,10 +674,19 @@ export function UploadQueueProvider({
           },
         });
 
+        if (!mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
+
         // The client half of the two-sided completion (ADR 0004 §3). It creates
         // the media row if the provider's callback has not arrived yet, which is
         // what lets the spinner stop without waiting on a US-East↔pdx1 hop.
         const confirmation = await backend.confirmUpload(outcome.grant.secret);
+        if (!mayRunFor(item)) {
+          dispatch({ type: "resume", now: Date.now() });
+          return;
+        }
         dispatch({
           type: "uploadSucceeded",
           captureId: item.captureId,
@@ -542,13 +694,26 @@ export function UploadQueueProvider({
           now: Date.now(),
         });
       } catch (error) {
-        if (isUploadCancelled(error)) {
+        if (isUploadCancelled(error) || !mayRunFor(item)) {
           // The guest pressed cancel. The reducer has already moved the row;
           // this is just the request unwinding, and it is not a failure.
           return;
         }
+        if (isUploadCompletionError(error)) {
+          dispatch({
+            type: "uploadFailed",
+            captureId: item.captureId,
+            failure: { message: error.message, permanent: error.permanent },
+            now: Date.now(),
+          });
+          return;
+        }
         captureHandledError(error, { scope: "upload.attempt" });
         const copy = describeError(error);
+        if (copy.recovery === "signIn") {
+          pauseForAuthentication(item);
+          return;
+        }
         dispatch({
           type: "uploadFailed",
           captureId: item.captureId,
@@ -556,7 +721,7 @@ export function UploadQueueProvider({
             message: copy.message,
             // "Not allowed", "not found", "account locked" and "sign in again"
             // are not fixed by a timer. Everything else is worth another go.
-            permanent: copy.recovery === "none" || copy.recovery === "signIn",
+            permanent: copy.recovery === "none",
           },
           retryAfterMs: copy.retryAfterMs,
           now: Date.now(),
@@ -565,7 +730,7 @@ export function UploadQueueProvider({
         abortsRef.current.delete(item.captureId);
       }
     },
-    [backend, transport],
+    [backend, mayRunFor, pauseForAuthentication, transport],
   );
 
   /* ---------------------------------------------------------------- */
@@ -577,7 +742,10 @@ export function UploadQueueProvider({
     if (backend === null || transport === null) return;
     if (!stateRef.current.hydrated) return;
 
-    const task = nextTask(stateRef.current.items, Date.now());
+    const owner = ownerUserIdRef.current;
+    if (!enabledRef.current || owner === null || authPausedOwnerRef.current === owner) return;
+
+    const task = nextTask(queueItemsForOwner(stateRef.current.items, owner), Date.now());
     if (task === undefined) return;
 
     // Concurrency stays 1 across *both* kinds of work, so a derivative can never
@@ -602,19 +770,21 @@ export function UploadQueueProvider({
   useEffect(() => {
     if (!state.hydrated) return;
     const now = Date.now();
+    const scopedItems = queueItemsForOwner(state.items, ownerUserId);
 
     // Close any undo window that has elapsed first; the resulting state change
     // brings this effect straight back with something runnable.
     if (
-      state.items.some((item) => item.state === "captured" && item.autoSend && now >= item.sendAt)
+      scopedItems.some((item) => item.state === "captured" && item.autoSend && now >= item.sendAt)
     ) {
       dispatch({ type: "tick", now });
       return;
     }
 
+    if (!enabled) return;
     void pump();
 
-    const wakeAt = nextWakeUpAt(state.items, now);
+    const wakeAt = nextWakeUpAt(scopedItems, now);
     if (wakeAt === null) return;
     // A floor keeps a zero-length undo delay from spinning the effect; a ceiling
     // keeps a long backoff from relying on a timer the OS may not honour after a
@@ -622,7 +792,7 @@ export function UploadQueueProvider({
     const delay = Math.min(Math.max(wakeAt - now, 50), 30_000);
     const timer = setTimeout(() => setClock((value) => value + 1), delay);
     return () => clearTimeout(timer);
-  }, [state, clock, pump]);
+  }, [state, clock, enabled, ownerUserId, pump]);
 
   /* ---------------------------------------------------------------- */
   /* Foreground resume                                                */
@@ -654,15 +824,16 @@ export function UploadQueueProvider({
   const reportedRef = useRef<ReadonlySet<string>>(new Set<string>());
 
   useEffect(() => {
-    if (!state.hydrated) return;
+    if (!state.hydrated || !enabled || ownerUserId === null) return;
     const report = backend?.reportQueueEvent;
     if (report === undefined) return;
 
-    const due = queueReportsFor(state.items, reportedRef.current);
+    const ownedItems = queueItemsForOwner(state.items, ownerUserId);
+    const due = queueReportsFor(ownedItems, reportedRef.current);
     // Applied before the awaits, not after. Two commits can land while a report
     // is in flight, and a set updated on completion would send the same "your
     // upload didn't send" three times.
-    reportedRef.current = nextReportedSet(reportedRef.current, due, state.items);
+    reportedRef.current = nextReportedSet(reportedRef.current, due, ownedItems);
     if (due.length === 0) return;
 
     void (async () => {
@@ -676,7 +847,7 @@ export function UploadQueueProvider({
         }
       }
     })();
-  }, [backend, state.hydrated, state.items]);
+  }, [backend, enabled, ownerUserId, state.hydrated, state.items]);
 
   /* ---------------------------------------------------------------- */
   /* Sweeping terminal rows                                           */
@@ -712,11 +883,20 @@ export function UploadQueueProvider({
         undoDelayMs: settingsRef.current.undoDelayMs,
       },
       Date.now(),
+      ownerUserIdRef.current ?? undefined,
     );
     dispatch({ type: "enqueue", item });
     setClock((value) => value + 1);
     return item;
   }, []);
+
+  const enqueueForOwner = useCallback(
+    (draft: CaptureDraft, expectedOwnerUserId: string): QueueItem | null => {
+      if (ownerUserIdRef.current !== expectedOwnerUserId) return null;
+      return enqueue(draft);
+    },
+    [enqueue],
+  );
 
   const sendNow = useCallback((captureId: string) => {
     dispatch({ type: "send", captureId, now: Date.now() });
@@ -754,38 +934,42 @@ export function UploadQueueProvider({
   /* Assembled value                                                  */
   /* ---------------------------------------------------------------- */
 
-  const value = useMemo<UploadQueueValue>(
-    () => ({
-      items: state.items,
+  const value = useMemo<UploadQueueValue>(() => {
+    const ownedItems = queueItemsForOwner(state.items, ownerUserId);
+    return {
+      items: ownedItems,
       hydrated: state.hydrated,
       offline: backend === null || transport === null,
+      ownerUserId,
       settings,
       setAutoSend,
       setUndoDelay,
       enqueue,
+      enqueueForOwner,
       sendNow,
       undo,
       cancel,
       retry,
-      itemsFor: (eventId) => itemsForEvent(state.items, eventId),
-      undoableFor: (eventId) => undoableItem(state.items, eventId),
-      pendingFor: (eventId) => pendingCountForEvent(state.items, eventId),
-    }),
-    [
-      state.items,
-      state.hydrated,
-      backend,
-      transport,
-      settings,
-      setAutoSend,
-      setUndoDelay,
-      enqueue,
-      sendNow,
-      undo,
-      cancel,
-      retry,
-    ],
-  );
+      itemsFor: (eventId) => itemsForEvent(ownedItems, eventId),
+      undoableFor: (eventId) => undoableItem(ownedItems, eventId),
+      pendingFor: (eventId) => pendingCountForEvent(ownedItems, eventId),
+    };
+  }, [
+    state.items,
+    state.hydrated,
+    backend,
+    transport,
+    ownerUserId,
+    settings,
+    setAutoSend,
+    setUndoDelay,
+    enqueue,
+    enqueueForOwner,
+    sendNow,
+    undo,
+    cancel,
+    retry,
+  ]);
 
   return <UploadQueueContext.Provider value={value}>{children}</UploadQueueContext.Provider>;
 }
@@ -803,9 +987,15 @@ export function UploadQueueProvider({
  */
 export function ConnectedUploadQueue({
   siteUrl,
+  authHeaders,
+  ownerUserId,
+  enabled,
   children,
 }: {
   readonly siteUrl: string;
+  readonly authHeaders: () => HeadersInit | Promise<HeadersInit>;
+  readonly ownerUserId: string | null;
+  readonly enabled: boolean;
   readonly children: ReactNode;
 }) {
   const requestUploadGrant = useMutation(api.media.requestUploadGrant);
@@ -831,10 +1021,18 @@ export function ConnectedUploadQueue({
     [requestUploadGrant, confirmUpload, reportUploadQueue],
   );
 
-  const transport = useMemo(() => createUploadThingTransport({ siteUrl }), [siteUrl]);
+  const transport = useMemo(
+    () => createUploadThingTransport({ siteUrl, authHeaders }),
+    [authHeaders, siteUrl],
+  );
 
   return (
-    <UploadQueueProvider backend={backend} transport={transport}>
+    <UploadQueueProvider
+      backend={backend}
+      transport={transport}
+      ownerUserId={ownerUserId}
+      enabled={enabled}
+    >
       {children}
     </UploadQueueProvider>
   );
@@ -843,7 +1041,12 @@ export function ConnectedUploadQueue({
 /** The provider with nothing attached — captures are kept, never sent. */
 export function OfflineUploadQueue({ children }: { readonly children: ReactNode }) {
   return (
-    <UploadQueueProvider backend={null} transport={null}>
+    <UploadQueueProvider
+      backend={null}
+      transport={null}
+      ownerUserId={DEFAULT_QUEUE_OWNER}
+      enabled={false}
+    >
       {children}
     </UploadQueueProvider>
   );

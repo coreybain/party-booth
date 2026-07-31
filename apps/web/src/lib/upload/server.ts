@@ -33,6 +33,7 @@ import "server-only";
 import { envOptional, serverEnv, serverFeatures } from "@partybooth/env/server";
 import { ConvexHttpClient } from "convex/browser";
 
+import type { AvatarUploadCompletionResult } from "@/lib/contracts";
 import { backendApi, type UploadCompletionResult } from "@/lib/convex-api";
 
 /* -------------------------------------------------------------------------- */
@@ -137,6 +138,15 @@ export interface CompletedUploadFacts {
   readonly durationSeconds?: number;
 }
 
+export interface CompletedAvatarUploadFacts {
+  readonly secret: string;
+  /** Provider file key. Server-only, and accepted by no client mutation. */
+  readonly fileKey: string;
+  readonly byteSize: number;
+  readonly mimeType: string;
+  readonly checksum: string;
+}
+
 export class UploadNotConfiguredError extends Error {
   override readonly name = "UploadNotConfiguredError";
   constructor(readonly missing: readonly string[]) {
@@ -183,5 +193,26 @@ export async function registerCompletedUpload(
     ...(facts.width === undefined ? {} : { width: facts.width }),
     ...(facts.height === undefined ? {} : { height: facts.height }),
     ...(facts.durationSeconds === undefined ? {} : { durationSeconds: facts.durationSeconds }),
+  });
+}
+
+/** Attach a private avatar object through the same authenticated callback seam. */
+export async function registerCompletedAvatarUpload(
+  facts: CompletedAvatarUploadFacts,
+): Promise<AvatarUploadCompletionResult> {
+  const callbackSecret = envOptional(serverEnv, "UPLOAD_CALLBACK_SECRET");
+  const client = convexClient();
+
+  if (callbackSecret === undefined || client === undefined) {
+    throw new UploadNotConfiguredError(uploadServerStatus().missing);
+  }
+
+  return await client.mutation(backendApi.avatars.completeUpload, {
+    callbackSecret,
+    secret: facts.secret,
+    fileKey: facts.fileKey,
+    byteSize: facts.byteSize,
+    mimeType: facts.mimeType,
+    checksum: facts.checksum,
   });
 }

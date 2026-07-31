@@ -24,6 +24,9 @@
     "vitest": "^4.1.10",
     "zod": "^4.4.3"
   },
+  "overrides": {
+    "expo-constants": "57.0.8"
+  },
   "trustedDependencies": [
     "@sentry/cli",
     "@swc/core",
@@ -64,5 +67,8 @@
     "turbo": "^2.10.7",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "patchedDependencies": {
+    "expo-modules-jsi@57.0.4": "patches/expo-modules-jsi@57.0.4.patch"
   }
 }

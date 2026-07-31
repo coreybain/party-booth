@@ -127,10 +127,10 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
 
     async deleteFiles(keys) {
       if (!configured) throw new StorageNotConfiguredError(region);
-      if (keys.length === 0) return { deleted: 0 };
+      if (keys.length === 0) return { success: true, deleted: 0 };
       const client = await utapi(token);
       const result = await client.deleteFiles([...keys]);
-      return { deleted: result.deletedCount };
+      return { success: result.success, deleted: result.deletedCount };
     },
 
     describe() {

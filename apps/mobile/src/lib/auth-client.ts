@@ -15,10 +15,13 @@
 
 import { expoClient } from "@better-auth/expo/client";
 import { convexClient } from "@convex-dev/better-auth/client/plugins";
+import { emailOTPClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import * as SecureStore from "expo-secure-store";
 
 import type { BetterAuthClientPlugin } from "better-auth/client";
+
+import { createAppleNonce } from "./apple-nonce";
 
 /**
  * Upstream type-variance workaround — remove when Better Auth fixes it.
@@ -57,11 +60,29 @@ function createPartyBoothAuthClient(baseURL: string, scheme: string) {
         storage: SecureStore,
       }),
       convexClient(),
+      // App Review receives a fixed code for one deployment-scoped demo address,
+      // but it still travels through Better Auth's normal email-OTP endpoints.
+      emailOTPClient(),
     ],
   });
 }
 
 export type AuthClient = ReturnType<typeof createPartyBoothAuthClient>;
+
+/**
+ * The Expo plugin installs this action at runtime, but the narrow variance shim
+ * above intentionally erases its inferred action surface. Keep the cast in one
+ * place instead of teaching upload callers about that upstream type mismatch.
+ */
+type ExpoCookieClient = {
+  readonly getCookie: () => string;
+};
+
+/** Build the first-party Cookie header native requests must forward explicitly. */
+export function authCookieHeaders(client: AuthClient): HeadersInit {
+  const cookie = (client as unknown as ExpoCookieClient).getCookie();
+  return cookie.length === 0 ? {} : { cookie };
+}
 
 let cached: { readonly key: string; readonly client: AuthClient } | undefined;
 
@@ -142,10 +163,10 @@ export function signInWithGoogle(client: AuthClient, callbackPath: string): Prom
  * `APPLE_APP_BUNDLE_IDENTIFIER` in .env.example) or the identity token fails JWT
  * validation — native sign-in is audienced to the bundle id, not the Services ID.
  *
- * TODO(Sprint 2): pass a `nonce`. It is optional here on purpose — Apple compares the
- * SHA-256 of the value it was given, and getting the "who hashes it" contract wrong
- * between expo-apple-authentication and Better Auth silently breaks sign-in. Wire it
- * deliberately, with a device test, rather than guessing in a scaffold.
+ * `expo-apple-authentication` passes its `nonce` to Apple's native request unchanged,
+ * so it receives the SHA-256 digest. Better Auth's Apple provider accepts the raw
+ * value in `idToken.nonce` and compares either it or SHA-256(raw) with the JWT claim.
+ * That raw/digest split is generated together in `createAppleNonce`.
  */
 export async function signInWithApple(
   client: AuthClient,
@@ -158,11 +179,13 @@ export async function signInWithApple(
   if (!available) return signInWithBrowser(client, "apple", callbackPath);
 
   try {
+    const nonce = await createAppleNonce();
     const credential = await AppleAuthentication.signInAsync({
       requestedScopes: [
         AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
         AppleAuthentication.AppleAuthenticationScope.EMAIL,
       ],
+      nonce: nonce.sha256,
     });
 
     if (!credential.identityToken) {
@@ -171,7 +194,7 @@ export async function signInWithApple(
 
     const { error } = await client.signIn.social({
       provider: "apple",
-      idToken: { token: credential.identityToken },
+      idToken: { token: credential.identityToken, nonce: nonce.raw },
     });
     if (error) return { status: "error", message: error.message ?? toMessage(error) };
     return { status: "signed-in" };

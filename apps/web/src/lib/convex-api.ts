@@ -22,6 +22,7 @@ import { backendApi } from "@partybooth/backend/client-api";
 export {
   backendApi,
   type AccountDeletionResult,
+  type AvatarUploadRequestArgs,
   type BackendApi,
   type BlockedAccount,
   type CreateEventResult,

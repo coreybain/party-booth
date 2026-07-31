@@ -3,6 +3,7 @@ import { AUDIT_ACTIONS } from "@partybooth/contracts";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { writeAuditEvent } from "./audit";
+import { expireAvatarGrantsForAccount } from "./avatar_grants";
 import { expireGrantsForAccount } from "./upload_grants";
 
 /**
@@ -98,6 +99,7 @@ export async function scheduleAccountDeletion(
    * points get it: the console and `users.requestAccountDeletion`.
    */
   const expiredGrants = await expireGrantsForAccount(ctx, user._id, now);
+  const expiredAvatarGrants = await expireAvatarGrantsForAccount(ctx, user._id, now);
 
   const jobId =
     existingJob?._id ??
@@ -123,7 +125,12 @@ export async function scheduleAccountDeletion(
     // `account.deletion_scheduled` is on AUDIT_ACTIONS_REQUIRING_REASON, so a
     // blank reason would throw. Self-service deletion has an implicit one.
     reason: options.reason ?? "Requested by the account holder.",
-    metadata: { scheduledAt, previousState: user.accountState, expiredGrants },
+    metadata: {
+      scheduledAt,
+      previousState: user.accountState,
+      expiredGrants,
+      expiredAvatarGrants,
+    },
     now,
   });
 

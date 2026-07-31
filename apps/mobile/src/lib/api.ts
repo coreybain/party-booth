@@ -26,6 +26,7 @@ export type {
   BackendApi as MobileApi,
   CurrentInvite,
   CurrentUser,
+  ConfirmEmailVerificationResult,
   EventCounts,
   EventId,
   EventSummary,
@@ -41,5 +42,7 @@ export type {
   RefreshRolesResult,
   RotateInviteResult,
   UpdateProfileResult,
+  UserEmail,
+  UserEmailStatus,
   UserId,
 } from "@partybooth/backend/client-api";

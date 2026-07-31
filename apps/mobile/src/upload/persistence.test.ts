@@ -53,12 +53,20 @@ function item(overrides: Partial<CaptureDraft> = {}): QueueItem {
 describe("a restart", () => {
   it("brings back everything that mattered", () => {
     const store = createMemoryStore();
-    const original = item();
+    const original: QueueItem = { ...item(), ownerUserId: "user_a" };
 
     store.write(QUEUE_FILE, serialiseQueue([original]));
     const restored = parseQueue(store.read(QUEUE_FILE));
 
     expect(restored).toEqual([original]);
+  });
+
+  it("keeps account ownership and treats a pre-ownership row as legacy", () => {
+    const owned: QueueItem = { ...item(), ownerUserId: "user_a" };
+    expect(parseQueue(serialiseQueue([owned]))[0]?.ownerUserId).toBe("user_a");
+
+    const { ownerUserId: _ownerUserId, ...legacy } = owned;
+    expect(parseQueueItem(legacy)?.ownerUserId).toBeUndefined();
   });
 
   it("re-queues a capture the previous process left uploading", () => {

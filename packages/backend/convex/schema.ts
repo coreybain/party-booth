@@ -62,11 +62,14 @@ export default defineSchema({
     email: v.string(),
     emailVerified: v.boolean(),
     displayName: v.string(),
-    /** UploadThing key for the confirmed avatar. */
+    /** Server-confirmed UploadThing key. Never accepted from a client mutation. */
     avatarKey: v.optional(v.string()),
+    /** The adapter region the avatar key belongs to. */
+    avatarStorageRegion: v.optional(storageRegion),
     /**
-     * When this human confirmed their own name (and photo) — PLAN.md's "then
-     * name + photo confirmation".
+     * When this human confirmed their own name — the required half of PLAN.md's
+     * "then name + photo confirmation" screen. A photo can upload separately
+     * through `avatarUploadGrants` and is deliberately not an onboarding gate.
      *
      * It exists because `displayName` cannot answer the question: it is never
      * empty (it falls back to the local part of the address), so "Sam chose
@@ -453,6 +456,35 @@ export default defineSchema({
   /* ------------------------------------------------------------------ */
 
   /**
+   * Short-lived, single-use permission to upload one exact avatar image.
+   *
+   * Separate from event media grants because an avatar belongs to an account,
+   * not an event or capture. The same security properties still apply: the
+   * secret is stored only as a hash, the file facts are bound at issue time,
+   * and consumption is one serialisable mutation.
+   */
+  avatarUploadGrants: defineTable({
+    userId: v.id("users"),
+    secretHash: v.string(),
+    status: uploadGrantStatus,
+    storageRegion,
+    byteSize: v.number(),
+    mimeType: v.string(),
+    checksum: v.string(),
+    issuedAt: v.number(),
+    expiresAt: v.number(),
+    /** Authenticated edge preflight reserved this grant before its TTL. */
+    startedAt: v.optional(v.number()),
+    consumedAt: v.optional(v.number()),
+    consumedFileKey: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_secretHash", ["secretHash"])
+    .index("by_user_and_status", ["userId", "status"])
+    .index("by_user_and_issuedAt", ["userId", "issuedAt"]),
+
+  /**
    * Short-lived, single-use permission to put one exact file into storage.
    *
    * A guest never holds an UploadThing credential. They ask for one of these,
@@ -518,6 +550,8 @@ export default defineSchema({
 
     issuedAt: v.number(),
     expiresAt: v.number(),
+    /** Authenticated edge preflight reserved this grant before its TTL. */
+    startedAt: v.optional(v.number()),
     consumedAt: v.optional(v.number()),
     /** Set on consumption, so a duplicate callback can recognise its own file. */
     consumedFileKey: v.optional(v.string()),
@@ -716,9 +750,10 @@ export default defineSchema({
      * When the bytes actually left storage, which is a later and less certain
      * event than the record being tombstoned. The mutation cannot call the
      * provider — a Convex mutation has no network — so withdrawal schedules the
-     * delete and this is stamped when it lands — **only on a full delete**, so
-     * a provider that removed fewer objects than it was handed leaves the keys
-     * on the row rather than orphaning the bytes they name.
+     * delete and this is stamped only after the provider explicitly confirms
+     * the idempotent operation. `deletedCount` is not that confirmation: a
+     * retry may remove zero new objects because the first call already removed
+     * them and only its response was lost.
      *
      * A row with `deletedAt` and no `storageDeletedAt` is one the purge worker
      * still owes work on, and `media.stuckPurges` is what lists them until that
@@ -988,6 +1023,35 @@ export default defineSchema({
     .index("by_state", ["state"])
     .index("by_subject", ["subjectType", "subjectId"])
     .index("by_state_and_scheduledAt", ["state", "scheduledAt"]),
+
+  /**
+   * Durable pointers for storage deletes that have no retained media row.
+   *
+   * Media deletion already keeps its keys on the tombstoned `media` row until
+   * the provider confirms deletion. Avatar replacement, account-avatar purge
+   * and rejected/orphan upload cleanup used to schedule the same action without
+   * a `mediaId`; after the bounded retry ladder failed, no row anywhere named
+   * the private object. These jobs are that missing durable owner. A stuck job
+   * deliberately retains its keys so an operator or later sweeper can retry.
+   */
+  storagePurgeJobs: defineTable({
+    region: storageRegion,
+    /** Retained while pending/stuck, cleared only after a full provider delete. */
+    keys: v.optional(v.array(v.string())),
+    source: v.union(
+      v.literal("avatarReplacement"),
+      v.literal("accountAvatar"),
+      v.literal("rejectedUpload"),
+    ),
+    state: v.union(v.literal("pending"), v.literal("completed"), v.literal("stuck")),
+    attempts: v.number(),
+    requested: v.number(),
+    deleted: v.number(),
+    lastError: v.optional(v.string()),
+    completedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_state", ["state"]),
 
   /**
    * Immutable audit log. **Insert only** — nothing in the codebase may patch or

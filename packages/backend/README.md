@@ -273,10 +273,12 @@ minutes), and then gives up with an audit row rather than in silence. The record
 keeps its keys and its missing `storageDeletedAt` throughout, so
 `media.stuckPurges` can list it and a retry has something to name.
 
-A delete that _succeeds_ but removes fewer objects than it was handed is treated
-the same way. `storageDeletedAt` is stamped and the keys cleared **only on a full
-delete**: clearing them on a short count destroys the only pointer to bytes that
-are still there.
+The adapter preserves the provider's explicit `success` acknowledgement instead
+of inferring success from `deletedCount`. An unconfirmed response takes the same
+bounded retry path as a thrown request. A confirmed retry may legitimately
+report zero newly deleted objects when the first attempt succeeded and its
+response was lost; that is the idempotent success case, so the row is stamped
+and its keys are cleared.
 
 ## Auth
 

@@ -14,6 +14,21 @@
 export { ROLES, type Role, type EventRole, isHostRole } from "@partybooth/contracts/roles";
 
 export {
+  AVATAR_MAX_BYTES,
+  AVATAR_MIME_TYPE,
+  AVATAR_UPLOAD_ROUTE_PATH,
+  AVATAR_UPLOAD_ROUTE_SLUG,
+  avatarUploadTicketSchema,
+  parseAvatarUploadCompletionResult,
+  buildAvatarUploadTicket,
+  checkAvatarTicketAgainstFiles,
+  checkAvatarTicketAgainstGrant,
+  type AvatarUploadCompletionResult,
+  type AvatarUploadTicket,
+  type IssuedAvatarUploadGrant,
+} from "@partybooth/contracts/avatar";
+
+export {
   displayUrl,
   EVENT_CODE_LENGTH,
   INVITE_TOKEN_LENGTH,
@@ -265,6 +280,7 @@ export {
   isIssuedGrant,
   isPermanentRejection,
   parseGrantResult,
+  parseUploadCallbackResult,
   TICKET_MISMATCH_MESSAGES,
   UPLOAD_COMPLETION_OUTCOMES,
   UPLOAD_REJECTION_MESSAGES,
@@ -273,10 +289,12 @@ export {
   UPLOAD_ROUTE_SLUG,
   UPLOAD_THROTTLED_MESSAGE,
   uploadTicketSchema,
+  uploadCallbackSucceeded,
   type GrantResult,
   type IssuedGrant,
   type OfferedFile,
   type UploadCompletionOutcome,
+  type UploadCallbackResult,
   type UploadRejectionReason,
   type UploadTicket,
 } from "@partybooth/contracts/upload";

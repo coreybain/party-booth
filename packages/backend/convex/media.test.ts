@@ -79,6 +79,11 @@ function completionArgs(secret: string, over: Record<string, unknown> = {}) {
   };
 }
 
+/** Reserve the provider upload as the authenticated guest before its callback. */
+async function preflight(f: Fixture, secret: string, subject = "guest") {
+  return await f.t.withIdentity({ subject }).mutation(api.media.confirmUpload, { secret });
+}
+
 beforeEach(() => {
   setCallbackSecret(CALLBACK_SECRET);
   useFakeStorage();
@@ -257,15 +262,159 @@ describe("media.requestUploadGrant", () => {
 
   /* ---- duplicates ---- */
 
-  it("refuses a second grant for a capture that already has a stored file", async () => {
+  it("reconciles the owner's exact capture after its completion response was lost", async () => {
     const f = await fixture();
     const { secret } = await grant(f);
-    await f.t.mutation(api.media.completeUpload, completionArgs(secret));
+    await preflight(f, secret);
+    const completed = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
+    expect(completed.outcome).toBe("registered");
+    if (completed.outcome !== "registered") throw new Error("unreachable");
 
     const again = await f.t
       .withIdentity({ subject: "guest" })
       .mutation(api.media.requestUploadGrant, grantArgs(f.eventId));
+    expect(again).toEqual({
+      outcome: "alreadyUploaded",
+      mediaId: completed.mediaId,
+      state: completed.state,
+    });
+  });
+
+  it.each(["pending", "approved", "declined"] as const)(
+    "reconciles an exact original already settled as %s",
+    async (state) => {
+      const f = await fixture();
+      const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+        captureId: CAPTURE,
+        state,
+        byteSize: 2048,
+      });
+
+      const again = await f.t
+        .withIdentity({ subject: "guest" })
+        .mutation(api.media.requestUploadGrant, grantArgs(f.eventId));
+      expect(again).toEqual({ outcome: "alreadyUploaded", mediaId, state });
+    },
+  );
+
+  it.each(["paused", "archived"] as const)(
+    "reconciles an exact settled upload after the event becomes %s",
+    async (state) => {
+      const f = await fixture();
+      const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+        captureId: CAPTURE,
+        state: "approved",
+        byteSize: 2048,
+      });
+      await f.t.run(async (ctx) => ctx.db.patch(f.eventId, { state }));
+
+      await expect(
+        f.t
+          .withIdentity({ subject: "guest" })
+          .mutation(api.media.requestUploadGrant, grantArgs(f.eventId)),
+      ).resolves.toEqual({ outcome: "alreadyUploaded", mediaId, state: "approved" });
+    },
+  );
+
+  it("reconciles a settled library import after imports are disabled", async () => {
+    const f = await fixture({ allowLibraryImport: false });
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "pending",
+      byteSize: 2048,
+      fromLibrary: true,
+    });
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, grantArgs(f.eventId, { mediaSource: "library" }));
+    expect(result).toEqual({ outcome: "alreadyUploaded", mediaId, state: "pending" });
+  });
+
+  it("reconciles a settled exact file after the current terms version changes", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "approved",
+      byteSize: 2048,
+    });
+    await f.t.run(async (ctx) =>
+      ctx.db.patch(f.guestId, { acceptedTermsVersion: "superseded-terms" }),
+    );
+
+    const result = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, grantArgs(f.eventId));
+    expect(result).toEqual({ outcome: "alreadyUploaded", mediaId, state: "approved" });
+  });
+
+  it("still requires an active account before reconciling an exact settled file", async () => {
+    const f = await fixture();
+    await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "approved",
+      byteSize: 2048,
+    });
+    await f.t.run(async (ctx) => ctx.db.patch(f.guestId, { accountState: "locked" }));
+
+    await expect(
+      f.t
+        .withIdentity({ subject: "guest" })
+        .mutation(api.media.requestUploadGrant, grantArgs(f.eventId)),
+    ).rejects.toThrow(/cannot upload/i);
+  });
+
+  it("still requires an active membership before reconciling a settled file", async () => {
+    const f = await fixture();
+    await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "approved",
+      byteSize: 2048,
+    });
+    await f.t.run(async (ctx) => {
+      const membership = await ctx.db
+        .query("memberships")
+        .withIndex("by_event_and_user", (q) => q.eq("eventId", f.eventId).eq("userId", f.guestId))
+        .unique();
+      if (membership) await ctx.db.patch(membership._id, { status: "revoked" });
+    });
+
+    await expect(
+      f.t
+        .withIdentity({ subject: "guest" })
+        .mutation(api.media.requestUploadGrant, grantArgs(f.eventId)),
+    ).rejects.toThrow(/could not be found/i);
+  });
+
+  it("keeps a same-owner collision with different file facts ambiguous", async () => {
+    const f = await fixture();
+    await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "pending",
+      byteSize: 2048,
+    });
+
+    const again = await f.t.withIdentity({ subject: "guest" }).mutation(
+      api.media.requestUploadGrant,
+      grantArgs(f.eventId, {
+        checksum: "b".repeat(64),
+      }),
+    );
     expect(again).toMatchObject({ outcome: "rejected", reason: "duplicateCapture" });
+  });
+
+  it("keeps another guest's exact settled capture an opaque duplicate", async () => {
+    const f = await fixture();
+    await seedMedia(f.t, f.eventId, f.guestId, {
+      captureId: CAPTURE,
+      state: "approved",
+      byteSize: 2048,
+    });
+
+    const collision = await f.t
+      .withIdentity({ subject: "other" })
+      .mutation(api.media.requestUploadGrant, grantArgs(f.eventId));
+    expect(collision).toMatchObject({ outcome: "rejected", reason: "duplicateCapture" });
+    expect(collision).not.toHaveProperty("mediaId");
   });
 
   it("will not let one guest claim another guest's captureId", async () => {
@@ -373,6 +522,7 @@ describe("grant consumption", () => {
     const f = await fixture();
     const { secret, grantId } = await grant(f);
 
+    await preflight(f, secret);
     const first = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     expect(first.outcome).toBe("registered");
 
@@ -380,6 +530,31 @@ describe("grant consumption", () => {
     expect(row?.status).toBe("consumed");
     expect(row?.consumedFileKey).toBe(FILE_KEY);
     expect(row?.mediaId).toBeDefined();
+  });
+
+  it("allows a preflight started before TTL to finish after TTL", async () => {
+    const f = await fixture();
+    const { secret, grantId } = await grant(f);
+    await preflight(f, secret);
+    await f.t.run(async (ctx) => ctx.db.patch(grantId, { expiresAt: Date.now() - 1 }));
+
+    const completed = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
+    expect(completed.outcome).toBe("registered");
+    const row = await f.t.run(async (ctx) => ctx.db.get(grantId));
+    expect(row?.status).toBe("consumed");
+    expect(row?.startedAt).toBeDefined();
+  });
+
+  it("discards a callback that never passed authenticated preflight", async () => {
+    const f = await fixture();
+    const storage = useFakeStorage();
+    const { secret } = await grant(f);
+    storage.put(FILE_KEY);
+
+    const completed = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
+    expect(completed).toMatchObject({ outcome: "discarded", reason: "notStarted" });
+    await runScheduled(f.t);
+    expect(storage.has(FILE_KEY)).toBe(false);
   });
 
   it("refuses a grant whose two minutes ran out, and deletes the late file", async () => {
@@ -413,6 +588,7 @@ describe("grant consumption", () => {
     const { secret, grantId } = await grant(f);
     const storage = useFakeStorage();
     storage.put("swapped-key");
+    await preflight(f, secret);
 
     const result = await f.t.mutation(
       api.media.completeUpload,
@@ -432,6 +608,7 @@ describe("grant consumption", () => {
   it("refuses a completion whose checksum does not match the grant", async () => {
     const f = await fixture();
     const { secret } = await grant(f);
+    await preflight(f, secret);
     const result = await f.t.mutation(
       api.media.completeUpload,
       completionArgs(secret, { checksum: "b".repeat(64) }),
@@ -479,10 +656,11 @@ describe("completion idempotency", () => {
     return await f.t.run(async (ctx) => ctx.db.query("media").collect());
   }
 
-  it("callback then client confirmation produces exactly one row", async () => {
+  it("provider callback then client reconciliation produces exactly one row", async () => {
     const f = await fixture();
     const { secret } = await grant(f);
 
+    await preflight(f, secret);
     const completed = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     expect(completed).toMatchObject({ outcome: "registered", state: "pending" });
 
@@ -519,6 +697,7 @@ describe("completion idempotency", () => {
     const f = await fixture();
     const { secret } = await grant(f);
 
+    await preflight(f, secret);
     const first = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     const second = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     const third = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
@@ -543,6 +722,12 @@ describe("completion idempotency", () => {
     const first = await as.mutation(api.media.confirmUpload, { secret });
     const second = await as.mutation(api.media.confirmUpload, { secret });
     expect(second.mediaId).toBe(first.mediaId);
+    expect(second).toMatchObject({
+      mediaType: null,
+      fileRole: null,
+      byteSize: null,
+      mimeType: null,
+    });
     expect(await mediaRows(f)).toHaveLength(1);
   });
 
@@ -553,6 +738,7 @@ describe("completion idempotency", () => {
     storage.put(FILE_KEY);
     storage.put("second-file");
 
+    await preflight(f, secret);
     await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     const second = await f.t.mutation(
       api.media.completeUpload,
@@ -574,15 +760,15 @@ describe("completion idempotency", () => {
     const result = await f.t
       .withIdentity({ subject: "guest" })
       .mutation(api.media.confirmUpload, { secret });
-    // No row and no state — but the grant's own facts still come back, because
-    // the middleware needs them to refuse a ticket that disagrees.
+    // No row, state, or authorising facts: an expired capability cannot mint a
+    // provider URL.
     expect(result).toEqual({
       mediaId: null,
       state: null,
-      mediaType: "photo",
-      fileRole: "original",
-      byteSize: 2048,
-      mimeType: "image/jpeg",
+      mediaType: null,
+      fileRole: null,
+      byteSize: null,
+      mimeType: null,
     });
     expect(await mediaRows(f)).toHaveLength(0);
   });
@@ -596,6 +782,7 @@ describe("media state after processing", () => {
   it("lands in pending under manual moderation", async () => {
     const f = await fixture({ moderationMode: "manual" });
     const { secret } = await grant(f);
+    await preflight(f, secret);
     const result = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     expect(result.state).toBe("pending");
 
@@ -606,6 +793,7 @@ describe("media state after processing", () => {
   it("lands in approved under automatic moderation", async () => {
     const f = await fixture({ moderationMode: "automatic" });
     const { secret } = await grant(f);
+    await preflight(f, secret);
     const result = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     expect(result.state).toBe("approved");
 
@@ -616,6 +804,7 @@ describe("media state after processing", () => {
   it("queues for a human under ai mode, because the classifier is post-launch", async () => {
     const f = await fixture({ moderationMode: "ai" });
     const { secret } = await grant(f);
+    await preflight(f, secret);
     const result = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     expect(result.state).toBe("pending");
   });
@@ -642,6 +831,7 @@ describe("media.withdraw", () => {
     const storage = useFakeStorage();
     const { secret } = await grant(f);
     storage.put(FILE_KEY);
+    await preflight(f, secret);
     const completed = await f.t.mutation(api.media.completeUpload, completionArgs(secret));
     const mediaId = completed.mediaId as Id<"media">;
 
@@ -752,6 +942,65 @@ describe("media.withdraw", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("read paths", () => {
+  it("accepts a URL refresh key on both mobile media subscriptions", async () => {
+    const f = await fixture();
+    const mineId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "pending",
+      storageKey: "k-mine-refresh",
+    });
+    const galleryId = await seedMedia(f.t, f.eventId, f.otherGuestId, {
+      state: "approved",
+      storageKey: "k-gallery-refresh",
+      sourceMetadataStripped: true,
+    });
+
+    const mine = await f.t.withIdentity({ subject: "guest" }).query(api.media.myMedia, {
+      eventId: f.eventId,
+      urlRefreshKey: 1,
+    });
+    const gallery = await f.t.withIdentity({ subject: "guest" }).query(api.media.eventMedia, {
+      eventId: f.eventId,
+      states: ["approved"],
+      urlRefreshKey: 2,
+    });
+
+    expect(mine.map((item) => item.id)).toEqual([mineId]);
+    expect(gallery.map((item) => item.id)).toEqual([galleryId]);
+  });
+
+  it("refreshes the uploader's signed avatar with the media cache-buster", async () => {
+    let now = 1_900_000_000_000;
+    useFakeStorage({ now: () => now });
+    const f = await fixture();
+    await f.t.run(async (ctx) =>
+      ctx.db.patch(f.otherGuestId, {
+        avatarKey: "private/other-avatar.jpg",
+        avatarStorageRegion: "pdx1",
+      }),
+    );
+    await seedMedia(f.t, f.eventId, f.otherGuestId, {
+      state: "approved",
+      storageKey: "private/other-photo.jpg",
+      sourceMetadataStripped: true,
+    });
+
+    const [first] = await f.t.withIdentity({ subject: "guest" }).query(api.media.eventMedia, {
+      eventId: f.eventId,
+      urlRefreshKey: 1,
+    });
+    now += 30_000;
+    const [refreshed] = await f.t.withIdentity({ subject: "guest" }).query(api.media.eventMedia, {
+      eventId: f.eventId,
+      urlRefreshKey: 2,
+    });
+
+    expect(first?.uploaderAvatarUrl).toContain("private%2Fother-avatar.jpg");
+    expect(first?.uploaderAvatarUrlExpiresAt).toBe(1_900_000_600_000);
+    expect(refreshed?.uploaderAvatarUrlExpiresAt).toBe(1_900_000_630_000);
+    expect(refreshed?.uploaderAvatarUrl).not.toBe(first?.uploaderAvatarUrl);
+    expect(refreshed).not.toHaveProperty("avatarKey");
+  });
+
   it("gives a guest their own media in every state, with a short-lived URL", async () => {
     const f = await fixture();
     await seedMedia(f.t, f.eventId, f.guestId, { state: "pending", storageKey: "k-pending" });
@@ -931,39 +1180,58 @@ describe("media.confirmUpload authorises the ticket", () => {
     });
   });
 
-  it("reports the grant's facts even for a capture that is already settled", async () => {
+  it("withholds grant facts on a replay while still reconciling settled state", async () => {
     const f = await fixture();
     const { secret } = await grant(f);
+    await preflight(f, secret);
     await f.t.mutation(api.media.completeUpload, completionArgs(secret));
 
     const confirmed = await f.t
       .withIdentity({ subject: "guest" })
       .mutation(api.media.confirmUpload, { secret });
-    expect(confirmed).toMatchObject({ state: "pending", mediaType: "photo", byteSize: 2048 });
+    expect(confirmed).toMatchObject({
+      state: "pending",
+      mediaType: null,
+      fileRole: null,
+      byteSize: null,
+      mimeType: null,
+    });
   });
 });
 
 describe("media.completeUpload and the provider's content type", () => {
-  it("keeps the granted type when the provider reports one the grant does not admit", async () => {
+  it("keeps the granted type and retry identity when the provider reports a different valid photo type", async () => {
     const f = await fixture();
     const { secret } = await grant(f);
 
+    await preflight(f, secret);
     const completed = await f.t.mutation(
       api.media.completeUpload,
-      completionArgs(secret, { mimeType: "video/mp4" }),
+      completionArgs(secret, { mimeType: "image/png" }),
     );
     expect(completed.outcome).toBe("registered");
 
-    // A row saying `video/mp4` under a photo grant is one every downstream
-    // renderer believes. The disagreement is dropped, not applied.
+    // PNG is valid for a photo in general, but not for this exact JPEG grant.
+    // The disagreement is dropped rather than mutating this capture's identity.
     const row = await f.t.run(async (ctx) => ctx.db.get(completed.mediaId as Id<"media">));
     expect(row?.mimeType).toBe("image/jpeg");
     expect(row?.mediaType).toBe("photo");
+
+    await expect(
+      f.t
+        .withIdentity({ subject: "guest" })
+        .mutation(api.media.requestUploadGrant, grantArgs(f.eventId)),
+    ).resolves.toEqual({
+      outcome: "alreadyUploaded",
+      mediaId: completed.mediaId,
+      state: "pending",
+    });
   });
 
   it("accepts a supported type the provider normalised differently", async () => {
     const f = await fixture();
     const { secret } = await grant(f, { mimeType: "image/png" });
+    await preflight(f, secret);
     const completed = await f.t.mutation(
       api.media.completeUpload,
       completionArgs(secret, { mimeType: "IMAGE/PNG; charset=binary" }),
@@ -978,6 +1246,7 @@ describe("media.completeUpload and the provider's content type", () => {
     const { secret } = await grant(f);
     storage.put(FILE_KEY);
 
+    await preflight(f, secret);
     const result = await f.t.mutation(
       api.media.completeUpload,
       completionArgs(secret, { checksum: "b".repeat(64) }),
@@ -1181,6 +1450,24 @@ describe("purging is retried, then surfaced", () => {
     expect(row?.storageKey).toBe("k-doomed");
   });
 
+  it("also retries a resolved delete the provider did not confirm", async () => {
+    const f = await fixture();
+    useFakeStorage({ refuseDeletes: true });
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      storageKey: "k-unconfirmed",
+    });
+
+    await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
+    await runScheduled(f.t);
+
+    const pending = (await scheduledJobs(f)).filter(
+      (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect((await f.t.run(async (ctx) => ctx.db.get(mediaId)))?.storageKey).toBe("k-unconfirmed");
+  });
+
   it("gives up loudly on the last attempt, leaving the keys to retry from", async () => {
     const f = await fixture();
     useFakeStorage({ failDeletes: true });
@@ -1203,17 +1490,16 @@ describe("purging is retried, then surfaced", () => {
     expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.mediaFilePurgeFailed);
   });
 
-  it("does not stamp a row as purged when the provider deleted fewer objects than it was given", async () => {
+  it("accepts an idempotent no-op when the object was already gone", async () => {
     const f = await fixture();
     const storage = useFakeStorage();
     const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
       state: "approved",
       storageKey: "k-half",
     });
-    // The provider quietly no-ops on this one. `deletedCount` comes back lower
-    // than the number of keys and the call still resolves; the old code stamped
-    // the row purged and cleared the keys, destroying the only pointer to bytes
-    // that are still there.
+    // A first delete whose response was lost leaves this exact shape: storage
+    // no longer has the key, while Convex still does. The provider confirms the
+    // retry but reports zero newly-deleted objects.
     storage.reset();
 
     await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
@@ -1221,21 +1507,25 @@ describe("purging is retried, then surfaced", () => {
 
     const row = await f.t.run(async (ctx) => ctx.db.get(mediaId));
     expect(row?.state).toBe("deleted");
-    expect(row?.storageDeletedAt).toBeUndefined();
-    expect(row?.storageKey).toBe("k-half");
-    expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.mediaFilePurgeFailed);
+    expect(row?.storageDeletedAt).toBeDefined();
+    expect(row?.storageKey).toBeUndefined();
+    expect(await auditActions(f.t)).toContain(AUDIT_ACTIONS.mediaFilePurged);
   });
 
   it("lists a stuck purge for the host, without naming an object", async () => {
     const f = await fixture();
-    const storage = useFakeStorage();
+    useFakeStorage({ refuseDeletes: true });
     const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
       state: "approved",
       storageKey: "k-half",
     });
-    storage.reset();
     await f.t.withIdentity({ subject: "guest" }).mutation(api.media.withdraw, { mediaId });
-    await runScheduled(f.t);
+    await f.t.action(internal.media.purgeStoredFile, {
+      region: "pdx1",
+      keys: ["k-half"],
+      mediaId,
+      attempt: 99,
+    });
 
     const stuck = await f.t
       .withIdentity({ subject: "owner" })

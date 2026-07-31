@@ -188,7 +188,7 @@ listing and in the terms.
 
 ### 3.6 Permissions in the merged manifest — check them, do not assume them
 
-The release build declares exactly three:
+The release build asks the guest for exactly three product permissions:
 
 ```
 android.permission.CAMERA
@@ -215,9 +215,16 @@ eas build --profile production --platform android --local   # or download the AA
 aapt2 dump permissions <path-to>.aab | sort
 ```
 
-Anything beyond the three above is a finding, not a detail. `ACCESS_FINE_LOCATION`,
-`ACCESS_COARSE_LOCATION`, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` are blocked
-for the same reason and their absence is what §3.2's "Location: not collected" rests on.
+The merged manifest also contains operating permissions contributed by the libraries that
+provide networking, notification delivery, secure storage and launcher badges. Those do
+not produce an extra user prompt and should not be confused with media or location access.
+
+Treat any of the following in the dump as a finding: `ACCESS_FINE_LOCATION`,
+`ACCESS_COARSE_LOCATION`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`,
+`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO` or `SYSTEM_ALERT_WINDOW`. The first six are blocked
+on every build. `SYSTEM_ALERT_WINDOW` is retained only by development profiles for React
+Native's developer overlay and is blocked when `EAS_BUILD_PROFILE` is `internal` or
+`production`.
 
 ---
 

@@ -28,12 +28,16 @@
 import {
   UPLOAD_ROUTE_PATH,
   UPLOAD_ROUTE_SLUG,
+  parseUploadCallbackResult,
+  uploadCallbackSucceeded,
+  type UploadCallbackResult,
   type UploadTicket,
 } from "@partybooth/contracts/upload";
 import { genUploader } from "uploadthing/client";
 
 import {
   UploadCancelledError,
+  UploadCompletionError,
   isAborted,
   isUploadCancelled,
   type UploadRequest,
@@ -69,7 +73,7 @@ export { UPLOAD_ROUTE_PATH, UPLOAD_ROUTE_SLUG };
 type PartyMediaRouter = {
   readonly [UPLOAD_ROUTE_SLUG]: FileRoute<{
     input: UploadTicket;
-    output: unknown;
+    output: UploadCallbackResult;
     errorShape: unknown;
   }>;
 };
@@ -98,6 +102,12 @@ async function toNativeFile(file: UploadRequest["file"]): Promise<File> {
 export interface UploadThingTransportOptions {
   /** Public site origin, e.g. `https://partybooth.app`. No trailing slash. */
   readonly siteUrl: string;
+  /**
+   * Native fetch has no browser cookie jar for the website origin. Resolve the
+   * Better Auth cookie for every attempt so a refreshed session is not captured
+   * when the provider mounts.
+   */
+  readonly authHeaders?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 }
 
 export function createUploadThingTransport(options: UploadThingTransportOptions): UploadTransport {
@@ -115,9 +125,10 @@ export function createUploadThingTransport(options: UploadThingTransportOptions)
       const file = await toNativeFile(request.file);
 
       try {
-        await uploadFiles(UPLOAD_ROUTE_SLUG, {
+        const [uploaded] = await uploadFiles(UPLOAD_ROUTE_SLUG, {
           files: [file],
           input: request.ticket,
+          ...(options.authHeaders === undefined ? {} : { headers: options.authHeaders }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           onUploadProgress: ({ progress }) => {
             // The SDK reports 0–100; the queue works in fractions so the same
@@ -125,6 +136,10 @@ export function createUploadThingTransport(options: UploadThingTransportOptions)
             request.onProgress?.(Math.min(1, Math.max(0, progress / 100)));
           },
         });
+        const completion = parseUploadCallbackResult(uploaded?.serverData);
+        if (!uploadCallbackSucceeded(completion)) {
+          throw new UploadCompletionError(completion.reason);
+        }
       } catch (error) {
         // Normalise the SDK's abort error to ours so the queue has exactly one
         // thing to check and never treats a deliberate cancel as a failure.

@@ -46,6 +46,7 @@ import {
 import { backendApi } from "@/lib/convex-api";
 import { newCaptureId } from "@/lib/upload/capture-id";
 import { checksumOfBlob } from "@/lib/upload/checksum";
+import { clientUploadCompletion } from "@/lib/upload/completion";
 import {
   browserDerivativeRuntime,
   buildPhotoDerivatives,
@@ -63,6 +64,7 @@ import {
   type UploadItem,
   type UploadQueue,
 } from "@/lib/upload/machine";
+import { alreadyUploadedActions } from "@/lib/upload/reconciliation";
 import { PARTY_MEDIA_ROUTE, uploadFiles } from "@/lib/upload/uploader";
 import { browserVideoRuntime, buildVideoFacts, posterFileName } from "@/lib/upload/video";
 
@@ -248,6 +250,10 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         );
 
         if (aborter.signal.aborted) return { retry: false };
+        // Reserved for originals: derivatives retain their existing grant and
+        // duplicate semantics, and an impossible original-only response must
+        // never be treated as a capability to send bytes.
+        if (grant.outcome === "alreadyUploaded") return { retry: false };
         if (grant.outcome === "throttled") return { retry: true };
         if (grant.outcome === "rejected") {
           // The only refusal worth a second go: the provider's completion
@@ -256,7 +262,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         }
         if (grantHasExpired(grant, Date.now())) return { retry: false };
 
-        await uploadFiles(PARTY_MEDIA_ROUTE, {
+        const [uploaded] = await uploadFiles(PARTY_MEDIA_ROUTE, {
           files: [derivative.file],
           signal: aborter.signal,
           input: buildUploadTicket(grant, {
@@ -266,7 +272,11 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
             height: derivative.height,
           }),
         });
-        return { retry: false };
+        const completion = clientUploadCompletion(uploaded?.serverData);
+        if (completion.ok) return { retry: false };
+        return {
+          retry: completion.retryable || completion.reason === "derivativeWithoutOriginal",
+        };
       } catch {
         return { retry: false };
       } finally {
@@ -345,23 +355,22 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
           return;
         }
 
+        if (grant.outcome === "alreadyUploaded") {
+          // The previous transfer completed server-side but this tab did not
+          // observe its response. This outcome proves both ownership and exact
+          // file identity, unlike `duplicateCapture`, so it is safe to settle
+          // the local row and continue any best-effort derivatives.
+          for (const action of alreadyUploadedActions(captureId, grant)) dispatch(action);
+          void sendDerivatives(item);
+          return;
+        }
+
         if (grant.outcome === "throttled") {
           dispatch({ type: "failed", captureId, message: grant.message, retryable: true });
           return;
         }
 
         if (grant.outcome === "rejected") {
-          if (grant.reason === "duplicateCapture") {
-            /*
-             * This photo is already on the server. The overwhelmingly likely
-             * cause is the previous attempt succeeding and its *response* being
-             * lost, which on a phone is indistinguishable from a failure.
-             * Showing it as sent is both true and the only answer that does not
-             * invite the guest to keep pressing a button that cannot work.
-             */
-            dispatch({ type: "uploaded", captureId, message: "Already sent." });
-            return;
-          }
           /*
            * Whether a retry can help is the contract's call, not this hook's,
            * and `apps/mobile` asks the same function. The one that matters at a
@@ -414,7 +423,17 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
             },
           });
 
-          const state = uploaded?.serverData?.state;
+          const completion = clientUploadCompletion(uploaded?.serverData);
+          if (!completion.ok) {
+            dispatch({
+              type: "failed",
+              captureId,
+              message: completion.message,
+              retryable: completion.retryable,
+            });
+            return;
+          }
+          const state = completion.state;
           dispatch({
             type: "uploaded",
             captureId,

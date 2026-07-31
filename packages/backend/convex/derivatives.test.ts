@@ -93,6 +93,7 @@ function previewArgs(over: Record<string, unknown> = {}) {
 }
 
 async function complete(f: Fixture, secret: string, over: Record<string, unknown> = {}) {
+  await f.t.withIdentity({ subject: "guest" }).mutation(api.media.confirmUpload, { secret });
   return await f.t.mutation(api.media.completeUpload, {
     callbackSecret: CALLBACK_SECRET,
     secret,
@@ -266,6 +267,26 @@ describe("derivative completion", () => {
     expect(row?.storageKey).toBe("ut_original_0001");
     expect(row?.previewKey).toBe("ut_preview_0001");
     expect(row?.previewByteSize).toBe(40_000);
+  });
+
+  it("lets a derivative started before TTL complete after TTL", async () => {
+    const f = await fixture();
+    const original = await grant(f);
+    await complete(f, original.secret);
+    const preview = await grant(f, previewArgs());
+    await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.confirmUpload, { secret: preview.secret });
+    await f.t.run(async (ctx) => ctx.db.patch(preview.grantId, { expiresAt: Date.now() - 1 }));
+
+    const result = await f.t.mutation(api.media.completeUpload, {
+      callbackSecret: CALLBACK_SECRET,
+      secret: preview.secret,
+      fileKey: "ut_preview_late",
+      byteSize: 40_000,
+    });
+    expect(result.outcome).toBe("registered");
+    expect((await mediaRow(f))?.previewKey).toBe("ut_preview_late");
   });
 
   it("leaves exactly one media row and one submission behind", async () => {
@@ -504,7 +525,9 @@ describe("video", () => {
     });
 
     expect(result).toMatchObject({ outcome: "discarded", reason: "tooLong" });
-    expect(await f.t.run(async (ctx) => ctx.db.query("media").collect())).toHaveLength(0);
+    const [processing] = await f.t.run(async (ctx) => ctx.db.query("media").collect());
+    expect(processing?.state).toBe("processing");
+    expect(processing?.storageKey).toBeUndefined();
     await runScheduled(f.t);
     expect(fake.has("ut_original_0001")).toBe(false);
   });
@@ -857,6 +880,26 @@ describe("verified video duration", () => {
     expect(row?.durationVerified).toBe(true);
     // The measurement replaces the phone's estimate.
     expect(row?.durationSeconds).toBeCloseTo(8.4);
+  });
+
+  it("reconciles the same upload after measurement replaces the phone's estimate", async () => {
+    const { f, mediaId } = await landedVideo();
+    await f.t.mutation(internal.media.recordVideoDurationVerdict, {
+      mediaId,
+      verdict: "withinCap",
+      measuredSeconds: 8.4,
+    });
+
+    const retry = await f.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, {
+        eventId: f.eventId,
+        captureId: CAPTURE,
+        checksum: CHECKSUM,
+        ...videoGrant,
+      });
+
+    expect(retry).toEqual({ outcome: "alreadyUploaded", mediaId, state: "pending" });
   });
 
   it("deletes the ten-minute recording that claimed to be eight seconds", async () => {

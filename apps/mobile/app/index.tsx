@@ -39,7 +39,9 @@ export default function IndexRoute() {
 
   if (state.status === "loading") return <Loading label="Restoring your session…" />;
   if (state.status === "signed-out") return <Redirect href="/sign-in" />;
-  if (state.needsOnboarding) return <Redirect href="/onboarding" />;
+  if (state.needsOnboarding || state.needsTermsAcceptance) {
+    return <Redirect href="/onboarding" />;
+  }
 
   // Reading clears it, so a later pass through this gate goes straight to the tabs
   // rather than re-opening a join screen the guest has already answered.

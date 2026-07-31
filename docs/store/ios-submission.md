@@ -300,7 +300,8 @@ PartyBooth is invitation-only while it is in beta, and it is for adults.
 party,photos,camera,event,wedding,shared,album,gallery,guests,private,video,qr
 ```
 
-**Support URL:** `https://<your-domain>/support` (or a mailto page — but it must resolve).
+**Support URL:** `https://<your-domain>/support`. The public route is implemented and links
+to `support@partybooth.app`; make sure that mailbox can receive mail before submission.
 
 ---
 

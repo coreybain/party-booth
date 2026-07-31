@@ -1,4 +1,10 @@
 import { withSentry } from "@sentry/react-native/expo";
+import {
+  AndroidConfig,
+  withAndroidManifest,
+  withGradleProperties,
+  type ConfigPlugin,
+} from "expo/config-plugins";
 
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
@@ -56,6 +62,9 @@ const easOwner = process.env.EXPO_OWNER;
 const sentryOrg = process.env.SENTRY_ORG;
 const sentryProject = process.env.SENTRY_PROJECT;
 
+/** Profiles that produce binaries uploaded to App Store Connect or Google Play. */
+const isStoreBuild = ["internal", "production"].includes(process.env.EAS_BUILD_PROFILE ?? "");
+
 /**
  * Purpose strings, in plain honest English.
  *
@@ -89,8 +98,63 @@ const permissionCopy = {
     "PartyBooth asks for this so you can save a photo from the party back to your own library.",
 } as const;
 
+const EXPO_VIDEO_FULLSCREEN_ACTIVITY = "expo.modules.video.FullscreenPlayerActivity";
+
+/**
+ * Expo's generated project defaults Gradle's daemon to 512 MiB of Metaspace.
+ * A full release bundle exhausts that while Android Lint analyses the native
+ * dependency graph, so keep the existing 2 GiB heap and give class metadata a
+ * realistic release-build ceiling. This lives in a config plugin because the
+ * checked-in source of truth is managed config, not a generated android folder.
+ */
+export const ANDROID_GRADLE_JVM_ARGS = "-Xmx2048m -XX:MaxMetaspaceSize=1024m";
+
+export function setAndroidGradleJvmArgs(
+  properties: Parameters<typeof AndroidConfig.BuildProperties.updateAndroidBuildProperty>[0],
+) {
+  return AndroidConfig.BuildProperties.updateAndroidBuildProperty(
+    properties,
+    "org.gradle.jvmargs",
+    ANDROID_GRADLE_JVM_ARGS,
+  );
+}
+
+const withAndroidReleaseBuildMemory: ConfigPlugin = (config) =>
+  withGradleProperties(config, (config) => {
+    config.modResults = setAndroidGradleJvmArgs(config.modResults);
+    return config;
+  });
+
+/**
+ * Keep the merged Android manifest honest about Picture in Picture.
+ *
+ * `expo-video` 57 removes PiP from the app's MainActivity when its plugin option
+ * is false, but the library contributes a separate FullscreenPlayerActivity
+ * with PiP set to true later during Gradle's manifest merge. A main-manifest
+ * override is the only declaration with enough priority to replace that value.
+ */
+const withDisabledAndroidVideoPictureInPicture: ConfigPlugin = (config) =>
+  withAndroidManifest(config, (config) => {
+    const manifest = AndroidConfig.Manifest.ensureToolsAvailable(config.modResults);
+    const application = AndroidConfig.Manifest.getMainApplicationOrThrow(manifest);
+    const activities = application.activity ?? [];
+    let fullscreenActivity = activities.find(
+      (activity) => activity.$["android:name"] === EXPO_VIDEO_FULLSCREEN_ACTIVITY,
+    );
+
+    if (!fullscreenActivity) {
+      fullscreenActivity = { $: { "android:name": EXPO_VIDEO_FULLSCREEN_ACTIVITY } };
+      application.activity = [...activities, fullscreenActivity];
+    }
+
+    fullscreenActivity.$["android:supportsPictureInPicture"] = "false";
+    fullscreenActivity.$["tools:replace"] = "android:supportsPictureInPicture";
+    config.modResults = manifest;
+    return config;
+  });
+
 export default ({ config }: ConfigContext): ExpoConfig => {
-  const expo: ExpoConfig = {
+  let expo: ExpoConfig = {
     ...config,
     name: "PartyBooth",
     slug: "partybooth",
@@ -194,6 +258,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
+        // React Native adds this for its development overlay. Keep it in dev
+        // builds, but never claim overlay capability in a Play-bound binary.
+        ...(isStoreBuild ? ["android.permission.SYSTEM_ALERT_WINDOW"] : []),
       ],
       intentFilters: [
         {
@@ -282,6 +349,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
     ...(easProjectId ? { updates: { url: `https://u.expo.dev/${easProjectId}` } } : {}),
   };
+
+  expo = withAndroidReleaseBuildMemory(expo);
+  expo = withDisabledAndroidVideoPictureInPicture(expo);
 
   // Only wrap with Sentry when the org/project slugs exist. `withSentry` adds the
   // source-map upload build phase, which fails the build if it is configured with

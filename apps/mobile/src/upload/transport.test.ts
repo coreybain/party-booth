@@ -6,6 +6,7 @@ import {
   isAborted,
   isUploadCancelled,
   UploadCancelledError,
+  UploadCompletionError,
   type UploadRequest,
 } from "./transport";
 
@@ -144,5 +145,17 @@ describe("cancellation", () => {
     controller.abort();
     expect(isAborted(controller.signal)).toBe(true);
     expect(isAborted(undefined)).toBe(false);
+  });
+});
+
+describe("authoritative callback failures", () => {
+  it("keeps a missing/expired grant retryable with a fresh grant", () => {
+    expect(new UploadCompletionError("unknownGrant")).toMatchObject({ permanent: false });
+    expect(new UploadCompletionError("expired")).toMatchObject({ permanent: false });
+  });
+
+  it("does not loop on a body the server permanently discarded", () => {
+    expect(new UploadCompletionError("withdrawn")).toMatchObject({ permanent: true });
+    expect(new UploadCompletionError("tooLong")).toMatchObject({ permanent: true });
   });
 });

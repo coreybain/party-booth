@@ -44,6 +44,8 @@ export interface FakeStorageOptions {
    * it does not.
    */
   failDeletes?: boolean | undefined;
+  /** Resolve the delete request without confirming it, as a provider may. */
+  refuseDeletes?: boolean | undefined;
 }
 
 export function createFakeStorageAdapter(options: FakeStorageOptions = {}): FakeStorageAdapter {
@@ -98,11 +100,14 @@ export function createFakeStorageAdapter(options: FakeStorageOptions = {}): Fake
       if (options.failDeletes === true) {
         return Promise.reject(new Error("fake storage: deletes are failing"));
       }
+      if (options.refuseDeletes === true) {
+        return Promise.resolve({ success: false, deleted: 0 });
+      }
       let deleted = 0;
       for (const key of keys) {
         if (stored.delete(key)) deleted += 1;
       }
-      return Promise.resolve({ deleted });
+      return Promise.resolve({ success: true, deleted });
     },
 
     describe() {

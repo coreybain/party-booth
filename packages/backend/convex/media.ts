@@ -1,6 +1,4 @@
-import { constantTimeEqual } from "@partybooth/contracts/codes";
 import {
-  allowedMimeTypesForRole,
   canSeeMedia,
   isDerivativeRole,
   isFileRoleAllowed,
@@ -59,7 +57,7 @@ import {
 } from "./_generated/server";
 import { writeAuditEvent } from "./lib/audit";
 import { isHiddenByBlock, loadBlockedUserIds } from "./lib/blocks";
-import { forbidden, notFound, unauthenticated } from "./lib/errors";
+import { forbidden, notFound } from "./lib/errors";
 import {
   requireActiveUser,
   requireEventActor,
@@ -83,12 +81,14 @@ import {
 } from "./lib/media";
 import { reportError } from "./lib/sentry";
 import { resolveStorageAdapter } from "./lib/storage";
+import { createStoragePurgeJob } from "./lib/storage_purge";
+import { requireUploadCallbackSecret } from "./lib/upload_callback";
 import {
   consumeGrant,
   expireGrantsForCapture,
-  findGrantBySecret,
   issueGrant,
   linkGrantToMedia,
+  startGrant,
 } from "./lib/upload_grants";
 import { checkUploadThrottle, recordGrantIssued } from "./lib/upload_throttle";
 import {
@@ -107,8 +107,8 @@ import {
  * 1. {@link requestUploadGrant} — the guest asks for permission to send one
  *    exact file. Permission-checked, size-capped, throttled, audited, and
  *    answered with a two-minute single-use secret.
- * 2. {@link confirmUpload} — the client says it finished. Creates the row if the
- *    callback has not already, and asserts nothing about what was stored.
+ * 2. {@link confirmUpload} — authenticated edge preflight reserves the grant;
+ *    the phone may call it later to reconcile the row after transport.
  * 3. {@link completeUpload} — the UploadThing route handler in `apps/web` says
  *    what actually landed. Spends the grant, attaches the file, and moves the
  *    item to `pending` or `approved` per the event's moderation mode.
@@ -153,6 +153,7 @@ const mediaFunctions = internal.media as unknown as {
       region: Doc<"media">["storageRegion"];
       keys: string[];
       mediaId?: Id<"media">;
+      purgeJobId?: Id<"storagePurgeJobs">;
       attempt?: number;
     },
     null
@@ -167,6 +168,30 @@ const mediaFunctions = internal.media as unknown as {
     "mutation",
     "internal",
     { mediaId: Id<"media">; attempts: number; requested: number; deleted: number },
+    null
+  >;
+  markGenericStoragePurged: FunctionReference<
+    "mutation",
+    "internal",
+    { purgeJobId: Id<"storagePurgeJobs">; attempts: number; requested: number; deleted: number },
+    null
+  >;
+  markGenericStoragePurgeAttempt: FunctionReference<
+    "mutation",
+    "internal",
+    { purgeJobId: Id<"storagePurgeJobs">; attempts: number; reason: string },
+    null
+  >;
+  markGenericStoragePurgeFailed: FunctionReference<
+    "mutation",
+    "internal",
+    {
+      purgeJobId: Id<"storagePurgeJobs">;
+      attempts: number;
+      requested: number;
+      deleted: number;
+      reason: string;
+    },
     null
   >;
   verifyVideoDuration: FunctionReference<"action", "internal", { mediaId: Id<"media"> }, null>;
@@ -209,6 +234,11 @@ const grantResultValidator = v.union(
     maxBytes: v.number(),
     expiresAt: v.number(),
   }),
+  v.object({
+    outcome: v.literal("alreadyUploaded"),
+    mediaId: v.id("media"),
+    state: v.union(v.literal("pending"), v.literal("approved"), v.literal("declined")),
+  }),
   v.object({ outcome: v.literal("rejected"), reason: v.string(), message: v.string() }),
   v.object({
     outcome: v.literal("throttled"),
@@ -250,7 +280,10 @@ export const requestUploadGrant = mutation({
     sourceCarriesNoLocation: v.optional(v.boolean()),
   },
   returns: grantResultValidator,
-  handler: async (ctx, args): Promise<GrantResult<Id<"uploadGrants">, Id<"events">>> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<GrantResult<Id<"uploadGrants">, Id<"events">, Id<"media">>> => {
     // `requireEventActor` hides an event this account has no relationship with
     // behind `notFound`, so an event id cannot be probed from here either.
     const actor = await requireEventActor(ctx, args.eventId);
@@ -260,6 +293,30 @@ export const requestUploadGrant = mutation({
 
     const input = parseInput(uploadGrantRequestSchema, args);
     const now = Date.now();
+
+    /*
+     * Reconcile a success before re-evaluating mutable upload policy.
+     *
+     * This branch does not authorise new bytes. It proves that this active
+     * authenticated member owns an already-settled row for the exact same file,
+     * then returns its id. Consequently a queue resumed after an app pause can
+     * learn that its earlier callback succeeded even if the host has since
+     * paused/archived the event, disabled library imports, or the current terms
+     * version has changed. Running those gates first manufactured a permanent
+     * failure for a file which was already safely stored.
+     */
+    const requested: CaptureFileFacts = {
+      mediaType: input.mediaType,
+      mimeType: input.mimeType,
+      byteSize: input.byteSize,
+      checksum: input.checksum,
+      durationSeconds: input.durationSeconds,
+    };
+    const existing = await findMediaByCapture(ctx, actor.event._id, input.captureId);
+    const alreadyUploaded = isDerivativeRole(input.fileRole)
+      ? undefined
+      : reconcileAlreadyUploaded(actor.user._id, existing, requested);
+    if (alreadyUploaded !== undefined) return alreadyUploaded;
 
     /*
      * Terms before content.
@@ -329,15 +386,6 @@ export const requestUploadGrant = mutation({
       });
     }
 
-    const requested: CaptureFileFacts = {
-      mediaType: input.mediaType,
-      mimeType: input.mimeType,
-      byteSize: input.byteSize,
-      checksum: input.checksum,
-      durationSeconds: input.durationSeconds,
-    };
-
-    const existing = await findMediaByCapture(ctx, actor.event._id, input.captureId);
     const refusal = isDerivativeRole(input.fileRole)
       ? await checkDerivativeGrant(ctx, {
           userId: actor.user._id,
@@ -479,6 +527,41 @@ function checkOriginalGrant(
 }
 
 /**
+ * Prove that a retry is the client's own original which already completed.
+ *
+ * `duplicateCapture` deliberately carries no media id: a capture id is scoped
+ * to an event, so the collision may belong to another guest. Reconciliation is
+ * consequently stricter than duplicate detection. It requires the same owner,
+ * every fact the grant binds, an attached storage object, and a state reached
+ * only after processing settled. Derivatives do not call this helper and keep
+ * their existing duplicate policy.
+ */
+function reconcileAlreadyUploaded(
+  userId: Id<"users">,
+  existing: Doc<"media"> | null,
+  requested: CaptureFileFacts,
+):
+  | {
+      outcome: "alreadyUploaded";
+      mediaId: Id<"media">;
+      state: "pending" | "approved" | "declined";
+    }
+  | undefined {
+  if (existing === null || existing.uploaderUserId !== userId) return undefined;
+  if (existing.storageKey === undefined || !describesSameFile(existing, requested)) {
+    return undefined;
+  }
+  if (
+    existing.state !== "pending" &&
+    existing.state !== "approved" &&
+    existing.state !== "declined"
+  ) {
+    return undefined;
+  }
+  return { outcome: "alreadyUploaded", mediaId: existing._id, state: existing.state };
+}
+
+/**
  * May this account be granted a **derivative** for this capture?
  *
  * Three things have to be true, and each of them is a door that would otherwise
@@ -606,7 +689,7 @@ async function rejectGrant(
     reason: UploadRejectionReason;
     now: number;
   },
-): Promise<GrantResult<Id<"uploadGrants">, Id<"events">>> {
+): Promise<GrantResult<Id<"uploadGrants">, Id<"events">, Id<"media">>> {
   await writeAuditEvent(ctx, {
     action: AUDIT_ACTIONS.uploadRejected,
     subjectType: "media",
@@ -619,18 +702,18 @@ async function rejectGrant(
 }
 
 /* -------------------------------------------------------------------------- */
-/* 2. The client says it finished                                             */
+/* 2. Authenticated preflight and client reconciliation                       */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The client's half of the two-sided completion.
+ * The authenticated half of the two-sided completion.
  *
- * It creates the media row if the provider callback has not got here first, and
- * that is **all** it does. It does not consume the grant, set a storage key or
- * move the state, because the client is not a source of truth about what is in
- * storage — only about the fact that it stopped waiting. A guest who lies here
- * gets a `processing` row with no file, which is exactly what a genuinely failed
- * upload looks like.
+ * Its first call is UploadThing middleware preflight: it atomically reserves an
+ * unexpired grant before the provider issues a URL. It may create the media row,
+ * but does not consume the grant, set a storage key or move the state. Its later
+ * call is the phone reconciling after transport; that call gets row state but no
+ * authorising facts, so replaying the secret through middleware cannot create a
+ * second URL.
  *
  * Its value is latency: the "uploading…" spinner on a phone can turn into
  * "waiting for the host" the moment the bytes leave, without waiting for a
@@ -655,7 +738,7 @@ export const confirmUpload = mutation({
   returns: v.object({
     mediaId: v.union(v.id("media"), v.null()),
     state: v.union(mediaState, v.null()),
-    /** What the grant authorised. `null` only when the grant is unknown. */
+    /** Authorising facts are present only on the call which reserved the grant. */
     mediaType: v.union(mediaType, v.null()),
     fileRole: v.union(mediaFileRole, v.null()),
     byteSize: v.union(v.number(), v.null()),
@@ -664,23 +747,25 @@ export const confirmUpload = mutation({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
     const input = parseInput(confirmUploadInputSchema, args);
-
-    const grant = await findGrantBySecret(ctx, input.secret);
+    const now = Date.now();
+    const reservation = await startGrant(ctx, input.secret, user._id, now);
     // An unknown or foreign secret is `notFound`, not `forbidden`: the two
     // answers must not tell a caller whether a secret exists.
-    if (!grant || grant.userId !== user._id) throw notFound("That upload");
+    if (!reservation.ok && reservation.reason === "unknownGrant") throw notFound("That upload");
+    const grant = reservation.grant;
 
-    // Attached to every answer below, including the ones that refuse: the caller
-    // that needs them most is the middleware deciding whether to let bytes move.
-    // `fileRole` joins them in Sprint 4 because it is what selects the size cap
-    // the edge applies — a preview grant re-labelled as an original at the edge
-    // would be measured against 20 MB instead of 2.
-    const authorised = {
-      mediaType: grant.mediaType,
-      fileRole: fileRoleOf(grant),
-      byteSize: grant.byteSize,
-      mimeType: grant.mimeType,
-    };
+    // Only the transaction which changed `issued → started` gets authorising
+    // file facts. A second authenticated call may still reconcile the media id
+    // for the phone after transport completion, but returning nulls makes the
+    // UploadThing middleware refuse a replay before it can mint another URL.
+    const authorised = reservation.ok
+      ? {
+          mediaType: grant.mediaType,
+          fileRole: fileRoleOf(grant),
+          byteSize: grant.byteSize,
+          mimeType: grant.mimeType,
+        }
+      : { mediaType: null, fileRole: null, byteSize: null, mimeType: null };
 
     const existing = await findMediaByCapture(ctx, grant.eventId, grant.captureId);
     if (existing) {
@@ -698,13 +783,12 @@ export const confirmUpload = mutation({
       return { mediaId: null, state: null, ...authorised };
     }
 
-    // A grant whose time ran out with nothing stored creates nothing: the client
-    // has to ask for a new one, which re-runs every check.
-    if (grant.status === "expired" || Date.now() > grant.expiresAt) {
+    // Only a fresh preflight creates anything. Expired grants and replays can
+    // reconcile an existing row above, but cannot reserve storage again.
+    if (!reservation.ok) {
       return { mediaId: null, state: null, ...authorised };
     }
 
-    const now = Date.now();
     const row = await ensureMediaRow(ctx, grant, now);
     // Somebody else already owns this captureId in this event. Nothing to
     // confirm, and nothing to say about a row that is not theirs.
@@ -767,7 +851,7 @@ export const completeUpload = mutation({
   },
   returns: completionValidator,
   handler: async (ctx, args): Promise<CompletionResult> => {
-    requireCallbackSecret(args.callbackSecret);
+    requireUploadCallbackSecret(args.callbackSecret);
     const input = parseInput(completeUploadInputSchema, args);
     const now = Date.now();
 
@@ -784,11 +868,12 @@ export const completeUpload = mutation({
       if (consumption.reason === "alreadyConsumed") {
         return await reconcileDuplicate(ctx, consumption.grant, input.fileKey, now);
       }
-      // Expired. The bytes are real and nobody may ever see them.
+      // Expired or a callback which somehow bypassed authenticated preflight.
+      // The bytes are real and nobody may ever see them.
       return await discard(ctx, {
         grant: consumption.grant,
         fileKey: input.fileKey,
-        reason: "expired",
+        reason: consumption.reason,
         now,
       });
     }
@@ -922,8 +1007,8 @@ export const completeUpload = mutation({
      */
     const reportedMime =
       input.mimeType !== undefined &&
-      allowedMimeTypesForRole(grant.mediaType, "original").includes(normaliseMime(input.mimeType))
-        ? normaliseMime(input.mimeType)
+      normaliseMime(input.mimeType) === normaliseMime(grant.mimeType)
+        ? normaliseMime(grant.mimeType)
         : undefined;
 
     await ctx.db.patch(media._id, {
@@ -1163,9 +1248,16 @@ async function discard(
   ctx: MutationCtx,
   params: { grant: Doc<"uploadGrants">; fileKey: string; reason: string; now: number },
 ): Promise<CompletionResult> {
+  const purgeJobId = await createStoragePurgeJob(ctx, {
+    region: params.grant.storageRegion,
+    keys: [params.fileKey],
+    source: "rejectedUpload",
+    now: params.now,
+  });
   await ctx.scheduler.runAfter(0, mediaFunctions.purgeStoredFile, {
     region: params.grant.storageRegion,
     keys: [params.fileKey],
+    purgeJobId,
   });
 
   await writeAuditEvent(ctx, {
@@ -1179,22 +1271,6 @@ async function discard(
   });
 
   return { outcome: "discarded", reason: params.reason };
-}
-
-/**
- * Prove the caller is our own route handler.
- *
- * Constant-time, because the alternative is a comparison whose duration tells an
- * attacker how many characters they have right. `notConfigured` would be the
- * honest error for a deployment with no secret, but it would also tell an
- * unauthenticated caller which deployments are worth coming back to — so an
- * unset secret and a wrong one produce the same refusal.
- */
-function requireCallbackSecret(supplied: string): void {
-  const expected = envOptional(serverEnv, "UPLOAD_CALLBACK_SECRET");
-  if (expected === undefined || !constantTimeEqual(expected, supplied)) {
-    throw unauthenticated("This endpoint is not callable from a client.");
-  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1308,6 +1384,8 @@ export const purgeStoredFile = internalAction({
     region: storageRegion,
     keys: v.array(v.string()),
     mediaId: v.optional(v.id("media")),
+    /** Durable pointer when there is no retained media row. */
+    purgeJobId: v.optional(v.id("storagePurgeJobs")),
     /** 1 for the first try. Threaded so the backoff is stateless. */
     attempt: v.optional(v.number()),
   },
@@ -1318,7 +1396,11 @@ export const purgeStoredFile = internalAction({
 
     let deleted: number;
     try {
-      ({ deleted } = await adapter.deleteFiles(args.keys));
+      const result = await adapter.deleteFiles(args.keys);
+      if (!result.success) {
+        throw new Error("Storage provider did not confirm deletion.");
+      }
+      deleted = result.deleted;
     } catch (error) {
       /*
        * A failed delete used to be invisible: the action threw, the comment here
@@ -1338,14 +1420,24 @@ export const purgeStoredFile = internalAction({
           attempt,
           willRetry: nextDelay !== undefined,
           ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
+          ...(args.purgeJobId === undefined ? {} : { purgeJobId: args.purgeJobId }),
         },
       });
+
+      if (args.purgeJobId !== undefined) {
+        await ctx.runMutation(mediaFunctions.markGenericStoragePurgeAttempt, {
+          purgeJobId: args.purgeJobId,
+          attempts: attempt,
+          reason: "deleteFailed",
+        });
+      }
 
       if (nextDelay !== undefined) {
         await ctx.scheduler.runAfter(nextDelay, mediaFunctions.purgeStoredFile, {
           region: args.region,
           keys: args.keys,
           ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
+          ...(args.purgeJobId === undefined ? {} : { purgeJobId: args.purgeJobId }),
           attempt: attempt + 1,
         });
         return null;
@@ -1359,28 +1451,16 @@ export const purgeStoredFile = internalAction({
           deleted: 0,
         });
       }
+      if (args.purgeJobId !== undefined) {
+        await ctx.runMutation(mediaFunctions.markGenericStoragePurgeFailed, {
+          purgeJobId: args.purgeJobId,
+          attempts: attempt,
+          requested: args.keys.length,
+          deleted: 0,
+          reason: "deleteFailed",
+        });
+      }
       return null;
-    }
-
-    if (deleted < args.keys.length) {
-      /*
-       * The call succeeded and removed fewer objects than it was handed.
-       * UploadThing's `deletedCount` can legitimately be lower on a partial or
-       * no-op delete, and the old code stamped the row as purged anyway — which
-       * threw away the only record of *which* objects were left behind. Nothing,
-       * including the P1 purge worker, could ever find them again.
-       */
-      await reportError({
-        scope: "media.purgeStoredFile",
-        error: new Error(`storage delete removed ${deleted} of ${args.keys.length} objects`),
-        level: "warning",
-        extra: {
-          region: args.region,
-          keyCount: args.keys.length,
-          deleted,
-          ...(args.mediaId === undefined ? {} : { mediaId: args.mediaId }),
-        },
-      });
     }
 
     if (args.mediaId !== undefined) {
@@ -1388,6 +1468,14 @@ export const purgeStoredFile = internalAction({
         mediaId: args.mediaId,
         deleted,
         requested: args.keys.length,
+      });
+    }
+    if (args.purgeJobId !== undefined) {
+      await ctx.runMutation(mediaFunctions.markGenericStoragePurged, {
+        purgeJobId: args.purgeJobId,
+        attempts: attempt,
+        requested: args.keys.length,
+        deleted,
       });
     }
     return null;
@@ -1596,12 +1684,11 @@ export const recordVideoDurationVerdict = internalMutation({
  * record that names an object, which is what makes the read paths safe by
  * construction rather than by remembering to filter.
  *
- * **Only on a full delete.** `requested` is the number of keys the action was
- * handed and `deleted` is what the provider says it removed; a short count means
- * at least one object survived, and clearing the keys then would destroy the
- * only pointer to it. On a shortfall the row keeps its keys, keeps `deletedAt`
- * without `storageDeletedAt` — so {@link stuckPurges} lists it — and gets an
- * audit row saying so.
+ * This mutation is called only after the adapter's authoritative `success`
+ * acknowledgement. `deleted` is an observation, not the decision: an
+ * idempotent retry may remove zero objects because the first call succeeded and
+ * its response was lost. In that case the keys are already gone and retaining
+ * them forever would manufacture a stuck purge.
  */
 export const markStoragePurged = internalMutation({
   args: { mediaId: v.id("media"), deleted: v.number(), requested: v.optional(v.number()) },
@@ -1612,23 +1699,6 @@ export const markStoragePurged = internalMutation({
     const now = Date.now();
 
     const requested = args.requested ?? args.deleted;
-    if (args.deleted < requested) {
-      await writeAuditEvent(ctx, {
-        action: AUDIT_ACTIONS.mediaFilePurgeFailed,
-        subjectType: "media",
-        subjectId: media._id,
-        eventId: media.eventId,
-        metadata: {
-          deleted: args.deleted,
-          requested,
-          storageRegion: media.storageRegion,
-          reason: "shortDelete",
-        },
-        now,
-      });
-      await ctx.db.patch(media._id, { updatedAt: now });
-      return null;
-    }
 
     await ctx.db.patch(media._id, {
       storageKey: undefined,
@@ -1686,6 +1756,76 @@ export const markStoragePurgeFailed = internalMutation({
       now,
     });
     await ctx.db.patch(media._id, { updatedAt: now });
+    return null;
+  },
+});
+
+/** Close a durable non-media purge job after every requested key left. */
+export const markGenericStoragePurged = internalMutation({
+  args: {
+    purgeJobId: v.id("storagePurgeJobs"),
+    attempts: v.number(),
+    requested: v.number(),
+    deleted: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.purgeJobId);
+    if (!job || job.state === "completed") return null;
+    const now = Date.now();
+    await ctx.db.patch(job._id, {
+      state: "completed",
+      attempts: Math.max(job.attempts, args.attempts),
+      requested: args.requested,
+      deleted: args.deleted,
+      keys: undefined,
+      lastError: undefined,
+      completedAt: now,
+      updatedAt: now,
+    });
+    return null;
+  },
+});
+
+/** Record each failed network attempt while the scheduler still owns retries. */
+export const markGenericStoragePurgeAttempt = internalMutation({
+  args: { purgeJobId: v.id("storagePurgeJobs"), attempts: v.number(), reason: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.purgeJobId);
+    if (!job || job.state === "completed" || job.state === "stuck") return null;
+    await ctx.db.patch(job._id, {
+      attempts: Math.max(job.attempts, args.attempts),
+      lastError: args.reason,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Preserve non-media object keys when the bounded delete ladder gives up. */
+export const markGenericStoragePurgeFailed = internalMutation({
+  args: {
+    purgeJobId: v.id("storagePurgeJobs"),
+    attempts: v.number(),
+    requested: v.number(),
+    deleted: v.number(),
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.purgeJobId);
+    if (!job || job.state === "completed") return null;
+    const now = Date.now();
+    await ctx.db.patch(job._id, {
+      state: "stuck",
+      attempts: Math.max(job.attempts, args.attempts),
+      requested: args.requested,
+      deleted: args.deleted,
+      // A bounded vocabulary only; provider errors and keys never enter it.
+      lastError: args.reason,
+      updatedAt: now,
+    });
     return null;
   },
 });
@@ -1770,7 +1910,14 @@ export const stuckPurges = query({
  * where that becomes true.
  */
 export const myMedia = query({
-  args: { eventId: v.id("events") },
+  args: {
+    eventId: v.id("events"),
+    // A signed URL expires even when the underlying media row does not change.
+    // Clients advance this value before the read TTL, changing the Convex query
+    // identity and causing the URLs to be projected again. It deliberately has
+    // no business meaning inside the handler.
+    urlRefreshKey: v.optional(v.number()),
+  },
   returns: v.array(mediaViewValidator),
   handler: async (ctx, args): Promise<MediaView[]> => {
     const actor = await requireEventActor(ctx, args.eventId);
@@ -1810,6 +1957,9 @@ export const eventMedia = query({
     eventId: v.id("events"),
     states: v.optional(v.array(mediaState)),
     limit: v.optional(v.number()),
+    // See `myMedia`: this cache-buster is intentionally ignored after Convex
+    // has used it as part of the subscription arguments.
+    urlRefreshKey: v.optional(v.number()),
   },
   returns: v.array(mediaViewValidator),
   handler: async (ctx, args): Promise<MediaView[]> => {

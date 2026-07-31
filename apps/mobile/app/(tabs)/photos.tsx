@@ -38,6 +38,7 @@ import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import type { ReportReason } from "@partybooth/contracts/media";
+import { SIGNED_READ_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 
 import {
   DurationBadge,
@@ -60,12 +61,14 @@ import {
 } from "@/components/ui";
 import { appConfig } from "@/env";
 import { useNow } from "@/hooks/use-now";
+import { useSignedUrlRefreshKey } from "@/hooks/use-signed-url-refresh";
 import { api, type EventSummary, type MediaItem } from "@/lib/api";
 import { describeError } from "@/lib/errors";
 import {
   formatBytes,
   mergeMediaTimeline,
   usableMediaUri,
+  usableUploaderAvatarUri,
   type MediaTimelineEntry,
   type MediaTone,
 } from "@/lib/media-view";
@@ -189,7 +192,8 @@ function MyMedia({ event, eventsLoading }: { event: EventSummary | null; eventsL
 
 function MyMediaLive({ event, items }: { event: EventSummary; items: readonly QueueItem[] }) {
   const queue = useUploadQueue();
-  const media = useQuery(api.media.myMedia, { eventId: event.id });
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_READ_URL_TTL_SECONDS);
+  const media = useQuery(api.media.myMedia, { eventId: event.id, urlRefreshKey });
   const withdraw = useMutation(api.media.withdraw);
 
   const [working, setWorking] = useState<string | null>(null);
@@ -410,7 +414,12 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
   // `approved` only. The party-wide grid is not the place a guest's own pending
   // photo belongs — that is what "My media" is for — and `canSeeMedia` in Convex
   // would otherwise include it for its own submitter.
-  const media = useQuery(api.media.eventMedia, { eventId: event.id, states: ["approved"] });
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_READ_URL_TTL_SECONDS);
+  const media = useQuery(api.media.eventMedia, {
+    eventId: event.id,
+    states: ["approved"],
+    urlRefreshKey,
+  });
   // One clock for the whole grid, ticking rather than read during render, so
   // every tile agrees about which signed URLs have expired (ADR 0004 §5).
   const now = useNow();
@@ -560,6 +569,7 @@ function GalleryTile({
           onPlay={playable === undefined ? undefined : () => onPlay(playable)}
           fill
         />
+        <UploaderBadge item={item} now={now} />
         {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
       </Pressable>
     );
@@ -574,8 +584,35 @@ function GalleryTile({
       accessibilityRole={onMenu === undefined ? undefined : "none"}
     >
       <Thumb uri={usableMediaUri(item, now)} label={label} size="fill" />
+      <UploaderBadge item={item} now={now} />
       {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
     </Pressable>
+  );
+}
+
+/** Visible attribution promised during onboarding, compact enough for a 3-up grid. */
+function UploaderBadge({ item, now }: { item: MediaItem; now: number }) {
+  const avatarUri = usableUploaderAvatarUri(item, now);
+  return (
+    <View style={styles.uploaderBadge} pointerEvents="none">
+      <View style={styles.uploaderAvatar}>
+        {avatarUri === undefined ? (
+          <Text style={styles.uploaderInitial}>
+            {(item.uploaderDisplayName[0] ?? "?").toUpperCase()}
+          </Text>
+        ) : (
+          <Image
+            source={{ uri: avatarUri }}
+            style={styles.uploaderAvatarImage}
+            contentFit="cover"
+            accessibilityIgnoresInvertColors
+          />
+        )}
+      </View>
+      <Text style={styles.uploaderName} numberOfLines={1}>
+        {item.uploaderDisplayName}
+      </Text>
+    </View>
   );
 }
 
@@ -698,6 +735,32 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: "rgba(18, 9, 27, 0.62)",
   },
+  uploaderBadge: {
+    position: "absolute",
+    left: spacing.xs,
+    right: spacing.xs,
+    bottom: spacing.xs,
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.72)",
+  },
+  uploaderAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: radius.pill,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accentSoft,
+  },
+  uploaderAvatarImage: { width: "100%", height: "100%" },
+  uploaderInitial: { ...typography.caption, fontSize: 10, color: colors.accent },
+  uploaderName: { ...typography.caption, flex: 1, color: colors.text, fontSize: 10 },
   // Three across on a phone, with the gap taken out of each column. `gap` on a
   // wrapping row does not subtract from a percentage basis, so the width does.
   tile: { width: "31.5%" },

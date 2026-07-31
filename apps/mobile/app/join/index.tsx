@@ -59,7 +59,8 @@ function JoinByCodeLive() {
 
   const field = readCodeInput(digits);
   const signedIn = state.status === "signed-in";
-  const needsOnboarding = state.status === "signed-in" && state.needsOnboarding;
+  const needsOnboarding =
+    state.status === "signed-in" && (state.needsOnboarding || state.needsTermsAcceptance);
   /** Only a throttle carries a wait; a plain rejection is retryable straight away. */
   const throttled = phase.status === "refused" && phase.copy.retryAfterMs !== undefined;
 

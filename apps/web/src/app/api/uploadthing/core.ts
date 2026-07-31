@@ -4,12 +4,10 @@ import "server-only";
  * The UploadThing FileRouter — the only place in PartyBooth that is allowed to
  * put bytes into private storage.
  *
- * One route, `partyMedia`, and it is deliberately **media-type agnostic**: it
- * accepts `image` and `video` from day one even though video capture is Sprint 4
- * (PLAN.md). `MEDIA_LIMITS` in `@partybooth/contracts` already knows what a
- * video may weigh and how long it may run, and a route that only learns about
- * video when a camera screen ships is a route whose validation gets written
- * twice.
+ * Two routes share this private boundary. `partyMedia` is deliberately
+ * **media-type agnostic** (image and video), while `avatarImage` accepts only a
+ * separately granted, re-encoded JPEG. Keeping the routes separate prevents an
+ * account-level avatar grant from inheriting an event media limit or lifecycle.
  *
  * ## What the middleware is, and what it is not
  *
@@ -85,6 +83,8 @@ import { createUploadthing, type FileRouter } from "uploadthing/next";
 
 import { fetchAuthMutation } from "@/lib/auth-server";
 import {
+  AVATAR_UPLOAD_ROUTE_SLUG,
+  avatarUploadTicketSchema,
   checkTicketAgainstFiles,
   checkTicketAgainstGrant,
   isDerivativeRole,
@@ -92,10 +92,17 @@ import {
   validateMediaFile,
   type MediaFileRole,
   type MediaType,
+  type AvatarUploadTicket,
+  type IssuedAvatarUploadGrant,
   type UploadTicket,
 } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
-import { registerCompletedUpload, uploadServerStatus } from "@/lib/upload/server";
+import { authoriseAvatarUploadAtEdge } from "@/lib/upload/avatar";
+import {
+  registerCompletedAvatarUpload,
+  registerCompletedUpload,
+  uploadServerStatus,
+} from "@/lib/upload/server";
 
 /**
  * What the middleware passes forward to `onUploadComplete`.
@@ -158,6 +165,11 @@ const f = createUploadthing();
 const partyMediaConfig = {
   image: { maxFileSize: "32MB", maxFileCount: 1, acl: "private" },
   video: { maxFileSize: "256MB", maxFileCount: 1, acl: "private" },
+} as const;
+
+/** Avatars are a separately authorised, private, re-encoded JPEG route. */
+const avatarConfig = {
+  image: { maxFileSize: "2MB", maxFileCount: 1, acl: "private" },
 } as const;
 
 export const partyBoothFileRouter = {
@@ -392,7 +404,40 @@ export const partyBoothFileRouter = {
       return {
         outcome: result.outcome,
         state: result.state ?? null,
+        ...(result.reason === undefined ? {} : { reason: result.reason }),
       };
+    }),
+  [AVATAR_UPLOAD_ROUTE_SLUG]: f(avatarConfig, { awaitServerData: true })
+    .input(avatarUploadTicketSchema)
+    .middleware(async ({ files, input }) => {
+      const status = uploadServerStatus();
+      if (!status.ready) {
+        throw new UploadThingError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Uploads are not configured yet (missing ${status.missing.join(", ")}).`,
+        });
+      }
+
+      const ticket: AvatarUploadTicket = input;
+      const confirmed = await confirmAvatarGrant(ticket.secret);
+      const authorised = authoriseAvatarUploadAtEdge(ticket, files, confirmed);
+      if (!authorised.ok) {
+        throw new UploadThingError({ code: "BAD_REQUEST", message: authorised.message });
+      }
+
+      return { secret: ticket.secret, checksum: ticket.checksum };
+    })
+    .onUploadComplete(async ({ metadata, file }) => {
+      const result = await registerCompletedAvatarUpload({
+        secret: metadata.secret,
+        fileKey: file.key,
+        byteSize: file.size,
+        mimeType: file.type,
+        checksum: metadata.checksum,
+      });
+
+      // Never return the durable provider key as UploadThing serverData.
+      return { outcome: result.outcome, ...(result.reason ? { reason: result.reason } : {}) };
     }),
 } satisfies FileRouter;
 
@@ -431,6 +476,27 @@ async function confirmGrant(secret: string): Promise<{
     throw new UploadThingError({
       code: "FORBIDDEN",
       message: "That upload is no longer valid. Take the photo again.",
+    });
+  }
+}
+
+/** Avatar equivalent of `confirmGrant`, with the same deliberately vague refusal. */
+async function confirmAvatarGrant(
+  secret: string,
+): Promise<Pick<IssuedAvatarUploadGrant, "byteSize" | "mimeType" | "checksum">> {
+  if (!fetchAuthMutation) {
+    throw new UploadThingError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Uploads are not configured yet (missing CONVEX_URL).",
+    });
+  }
+
+  try {
+    return await fetchAuthMutation(backendApi.avatars.confirmUpload, { secret });
+  } catch {
+    throw new UploadThingError({
+      code: "FORBIDDEN",
+      message: "That profile photo upload is no longer valid. Try again.",
     });
   }
 }

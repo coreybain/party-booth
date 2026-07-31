@@ -8,6 +8,7 @@ import {
   MEDIA_STATE_COPY,
   mergeMediaTimeline,
   usableMediaUri,
+  usableUploaderAvatarUri,
 } from "./media-view";
 
 import type { MediaItem } from "./api";
@@ -281,5 +282,18 @@ describe("usableMediaUri", () => {
 
   it("returns nothing while an item is still processing", () => {
     expect(usableMediaUri(row({ id: "media_1", captureId: "m_1" }), NOW)).toBeUndefined();
+  });
+});
+
+describe("usableUploaderAvatarUri", () => {
+  it("returns a private uploader avatar only while its signature is live", () => {
+    const item = row({
+      id: "media_1",
+      captureId: "m_1",
+      uploaderAvatarUrl: "https://cdn/avatar.jpg",
+      uploaderAvatarUrlExpiresAt: NOW + 1,
+    });
+    expect(usableUploaderAvatarUri(item, NOW)).toBe("https://cdn/avatar.jpg");
+    expect(usableUploaderAvatarUri(item, NOW + 1)).toBeUndefined();
   });
 });

@@ -4,7 +4,7 @@ import { Redirect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
+import { BodyText, Button, Card, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
 import { appConfig } from "@/env";
 import { captureHandledError } from "@/lib/sentry";
 import { DISPLAY_NAME_MAX_LENGTH, initialFor, readDisplayName } from "@/lib/profile";
@@ -15,16 +15,9 @@ import { colors, radius, spacing, typography } from "@/theme";
  * Name + photo confirmation (PLAN.md → "Guests in app: Apple or Google sign-in, then
  * name + photo confirmation").
  *
- * The name is saved for real: `confirmProfile` calls Better Auth's `updateUser`, whose
- * `user.onUpdate` trigger in `packages/backend/convex/auth.ts` mirrors it into
- * `users.displayName` — the column the host's moderation queue, every membership list
- * and every audit row read. A guest who confirms "Sam" here is "Sam" to the host.
- *
- * The **photo** is remembered on the device only. Avatars ride the same short-lived
- * upload-grant pipeline as party media, which Sprint 3 builds; a `file://` path stored
- * on the server is a string no other device can resolve, and a second ad-hoc upload
- * path built now is one that has to be deleted again next sprint. So the choice is
- * kept (`src/lib/local-profile.ts`) and uploaded when there is somewhere to put it.
+ * `confirmProfile` writes the display name to Convex and sends a selected photo
+ * through the private, single-use avatar upload path. Clients receive only a
+ * short-lived signed read URL; the provider key never crosses this screen.
  */
 /**
  * Open a public legal page in the system browser sheet.
@@ -45,7 +38,7 @@ async function openLegalPage(path: string): Promise<void> {
 
 export default function OnboardingScreen() {
   const router = useRouter();
-  const { state, localProfile, confirmProfile } = useSession();
+  const { state, localProfile, confirmProfile, acceptCurrentTerms } = useSession();
 
   const providerName = state.status === "signed-in" ? (state.user.name ?? "") : "";
   const providerImage = state.status === "signed-in" ? state.user.image : null;
@@ -53,6 +46,9 @@ export default function OnboardingScreen() {
   const [name, setName] = useState(providerName);
   const [touched, setTouched] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(localProfile.photoUri ?? providerImage);
+  // Provider/server images are already remote. Only a picker URI (or a legacy
+  // local choice from an earlier build) needs to travel through the avatar pipeline.
+  const [photoNeedsUpload, setPhotoNeedsUpload] = useState(localProfile.photoUri !== null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,7 +65,10 @@ export default function OnboardingScreen() {
         aspect: [1, 1],
         quality: 0.8,
       });
-      if (!result.canceled && result.assets[0]) setPhotoUri(result.assets[0].uri);
+      if (!result.canceled && result.assets[0]) {
+        setPhotoUri(result.assets[0].uri);
+        setPhotoNeedsUpload(true);
+      }
     } catch (cause) {
       // A denied library permission or a missing native module must not strand
       // somebody on the one screen standing between them and the party.
@@ -88,7 +87,10 @@ export default function OnboardingScreen() {
 
     setSaving(true);
     setError(null);
-    const outcome = await confirmProfile({ displayName: validated.value, photoUri });
+    const outcome = await confirmProfile({
+      displayName: validated.value,
+      photoUri: photoNeedsUpload ? photoUri : null,
+    });
     setSaving(false);
 
     if (outcome.status === "error") {
@@ -99,10 +101,23 @@ export default function OnboardingScreen() {
     // has just flipped, so `/` falls through — and it is the only place that knows
     // whether an invite was parked while this guest signed in.
     router.replace("/");
-  }, [confirmProfile, name, photoUri, router]);
+  }, [confirmProfile, name, photoNeedsUpload, photoUri, router]);
 
   if (state.status === "signed-out") return <Redirect href="/sign-in" />;
   if (state.status === "loading") return <Redirect href="/" />;
+
+  // New accounts accept beside the profile confirmation below. This branch is
+  // deliberately only for an established account whose recorded version is
+  // missing or stale, so accepting a policy update never asks for their name or
+  // avatar again.
+  if (!state.needsOnboarding && state.needsTermsAcceptance) {
+    return (
+      <TermsAcceptanceScreen
+        acceptCurrentTerms={acceptCurrentTerms}
+        onAccepted={() => router.replace("/")}
+      />
+    );
+  }
 
   return (
     <Screen>
@@ -176,11 +191,10 @@ export default function OnboardingScreen() {
           </Notice>
         ) : null}
 
-        <Notice tone="info" title="Your photo stays on this phone for now">
+        <Notice tone="info" title="Private by default">
           <MutedText>
-            Profile photos upload through the same private, permission-checked pipeline as party
-            media, which lands in Sprint 3. Until then your choice is remembered here and nothing
-            leaves the device.
+            Your photo is re-sized before it is sent to private storage. Party members receive a
+            short-lived link only when they can see something you shared.
           </MutedText>
         </Notice>
 
@@ -220,6 +234,71 @@ export default function OnboardingScreen() {
             Privacy
           </Text>
         </Text>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+function TermsAcceptanceScreen({
+  acceptCurrentTerms,
+  onAccepted,
+}: {
+  readonly acceptCurrentTerms: () => Promise<
+    { readonly status: "ok" } | { readonly status: "error"; readonly message: string }
+  >;
+  readonly onAccepted: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const accept = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    const outcome = await acceptCurrentTerms();
+    setSaving(false);
+    if (outcome.status === "error") {
+      setError(outcome.message);
+      return;
+    }
+    onAccepted();
+  }, [acceptCurrentTerms, onAccepted]);
+
+  return (
+    <Screen>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScreenHeader
+          title="The PartyBooth terms have changed"
+          subtitle="Please review and accept the current rules before adding anything to a party."
+        />
+
+        <Card>
+          <BodyText>{TERMS_ACCEPTANCE_PROMPT}</BodyText>
+          <MutedText>
+            The rules cover objectionable content, other people&apos;s privacy, reporting and
+            blocking. Your name, photo and party memberships will not change.
+          </MutedText>
+          <Button
+            label="Read the current terms"
+            variant="secondary"
+            icon="document-text-outline"
+            onPress={() => void openLegalPage(TERMS_PATH)}
+            disabled={saving || appConfig.status !== "ready"}
+          />
+        </Card>
+
+        {error ? (
+          <Notice tone="danger" title="Couldn't record your agreement">
+            <MutedText>{error}</MutedText>
+          </Notice>
+        ) : null}
+
+        <Button
+          label="Agree and continue"
+          icon="checkmark"
+          onPress={() => void accept()}
+          disabled={saving}
+          busy={saving}
+        />
       </ScrollView>
     </Screen>
   );

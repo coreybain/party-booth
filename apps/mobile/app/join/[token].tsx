@@ -133,7 +133,8 @@ function JoinByTokenLive({ target }: { target: JoinTarget }) {
   );
 
   const signedIn = state.status === "signed-in";
-  const needsOnboarding = state.status === "signed-in" && state.needsOnboarding;
+  const needsOnboarding =
+    state.status === "signed-in" && (state.needsOnboarding || state.needsTermsAcceptance);
   const loadingPreview = target.kind === "token" && preview === undefined;
 
   const join = useCallback(async () => {

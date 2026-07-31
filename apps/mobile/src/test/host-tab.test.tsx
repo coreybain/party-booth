@@ -14,7 +14,7 @@
  * renderer, `hostAbilities` and the layout primitives are real.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -34,6 +34,8 @@ const fake = vi.hoisted(() => ({
   rotate: vi.fn(),
   setState: vi.fn(),
   update: vi.fn(),
+  resolveReport: vi.fn(),
+  queryCalls: [] as { readonly name: string; readonly args: unknown }[],
   session: {} as Record<string, unknown>,
 }));
 
@@ -43,6 +45,7 @@ const fake = vi.hoisted(() => ({
 vi.mock("convex/react", () => ({
   useQuery: (reference: { name: string }, args: unknown) => {
     if (args === "skip") return undefined;
+    fake.queryCalls.push({ name: reference.name, args });
     if (reference.name === "current") return fake.invite;
     if (reference.name === "flagged") return fake.flagged;
     return fake.pending;
@@ -51,6 +54,7 @@ vi.mock("convex/react", () => ({
     if (reference.name === "rotate") return fake.rotate;
     if (reference.name === "setState") return fake.setState;
     if (reference.name === "update") return fake.update;
+    if (reference.name === "resolveReport") return fake.resolveReport;
     return fake.moderate;
   },
 }));
@@ -66,6 +70,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
         pending: { name: "pending" },
         flagged: { name: "flagged" },
         moderate: { name: "moderate" },
+        resolveReport: { name: "resolveReport" },
       },
     },
   };
@@ -167,6 +172,8 @@ beforeEach(() => {
   });
   fake.setState.mockResolvedValue({ state: "paused" });
   fake.update.mockResolvedValue(null);
+  fake.resolveReport.mockResolvedValue({ status: "actioned", stillFlagged: false });
+  fake.queryCalls.length = 0;
 });
 
 /* -------------------------------------------------------------------------- */
@@ -317,6 +324,19 @@ describe("the rotation modal", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("the pending queue", () => {
+  it("refreshes both short-lived host review subscriptions before their URLs expire", async () => {
+    await renderHost();
+
+    expect(fake.queryCalls).toContainEqual({
+      name: "flagged",
+      args: { eventId: "event_1", limit: 10, urlRefreshKey: expect.any(Number) },
+    });
+    expect(fake.queryCalls).toContainEqual({
+      name: "pending",
+      args: { eventId: "event_1", limit: 40, urlRefreshKey: expect.any(Number) },
+    });
+  });
+
   it("lists what is waiting and approves one with a single tap", async () => {
     await renderHost();
 
@@ -408,6 +428,65 @@ describe("flagged items", () => {
   it("renders nothing at all when nobody has reported anything", async () => {
     await renderHost();
     expect(screen.queryByText(/Reported \(/i)).toBeNull();
+  });
+
+  it("marks every open report handled sequentially", async () => {
+    fake.flagged = [
+      {
+        media: aMedia({ id: "media_9", uploaderDisplayName: "Alex", reportCount: 2 }),
+        reports: [
+          { id: "r1", reason: "harassment", status: "open", createdAt: 2 },
+          { id: "r2", reason: "other", status: "open", createdAt: 1 },
+        ],
+      },
+    ];
+    let releaseFirst: (() => void) | undefined;
+    fake.resolveReport
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseFirst = () => resolve({ status: "actioned", stillFlagged: true });
+          }),
+      )
+      .mockResolvedValueOnce({ status: "actioned", stillFlagged: false });
+    await renderHost();
+
+    fireEvent.click(screen.getByLabelText("Mark handled"));
+
+    expect(fake.resolveReport).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Dismiss").getAttribute("aria-disabled")).toBe("true");
+    await act(async () => {
+      releaseFirst?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(fake.resolveReport).toHaveBeenCalledTimes(2);
+    });
+    expect(fake.resolveReport.mock.calls).toEqual([
+      [{ reportId: "r1", status: "actioned" }],
+      [{ reportId: "r2", status: "actioned" }],
+    ]);
+  });
+
+  it("dismisses reports and restores the controls after a failure", async () => {
+    fake.flagged = [
+      {
+        media: aMedia({ id: "media_9", uploaderDisplayName: "Alex", reportCount: 1 }),
+        reports: [{ id: "r1", reason: "other", status: "open", createdAt: 1 }],
+      },
+    ];
+    fake.resolveReport.mockRejectedValueOnce(new Error("offline"));
+    await renderHost();
+
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Some reports are still open/i)).toBeTruthy();
+    });
+    expect(fake.resolveReport).toHaveBeenCalledWith({ reportId: "r1", status: "dismissed" });
+    expect(screen.getByLabelText("Mark handled").getAttribute("aria-disabled")).not.toBe("true");
+    expect(screen.getByLabelText("Dismiss").getAttribute("aria-disabled")).not.toBe("true");
   });
 });
 

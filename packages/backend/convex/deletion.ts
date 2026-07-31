@@ -1,4 +1,5 @@
 import { AUDIT_ACTIONS } from "@partybooth/contracts/analytics";
+import { serverEnv } from "@partybooth/env/server";
 import type { FunctionReference } from "convex/server";
 import { v } from "convex/values";
 
@@ -9,6 +10,7 @@ import { authComponent } from "./auth";
 import { writeAuditEvent } from "./lib/audit";
 import { applyCountChange, storageKeysOf } from "./lib/media";
 import { reportError } from "./lib/sentry";
+import { createStoragePurgeJob } from "./lib/storage_purge";
 
 /**
  * The account-deletion purge worker.
@@ -73,7 +75,12 @@ const mediaFunctions = internal.media as unknown as {
   purgeStoredFile: FunctionReference<
     "action",
     "internal",
-    { region: Doc<"media">["storageRegion"]; keys: string[]; mediaId?: Id<"media"> },
+    {
+      region: Doc<"media">["storageRegion"];
+      keys: string[];
+      mediaId?: Id<"media">;
+      purgeJobId?: Id<"storagePurgeJobs">;
+    },
     null
   >;
 };
@@ -160,6 +167,21 @@ async function purgeAccount(
     return undefined;
   }
 
+  if (user.avatarKey !== undefined) {
+    const region = user.avatarStorageRegion ?? serverEnv.STORAGE_DEFAULT_REGION;
+    const purgeJobId = await createStoragePurgeJob(ctx, {
+      region,
+      keys: [user.avatarKey],
+      source: "accountAvatar",
+      now,
+    });
+    await ctx.scheduler.runAfter(0, mediaFunctions.purgeStoredFile, {
+      region,
+      keys: [user.avatarKey],
+      purgeJobId,
+    });
+  }
+
   const mediaTombstoned = await purgeMedia(ctx, user, now);
   const membershipsRemoved = await removeMemberships(ctx, user._id);
   const eventsArchived = await archiveOwnedEvents(ctx, user._id, now);
@@ -181,6 +203,7 @@ async function purgeAccount(
     emailVerified: false,
     displayName: "Former guest",
     avatarKey: undefined,
+    avatarStorageRegion: undefined,
     isPrivateRelayEmail: undefined,
     isOrganiser: false,
     isGlobalAdmin: false,
@@ -348,11 +371,27 @@ async function removeRelationships(
     .collect()) {
     await ctx.db.delete(row._id);
   }
-  for (const row of await ctx.db
-    .query("uploadGrants")
-    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
-    .collect()) {
+  const [issuedGrants, startedGrants] = await Promise.all([
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+      .collect(),
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "started"))
+      .collect(),
+  ]);
+  for (const row of [...issuedGrants, ...startedGrants]) {
     await ctx.db.patch(row._id, { status: "expired", updatedAt: now });
+  }
+  // Unlike media grants, avatar grants do not anchor a retained event record.
+  // Their hashed capabilities and provider keys are account data, so the final
+  // purge removes every historical row rather than merely expiring live ones.
+  for (const row of await ctx.db
+    .query("avatarUploadGrants")
+    .withIndex("by_user_and_issuedAt", (q) => q.eq("userId", userId))
+    .collect()) {
+    await ctx.db.delete(row._id);
   }
 }
 

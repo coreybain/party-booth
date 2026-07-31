@@ -13,6 +13,7 @@
 import {
   isPermanentRejection,
   UPLOAD_REJECTION_MESSAGES,
+  type AlreadyUploaded,
   type GrantResult,
   type IssuedGrant,
 } from "@partybooth/contracts/upload";
@@ -173,13 +174,18 @@ export { isPermanentRejection };
 export type GrantOutcome =
   | { readonly kind: "granted"; readonly grant: IssuedGrant }
   | {
+      readonly kind: "alreadyUploaded";
+      readonly mediaId: string;
+      readonly state: AlreadyUploaded["state"];
+    }
+  | {
       readonly kind: "failed";
       readonly failure: QueueFailure;
       readonly retryAfterMs?: number | undefined;
     };
 
 /**
- * Translate `media.requestUploadGrant`'s three-way answer into a queue decision.
+ * Translate `media.requestUploadGrant`'s four-way answer into a queue decision.
  *
  * The backend returns refusals as **values** rather than exceptions (a Convex
  * mutation that throws rolls its own throttle write back — see ADR 0004), so
@@ -189,6 +195,9 @@ export type GrantOutcome =
  */
 export function readGrantResult(result: GrantResult): GrantOutcome {
   if (result.outcome === "granted") return { kind: "granted", grant: result };
+  if (result.outcome === "alreadyUploaded") {
+    return { kind: "alreadyUploaded", mediaId: result.mediaId, state: result.state };
+  }
 
   if (result.outcome === "throttled") {
     return {

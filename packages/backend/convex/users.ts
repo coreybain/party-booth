@@ -1,8 +1,10 @@
 import {
   requestAccountDeletionInputSchema,
+  SIGNED_READ_URL_TTL_SECONDS,
   TERMS_VERSION,
   updateProfileInputSchema,
 } from "@partybooth/contracts";
+import { serverEnv } from "@partybooth/env/server";
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
@@ -13,6 +15,7 @@ import { forbidden, invalidInput } from "./lib/errors";
 import { getCurrentUser, requirePermission, requireUser, toPermissionActor } from "./lib/guards";
 import { requireActiveUser } from "./lib/guards";
 import { parseInput } from "./lib/input";
+import { resolveStorageAdapter } from "./lib/storage";
 
 /**
  * The signed-in user, shaped for a client.
@@ -23,7 +26,11 @@ import { parseInput } from "./lib/input";
  * for.
  */
 export const currentUser = query({
-  args: {},
+  args: {
+    // Ignored by the handler. Changing it gives the subscription a new identity
+    // before the private avatar URL expires.
+    urlRefreshKey: v.optional(v.number()),
+  },
   returns: v.union(
     v.null(),
     v.object({
@@ -31,7 +38,8 @@ export const currentUser = query({
       email: v.string(),
       emailVerified: v.boolean(),
       displayName: v.string(),
-      avatarKey: v.optional(v.string()),
+      avatarUrl: v.optional(v.string()),
+      avatarUrlExpiresAt: v.optional(v.number()),
       onboardedAt: v.optional(v.number()),
       accountState: v.string(),
       isOrganiser: v.boolean(),
@@ -44,12 +52,25 @@ export const currentUser = query({
     const user = await getCurrentUser(ctx);
     if (!user) return null;
 
+    let avatar: { avatarUrl: string; avatarUrlExpiresAt: number } | undefined;
+    if (user.avatarKey !== undefined) {
+      try {
+        const signed = await resolveStorageAdapter(
+          user.avatarStorageRegion ?? serverEnv.STORAGE_DEFAULT_REGION,
+        ).createReadUrl(user.avatarKey, { expiresInSeconds: SIGNED_READ_URL_TTL_SECONDS });
+        avatar = { avatarUrl: signed.url, avatarUrlExpiresAt: signed.expiresAt };
+      } catch {
+        // A profile without its picture is still a usable signed-in shell. The
+        // next refresh retries after storage configuration or a provider blip.
+      }
+    }
+
     return {
       id: user._id,
       email: user.email,
       emailVerified: user.emailVerified,
       displayName: user.displayName,
-      ...(user.avatarKey === undefined ? {} : { avatarKey: user.avatarKey }),
+      ...avatar,
       // Absent means "has never confirmed a name", which is what both shells
       // read to decide whether to show the onboarding screen. `displayName`
       // cannot answer it — see the column's note in `schema.ts`.
@@ -66,7 +87,7 @@ export const currentUser = query({
 });
 
 /**
- * Confirm the profile: the name a host sees, and — from Sprint 3 — the avatar.
+ * Confirm the profile name a host sees.
  *
  * This is the **only** writer of `users.displayName` from a client. Both shells
  * used to go through Better Auth's `updateUser` and rely on the `user.onUpdate`
@@ -75,8 +96,8 @@ export const currentUser = query({
  * a theoretical conflict — verifying an email fires `onUpdate`, and the guest
  * who typed "Sam" would quietly become "Samantha Smith" again. So the trigger
  * now defers to a confirmed name (see `auth.ts`) and the confirmation lands
- * here, where it can also carry `avatarKey`, which Better Auth has no field
- * for.
+ * here. Avatars have a separate bound upload lifecycle in `avatars.ts`; this
+ * mutation never accepts a provider key from a client.
  *
  * `onboardedAt` is stamped on the first successful call and never moved. It is
  * the flag both clients read to decide whether to show the onboarding screen,
@@ -88,7 +109,6 @@ export const currentUser = query({
 export const updateProfile = mutation({
   args: {
     displayName: v.string(),
-    avatarKey: v.optional(v.string()),
     /**
      * The version of the user terms the guest was shown next to the button they
      * pressed.
@@ -104,7 +124,6 @@ export const updateProfile = mutation({
   },
   returns: v.object({
     displayName: v.string(),
-    avatarKey: v.optional(v.string()),
     onboardedAt: v.number(),
     acceptedTermsVersion: v.optional(v.string()),
   }),
@@ -114,10 +133,7 @@ export const updateProfile = mutation({
     const user = await requireActiveUser(ctx);
     // The contract's own schema, so the trimming and the length ceiling are the
     // ones the two clients showed the guest before they pressed the button.
-    const input = parseInput(updateProfileInputSchema, {
-      displayName: args.displayName,
-      ...(args.avatarKey === undefined ? {} : { avatarKey: args.avatarKey }),
-    });
+    const input = parseInput(updateProfileInputSchema, { displayName: args.displayName });
 
     const now = Date.now();
     const onboardedAt = user.onboardedAt ?? now;
@@ -130,7 +146,6 @@ export const updateProfile = mutation({
 
     await ctx.db.patch(user._id, {
       displayName: input.displayName,
-      ...(input.avatarKey === undefined ? {} : { avatarKey: input.avatarKey }),
       onboardedAt,
       ...(accepted === user.acceptedTermsVersion
         ? {}
@@ -140,11 +155,6 @@ export const updateProfile = mutation({
 
     return {
       displayName: input.displayName,
-      ...(input.avatarKey === undefined
-        ? user.avatarKey === undefined
-          ? {}
-          : { avatarKey: user.avatarKey }
-        : { avatarKey: input.avatarKey }),
       onboardedAt,
       ...(accepted === undefined ? {} : { acceptedTermsVersion: accepted }),
     };

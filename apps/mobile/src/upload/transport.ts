@@ -92,6 +92,51 @@ export function isUploadCancelled(error: unknown): boolean {
   return name === "AbortError" || name === "UploadAbortedError";
 }
 
+const PERMANENT_COMPLETION_REASONS = new Set([
+  "accountUnavailable",
+  "captureFactsChanged",
+  "captureOwnedByOther",
+  "derivativeNotDistinct",
+  "duplicateDerivative",
+  "duplicateFile",
+  "eventGone",
+  "fileMismatch",
+  "ownerDeleted",
+  "ownerDeletionScheduled",
+  "tooLong",
+  "withdrawn",
+]);
+
+/**
+ * The provider stored the body, but the authoritative callback refused to
+ * attach it. This is a normal serverData outcome, so transports must turn it
+ * back into a client failure explicitly instead of resolving successfully.
+ */
+export class UploadCompletionError extends Error {
+  override readonly name = "UploadCompletionError";
+  readonly reason: string | undefined;
+  readonly permanent: boolean;
+
+  constructor(reason?: string, subject = "upload") {
+    const permanent = reason !== undefined && PERMANENT_COMPLETION_REASONS.has(reason);
+    const message =
+      reason === "tooLong"
+        ? "That video is longer than the 60-second limit."
+        : reason === "withdrawn"
+          ? "That item was withdrawn before it finished sending."
+          : subject === "profile photo"
+            ? "The profile photo reached storage but could not be attached to your account. Try again."
+            : "The file reached storage but could not be added to the party. Try again.";
+    super(message);
+    this.reason = reason;
+    this.permanent = permanent;
+  }
+}
+
+export function isUploadCompletionError(error: unknown): error is UploadCompletionError {
+  return error instanceof UploadCompletionError;
+}
+
 export interface UploadTransport {
   /**
    * Send one file. Resolves when the provider has it; throws otherwise.

@@ -37,6 +37,7 @@ const fake = vi.hoisted(() => ({
   play: vi.fn(),
   playerSource: null as string | null,
   playerMuted: false,
+  queryCalls: [] as { readonly name: string; readonly args: unknown }[],
 }));
 
 // `useQuery` is dispatched on which function reference it was handed, exactly as
@@ -45,6 +46,7 @@ const fake = vi.hoisted(() => ({
 vi.mock("convex/react", () => ({
   useQuery: (reference: { name: string }, args: unknown) => {
     if (args === "skip") return undefined;
+    fake.queryCalls.push({ name: reference.name, args });
     return reference.name === "myMedia" ? fake.myMedia : fake.eventMedia;
   },
   useMutation: (reference: { name: string }) => {
@@ -191,6 +193,7 @@ beforeEach(() => {
   fake.block.mockResolvedValue({ blocked: true, created: true });
   fake.playerSource = null;
   fake.playerMuted = false;
+  fake.queryCalls.length = 0;
   fake.session = { activeEvent: anEvent(), eventsLoading: false };
   fake.queue = {
     offline: false,
@@ -207,6 +210,25 @@ beforeEach(() => {
 /* -------------------------------------------------------------------------- */
 
 describe("PhotosScreen — My media", () => {
+  it("gives both signed-URL subscriptions a refresh key", async () => {
+    await renderPhotos();
+
+    expect(fake.queryCalls).toContainEqual({
+      name: "myMedia",
+      args: { eventId: "event_1", urlRefreshKey: expect.any(Number) },
+    });
+
+    openGallery();
+    expect(fake.queryCalls).toContainEqual({
+      name: "eventMedia",
+      args: {
+        eventId: "event_1",
+        states: ["approved"],
+        urlRefreshKey: expect.any(Number),
+      },
+    });
+  });
+
   it("no longer renders only an empty placeholder when there is media", async () => {
     fake.myMedia = [aRow({ id: "media_1", captureId: "w_1", state: "approved" })];
     await renderPhotos();

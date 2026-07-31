@@ -1,7 +1,7 @@
 import { generateSecret, type RandomBytes } from "@partybooth/contracts/codes";
 import type { MediaFileRole, MediaType } from "@partybooth/contracts/media";
 import type { StorageRegion } from "@partybooth/contracts/storage";
-import { grantExpiresAt, isGrantUsable, type GrantUsability } from "@partybooth/contracts/upload";
+import { grantExpiresAt } from "@partybooth/contracts/upload";
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -127,10 +127,59 @@ export async function findGrantBySecret(
     .unique();
 }
 
+export type StartGrantResult =
+  | { ok: true; grant: Doc<"uploadGrants"> }
+  | { ok: false; reason: "unknownGrant" }
+  | {
+      ok: false;
+      reason: "expired" | "alreadyStarted" | "alreadyConsumed";
+      grant: Doc<"uploadGrants">;
+    };
+
+/**
+ * Reserve a grant at authenticated edge preflight, exactly once.
+ *
+ * The TTL is checked here, before a provider URL exists. Completion consumes a
+ * `started` row without consulting the clock, so a transfer which began on time
+ * is not discarded merely because the bytes took longer than two minutes. The
+ * expected owner is part of this transaction: a valid secret copied from
+ * another account is indistinguishable from an unknown one.
+ */
+export async function startGrant(
+  ctx: MutationCtx,
+  secret: string,
+  expectedUserId: Id<"users">,
+  now: number,
+): Promise<StartGrantResult> {
+  const grant = await findGrantBySecret(ctx, secret);
+  if (!grant || grant.userId !== expectedUserId) return { ok: false, reason: "unknownGrant" };
+
+  if (grant.status === "consumed") {
+    return { ok: false, reason: "alreadyConsumed", grant };
+  }
+  if (grant.status === "started") {
+    return { ok: false, reason: "alreadyStarted", grant };
+  }
+  if (grant.status === "expired" || now > grant.expiresAt) {
+    if (grant.status === "issued") {
+      await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+    }
+    return { ok: false, reason: "expired", grant };
+  }
+
+  await ctx.db.patch(grant._id, { status: "started", startedAt: now, updatedAt: now });
+  const started = await ctx.db.get(grant._id);
+  return { ok: true, grant: started ?? grant };
+}
+
 export type ConsumeResult =
   | { ok: true; grant: Doc<"uploadGrants"> }
   | { ok: false; reason: "unknownGrant" }
-  | { ok: false; reason: "expired" | "alreadyConsumed"; grant: Doc<"uploadGrants"> };
+  | {
+      ok: false;
+      reason: "expired" | "notStarted" | "alreadyConsumed";
+      grant: Doc<"uploadGrants">;
+    };
 
 /**
  * Spend a grant, exactly once.
@@ -141,9 +190,10 @@ export type ConsumeResult =
  * already handled, rather than as a second file smuggled in against one grant —
  * the caller uses `consumedFileKey` to tell those two apart.
  *
- * A grant that has run out of time is patched to `expired` on the way past. That
- * is tidying, not enforcement: `isGrantUsable` refuses on the clock whether or
- * not anything ever got round to writing the status.
+ * Only a `started` grant may complete. The start transition already applied the
+ * TTL under an authenticated identity; completion deliberately ignores the
+ * clock so an on-time transfer can finish late. An `issued` callback is refused
+ * because it bypassed that preflight.
  */
 export async function consumeGrant(
   ctx: MutationCtx,
@@ -154,12 +204,16 @@ export async function consumeGrant(
   const grant = await findGrantBySecret(ctx, secret);
   if (!grant) return { ok: false, reason: "unknownGrant" };
 
-  const usability: GrantUsability = isGrantUsable(grant, now);
-  if (!usability.usable) {
-    if (usability.reason === "expired" && grant.status === "issued") {
-      await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+  if (grant.status !== "started") {
+    if (grant.status === "consumed") {
+      return { ok: false, reason: "alreadyConsumed", grant };
     }
-    return { ok: false, reason: usability.reason, grant };
+    if (grant.status === "issued" && now > grant.expiresAt) {
+      await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
+      return { ok: false, reason: "expired", grant };
+    }
+    if (grant.status === "expired") return { ok: false, reason: "expired", grant };
+    return { ok: false, reason: "notStarted", grant };
   }
 
   await ctx.db.patch(grant._id, {
@@ -207,7 +261,7 @@ export async function expireGrantsForCapture(
 
   let expired = 0;
   for (const grant of grants) {
-    if (grant.status !== "issued") continue;
+    if (grant.status !== "issued" && grant.status !== "started") continue;
     await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
     expired += 1;
   }
@@ -232,10 +286,17 @@ export async function expireGrantsForUser(
   userId: Id<"users">,
   now: number,
 ): Promise<number> {
-  const grants = await ctx.db
-    .query("uploadGrants")
-    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
-    .collect();
+  const [issued, started] = await Promise.all([
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+      .collect(),
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "started"))
+      .collect(),
+  ]);
+  const grants = [...issued, ...started];
 
   let expired = 0;
   for (const grant of grants) {
@@ -274,7 +335,7 @@ export async function expireGrantsForEvent(
 
   let expired = 0;
   for (const grant of grants) {
-    if (grant.status !== "issued") continue;
+    if (grant.status !== "issued" && grant.status !== "started") continue;
     await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });
     expired += 1;
   }
@@ -299,10 +360,17 @@ export async function expireGrantsForAccount(
   userId: Id<"users">,
   now: number,
 ): Promise<number> {
-  const grants = await ctx.db
-    .query("uploadGrants")
-    .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
-    .collect();
+  const [issued, started] = await Promise.all([
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "issued"))
+      .collect(),
+    ctx.db
+      .query("uploadGrants")
+      .withIndex("by_user_and_status", (q) => q.eq("userId", userId).eq("status", "started"))
+      .collect(),
+  ]);
+  const grants = [...issued, ...started];
 
   for (const grant of grants) {
     await ctx.db.patch(grant._id, { status: "expired", updatedAt: now });

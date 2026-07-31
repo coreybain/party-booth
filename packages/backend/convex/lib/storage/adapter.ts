@@ -54,9 +54,12 @@ export interface StorageAdapter {
   /**
    * Delete objects. Idempotent: deleting a key that is already gone is a
    * success, because withdrawal must not be able to fail permanently on a
-   * retry.
+   * retry. `deleted` counts objects removed by this call; it may be lower than
+   * the number requested when some were already absent. `success` is the
+   * provider's authoritative acknowledgement that the requested delete was
+   * applied.
    */
-  deleteFiles(keys: readonly string[]): Promise<{ deleted: number }>;
+  deleteFiles(keys: readonly string[]): Promise<{ success: boolean; deleted: number }>;
 
   /** What this adapter resolved the region to. For audit rows and `/admin`. */
   describe(): StorageAppDescription;

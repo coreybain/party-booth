@@ -151,11 +151,11 @@ quietly — an audit row (`media.file_purge_failed`) and a record that still nam
 retry has something to work from. A bounded loop rather than an unbounded one because a permanent
 misconfiguration must not become an endless scheduler job.
 
-The same applies to a delete that _succeeds_ and removes less than it was asked to. UploadThing's
-`deletedCount` can legitimately come back lower than the number of keys; the row is stamped
-`storageDeletedAt` and stripped of its keys **only on a full delete**, because clearing them on a
-short count destroys the only pointer to bytes that are still there and no later sweep — including
-the P1 purge worker — could ever find them again.
+The adapter preserves UploadThing's explicit `success` acknowledgement instead of deriving success
+from `deletedCount`. An unconfirmed response takes the same retry path as a thrown request. A
+confirmed retry can legitimately report zero newly deleted objects because the first call deleted
+them and its response was lost; treating that idempotent no-op as failure would retain already-gone
+keys forever. Only a provider-confirmed delete stamps `storageDeletedAt` and clears the keys.
 
 And because a stuck purge that nobody can see is a stuck purge that stays stuck,
 `media.stuckPurges` lists rows with `deletedAt` set and `storageDeletedAt` unset for the host

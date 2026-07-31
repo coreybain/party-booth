@@ -220,3 +220,11 @@ export function usableMediaUri(media: MediaItem, now: number): string | undefine
   if (media.url !== undefined && isUrlUsable(media.urlExpiresAt, now)) return media.url;
   return undefined;
 }
+
+/** The uploader's private avatar URI, only while its signature remains valid. */
+export function usableUploaderAvatarUri(media: MediaItem, now: number): string | undefined {
+  if (media.uploaderAvatarUrl !== undefined && isUrlUsable(media.uploaderAvatarUrlExpiresAt, now)) {
+    return media.uploaderAvatarUrl;
+  }
+  return undefined;
+}

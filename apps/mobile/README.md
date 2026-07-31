@@ -317,7 +317,11 @@ and a plugin regression should not be able to silently drop one.
 
 Android `blockedPermissions` strips storage and location permissions that autolinked
 libraries like to add. PartyBooth never reads arbitrary storage, and Play flags both as
-sensitive.
+sensitive. Store profiles (`internal` and `production`) also strip
+`SYSTEM_ALERT_WINDOW`; React Native's development overlay may use it, so local and EAS
+development builds deliberately keep it. A final Android manifest override forces
+`expo-video`'s fullscreen activity to advertise Picture in Picture as disabled, matching
+the app's actual playback controls and the `supportsPictureInPicture: false` plugin option.
 
 ## EAS
 

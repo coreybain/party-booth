@@ -392,7 +392,13 @@ const flaggedItemValidator = v.object({
  * content.
  */
 export const flagged = query({
-  args: { eventId: v.id("events"), limit: v.optional(v.number()) },
+  args: {
+    eventId: v.id("events"),
+    limit: v.optional(v.number()),
+    // Host review URLs last only a minute. Advancing this ignored argument
+    // gives an open mobile subscription a new identity before those URLs die.
+    urlRefreshKey: v.optional(v.number()),
+  },
   returns: v.array(flaggedItemValidator),
   handler: async (ctx, args) => {
     const actor = await requireEventActor(ctx, args.eventId);
@@ -488,7 +494,12 @@ export const flagged = query({
  * act on is ever removed from a host's own queue by a filter they set.
  */
 export const pending = query({
-  args: { eventId: v.id("events"), limit: v.optional(v.number()) },
+  args: {
+    eventId: v.id("events"),
+    limit: v.optional(v.number()),
+    // See `flagged`: this exists solely to re-project short-lived signed URLs.
+    urlRefreshKey: v.optional(v.number()),
+  },
   returns: v.array(mediaViewValidator),
   handler: async (ctx, args): Promise<MediaView[]> => {
     const actor = await requireEventActor(ctx, args.eventId);

@@ -27,6 +27,7 @@ import { checkGrantEligibility } from "@partybooth/contracts/upload";
 import { useCallback, useState } from "react";
 
 import { captureHandledError } from "../lib/sentry";
+import { deleteLocalFile } from "../upload/device-store";
 import {
   buildPhotoCapture,
   buildVideoCapture,
@@ -60,6 +61,8 @@ const PIPELINE_FAILED_MESSAGE =
   "That photo couldn't be prepared. Try taking it again; if it keeps happening, restart the app.";
 const VIDEO_PIPELINE_FAILED_MESSAGE =
   "That video couldn't be prepared. Try recording it again; if it keeps happening, restart the app.";
+const ACCOUNT_CHANGED_MESSAGE =
+  "Your account changed while that file was being prepared, so it was not added. Try again.";
 /**
  * A clip so short the recorder produced nothing usable.
  *
@@ -91,12 +94,16 @@ export interface CaptureController {
 }
 
 export function useCapture(event: EventSummary | null): CaptureController {
-  const { enqueue } = useUploadQueue();
+  const { enqueueForOwner, ownerUserId } = useUploadQueue();
   const [busy, setBusy] = useState(false);
 
   const capture = useCallback(
     async (request: CaptureRequest): Promise<CaptureOutcome> => {
       if (event === null) return { status: "refused", message: NO_EVENT_MESSAGE };
+      const captureOwnerUserId = ownerUserId;
+      if (captureOwnerUserId === null) {
+        return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
+      }
 
       const mediaSource = request.fromLibrary ? "library" : "capture";
 
@@ -132,9 +139,17 @@ export function useCapture(event: EventSummary | null): CaptureController {
             mimeType: draft.mimeType,
           },
         });
-        if (!sized.ok) return { status: "refused", message: sized.message };
+        if (!sized.ok) {
+          await deleteDraftFiles(draft);
+          return { status: "refused", message: sized.message };
+        }
 
-        return { status: "queued", item: enqueue(draft) };
+        const item = enqueueForOwner(draft, captureOwnerUserId);
+        if (item === null) {
+          await deleteDraftFiles(draft);
+          return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
+        }
+        return { status: "queued", item };
       } catch (error) {
         // A failed encode is a device problem (out of storage, a corrupt frame),
         // not something a guest can be told anything useful about — so it goes to
@@ -145,12 +160,16 @@ export function useCapture(event: EventSummary | null): CaptureController {
         setBusy(false);
       }
     },
-    [event, enqueue],
+    [enqueueForOwner, event, ownerUserId],
   );
 
   const captureVideo = useCallback(
     async (request: VideoCaptureRequest): Promise<CaptureOutcome> => {
       if (event === null) return { status: "refused", message: NO_EVENT_MESSAGE };
+      const captureOwnerUserId = ownerUserId;
+      if (captureOwnerUserId === null) {
+        return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
+      }
 
       // Before the file is moved and hashed — a paused party is worth saying at
       // once, and a 200 MB SHA-256 is not free.
@@ -205,12 +224,30 @@ export function useCapture(event: EventSummary | null): CaptureController {
           durationSeconds: draft.durationSeconds,
         },
       });
-      if (!sized.ok) return { status: "refused", message: sized.message };
+      if (!sized.ok) {
+        await deleteDraftFiles(draft);
+        return { status: "refused", message: sized.message };
+      }
 
-      return { status: "queued", item: enqueue(draft) };
+      const item = enqueueForOwner(draft, captureOwnerUserId);
+      if (item === null) {
+        await deleteDraftFiles(draft);
+        return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
+      }
+      return { status: "queued", item };
     },
-    [event, enqueue],
+    [enqueueForOwner, event, ownerUserId],
   );
 
   return { busy, capture, captureVideo };
+}
+
+/** Files produced during preparation are ours until the queue accepts them. */
+async function deleteDraftFiles(draft: CaptureDraft): Promise<void> {
+  const uris = new Set([
+    draft.uri,
+    draft.previewUri,
+    ...(draft.derivatives ?? []).map((item) => item.uri),
+  ]);
+  await Promise.all([...uris].map((uri) => deleteLocalFile(uri)));
 }

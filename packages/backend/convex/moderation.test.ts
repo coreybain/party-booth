@@ -582,6 +582,24 @@ describe("moderation.report", () => {
 });
 
 describe("moderation.flagged", () => {
+  it("accepts a URL refresh key while preserving the reported-item result", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+    await f.t
+      .withIdentity({ subject: "other" })
+      .mutation(api.moderation.report, { mediaId, reason: "other" });
+
+    const listed = await f.t.withIdentity({ subject: "owner" }).query(api.moderation.flagged, {
+      eventId: f.eventId,
+      urlRefreshKey: 1,
+    });
+
+    expect(listed.map((item) => item.media.id)).toEqual([mediaId]);
+  });
+
   it("lists flagged items with their reasons, host-only", async () => {
     const f = await fixture();
     const mediaId = await seedMedia(f.t, f.eventId, f.guestId, {
@@ -657,6 +675,18 @@ describe("moderation.flagged", () => {
 });
 
 describe("moderation.pending", () => {
+  it("accepts a URL refresh key while preserving queue order", async () => {
+    const f = await fixture();
+    const mediaId = await seedMedia(f.t, f.eventId, f.guestId, { state: "pending" });
+
+    const queue = await f.t.withIdentity({ subject: "owner" }).query(api.moderation.pending, {
+      eventId: f.eventId,
+      urlRefreshKey: 1,
+    });
+
+    expect(queue.map((item) => item.id)).toEqual([mediaId]);
+  });
+
   it("is oldest first — the guest who has waited longest", async () => {
     const f = await fixture();
     const now = Date.now();
