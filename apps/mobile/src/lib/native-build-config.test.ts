@@ -4,6 +4,9 @@ import type { ExportedConfig } from "expo/config-plugins";
 
 import resolveExpoConfig, {
   ANDROID_GRADLE_JVM_ARGS,
+  IOS_SCENE_DELEGATE_SOURCE,
+  IOS_SCENE_MANIFEST,
+  migrateAppDelegateToSceneLifecycle,
   setAndroidGradleJvmArgs,
 } from "../../app.config";
 
@@ -46,5 +49,71 @@ describe("managed Android build configuration", () => {
     }) as ExportedConfig;
 
     expect(config.mods?.android?.gradleProperties).toBeTypeOf("function");
+  });
+});
+
+describe("managed camera configuration", () => {
+  it("includes the native barcode scanner used by QR joining", () => {
+    const config = resolveExpoConfig({
+      projectRoot: "/tmp/partybooth",
+      staticConfigPath: null,
+      packageJsonPath: "/tmp/partybooth/package.json",
+      config: { name: "PartyBooth", slug: "partybooth" },
+    }) as ExportedConfig;
+
+    expect(config.plugins).toContainEqual([
+      "expo-camera",
+      expect.objectContaining({ barcodeScannerEnabled: true }),
+    ]);
+  });
+});
+
+describe("managed iOS scene lifecycle configuration", () => {
+  it("moves React Native startup out of Expo's SDK 57 AppDelegate block", () => {
+    const generatedAppDelegate = `class AppDelegate {
+#if os(iOS) || os(tvOS)
+    window = UIWindow(frame: UIScreen.main.bounds)
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: launchOptions)
+#endif
+}`;
+
+    const migrated = migrateAppDelegateToSceneLifecycle(generatedAppDelegate);
+
+    expect(migrated).not.toContain("UIWindow(frame: UIScreen.main.bounds)");
+    expect(migrated).toContain("React Native is started by `SceneDelegate`");
+    expect(migrateAppDelegateToSceneLifecycle(migrated)).toBe(migrated);
+  });
+
+  it("declares one scene configuration and preserves cold-start link routing", () => {
+    expect(IOS_SCENE_MANIFEST).toEqual({
+      UIApplicationSupportsMultipleScenes: false,
+      UISceneConfigurations: {
+        UIWindowSceneSessionRoleApplication: [
+          {
+            UISceneConfigurationName: "Default Configuration",
+            UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).SceneDelegate",
+          },
+        ],
+      },
+    });
+    expect(IOS_SCENE_DELEGATE_SOURCE).toContain("connectionOptions.urlContexts.first?.url");
+    expect(IOS_SCENE_DELEGATE_SOURCE).toContain("RCTLinkingManager.application");
+  });
+
+  it("registers each native iOS modifier in the managed-config pipeline", () => {
+    const config = resolveExpoConfig({
+      projectRoot: "/tmp/partybooth",
+      staticConfigPath: null,
+      packageJsonPath: "/tmp/partybooth/package.json",
+      config: { name: "PartyBooth", slug: "partybooth" },
+    }) as ExportedConfig;
+
+    expect(config.mods?.ios?.infoPlist).toBeTypeOf("function");
+    expect(config.mods?.ios?.appDelegate).toBeTypeOf("function");
+    expect(config.mods?.ios?.xcodeproj).toBeTypeOf("function");
+    expect(config.mods?.ios?.dangerous).toBeTypeOf("function");
   });
 });

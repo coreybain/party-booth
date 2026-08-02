@@ -79,6 +79,20 @@ describe("scrubValue", () => {
     expect(scrubbed.outer["authorization"]).toBe(REDACTED);
     expect(scrubbed.outer["safe"]).toBe("keep me");
   });
+
+  it("keeps an error's diagnosis without logging attached request credentials", () => {
+    const error = Object.assign(new Error("Upload failed for corey@example.com"), {
+      request: {
+        headers: { cookie: "better-auth.session_token=private" },
+        body: { secret: "avatar-grant-private" },
+      },
+    });
+
+    expect(scrubValue(error)).toEqual({
+      name: "Error",
+      message: `Upload failed for ${REDACTED}`,
+    });
+  });
 });
 
 describe("event-level hooks", () => {

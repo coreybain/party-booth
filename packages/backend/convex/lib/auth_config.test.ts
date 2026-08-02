@@ -12,6 +12,7 @@ import {
   resetConfigWarnings,
   siteUrl,
   trustedOrigins,
+  useSecureAuthCookies,
 } from "./config";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./otp";
 import {
@@ -226,6 +227,32 @@ describe("URLs", () => {
     expect(() => trustedOrigins()).not.toThrow();
     expect(trustedOrigins()).not.toContain("http://localhost:3000");
     expect(error.mock.calls.flat().join(" ")).toContain("DEPLOYMENT_ENVIRONMENT");
+  });
+});
+
+describe("auth cookie security", () => {
+  it("allows localhost cookies only on an explicitly development deployment", () => {
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "development" });
+    expect(useSecureAuthCookies()).toBe(false);
+  });
+
+  it("keeps secure cookies in preview and production", () => {
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "preview" });
+    expect(useSecureAuthCookies()).toBe(true);
+
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "production" });
+    expect(useSecureAuthCookies()).toBe(true);
+  });
+
+  it("fails secure when the deployment marker is unset, blank or malformed", () => {
+    clearEnv();
+    expect(useSecureAuthCookies()).toBe(true);
+
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "" });
+    expect(useSecureAuthCookies()).toBe(true);
+
+    setEnv({ DEPLOYMENT_ENVIRONMENT: "dev" });
+    expect(useSecureAuthCookies()).toBe(true);
   });
 });
 

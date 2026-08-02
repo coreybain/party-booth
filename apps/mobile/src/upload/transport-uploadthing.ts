@@ -35,6 +35,7 @@ import {
 } from "@partybooth/contracts/upload";
 import { genUploader } from "uploadthing/client";
 
+import { credentialSafeUploadFetch } from "./credential-safe-fetch";
 import {
   UploadCancelledError,
   UploadCompletionError,
@@ -116,6 +117,7 @@ export function createUploadThingTransport(options: UploadThingTransportOptions)
     // Shows up in the route handler's server logs, so a confusing request can be
     // traced to the app rather than to the website.
     package: "@partybooth/mobile",
+    fetch: credentialSafeUploadFetch,
   });
 
   return {

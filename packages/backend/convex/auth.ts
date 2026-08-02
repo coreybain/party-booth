@@ -14,7 +14,13 @@ import type { MutationCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { scheduleAccountDeletion } from "./lib/account_deletion";
 import { applyVerifiedEmailMatching } from "./lib/email_matching";
-import { authBaseUrl, isAdminEmail, isDemoAddress, trustedOrigins } from "./lib/config";
+import {
+  authBaseUrl,
+  isAdminEmail,
+  isDemoAddress,
+  trustedOrigins,
+  useSecureAuthCookies,
+} from "./lib/config";
 import { otpEmail, sendEmail } from "./lib/email";
 import { emailOtpPolicyOptions, otpPurposeFor } from "./lib/otp";
 import { resolveDisplayName } from "./lib/profile";
@@ -198,6 +204,13 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
      * deployment fails loudly at the first auth request instead.
      */
     secret: serverEnv.BETTER_AUTH_SECRET,
+
+    advanced: {
+      // Better Auth sees its Convex HTTPS base URL even when Next.js proxies the
+      // request through HTTP localhost. Permit non-secure cookies only on an
+      // explicitly marked development deployment; every other state fails secure.
+      useSecureCookies: useSecureAuthCookies(),
+    },
 
     /**
      * Better Auth's limiter defaults to `enabled: isProduction`, which is

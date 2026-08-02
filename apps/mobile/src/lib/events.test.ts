@@ -2,6 +2,7 @@ import { EVENT_STATES } from "@partybooth/contracts/events";
 import { describe, expect, it } from "vitest";
 
 import {
+  areEventsLoading,
   describeEventState,
   describeJoinWindow,
   describeSchedule,
@@ -51,6 +52,49 @@ describe("describeEventState", () => {
   it("keeps the gallery available after the party ends", () => {
     expect(describeEventState("archived").viewable).toBe(true);
     expect(describeEventState("draft").viewable).toBe(false);
+  });
+});
+
+describe("areEventsLoading", () => {
+  it("loads while Convex auth or an authenticated party query is pending", () => {
+    expect(
+      areEventsLoading({
+        signedIn: true,
+        convexAuthLoading: true,
+        convexAuthenticated: false,
+        events: undefined,
+      }),
+    ).toBe(true);
+    expect(
+      areEventsLoading({
+        signedIn: true,
+        convexAuthLoading: false,
+        convexAuthenticated: true,
+        events: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops when Convex has settled unauthenticated instead of spinning forever", () => {
+    expect(
+      areEventsLoading({
+        signedIn: true,
+        convexAuthLoading: false,
+        convexAuthenticated: false,
+        events: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it("treats an empty result as loaded", () => {
+    expect(
+      areEventsLoading({
+        signedIn: true,
+        convexAuthLoading: false,
+        convexAuthenticated: true,
+        events: [],
+      }),
+    ).toBe(false);
   });
 });
 

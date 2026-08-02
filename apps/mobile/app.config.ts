@@ -1,8 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import { withSentry } from "@sentry/react-native/expo";
 import {
   AndroidConfig,
+  IOSConfig,
+  withAppDelegate,
   withAndroidManifest,
+  withDangerousMod,
   withGradleProperties,
+  withInfoPlist,
+  withXcodeProject,
   type ConfigPlugin,
 } from "expo/config-plugins";
 
@@ -153,6 +161,235 @@ const withDisabledAndroidVideoPictureInPicture: ConfigPlugin = (config) =>
     return config;
   });
 
+const LEGACY_APP_DELEGATE_BOOTSTRAP = `#if os(iOS) || os(tvOS)
+    window = UIWindow(frame: UIScreen.main.bounds)
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: launchOptions)
+#endif`;
+
+const SCENE_APP_DELEGATE_BOOTSTRAP = `    // The window is created and React Native is started by \`SceneDelegate\` under the
+    // scene-based life cycle (required by the iOS 27 SDK).`;
+
+export const IOS_SCENE_MANIFEST = {
+  UIApplicationSupportsMultipleScenes: false,
+  UISceneConfigurations: {
+    UIWindowSceneSessionRoleApplication: [
+      {
+        UISceneConfigurationName: "Default Configuration",
+        UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).SceneDelegate",
+      },
+    ],
+  },
+};
+
+/**
+ * SDK 57 still emits an AppDelegate-owned window. Move startup to SceneDelegate
+ * while preserving Expo's factory initialization in didFinishLaunching.
+ */
+export function migrateAppDelegateToSceneLifecycle(contents: string): string {
+  if (contents.includes(SCENE_APP_DELEGATE_BOOTSTRAP)) {
+    return contents;
+  }
+
+  if (!contents.includes(LEGACY_APP_DELEGATE_BOOTSTRAP)) {
+    throw new Error(
+      "Could not migrate the generated iOS AppDelegate to UIScene: Expo's startup block changed.",
+    );
+  }
+
+  return contents.replace(LEGACY_APP_DELEGATE_BOOTSTRAP, SCENE_APP_DELEGATE_BOOTSTRAP);
+}
+
+/**
+ * Temporary SDK 57 compatibility layer based on Expo's upstream SceneDelegate.
+ * Remove this plugin after the installed Expo release generates scene lifecycle
+ * support itself.
+ */
+export const IOS_SCENE_DELEGATE_SOURCE = `internal import Expo
+internal import ExpoModulesCore
+import React
+
+@objc(SceneDelegate)
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(
+    _ scene: UIScene,
+    willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions
+  ) {
+    guard let windowScene = scene as? UIWindowScene else {
+      return
+    }
+    guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+      let factory = appDelegate.reactNativeFactory else {
+      fatalError(
+        "SceneDelegate couldn't start React Native because AppDelegate has no React Native factory."
+      )
+    }
+
+    let window = UIWindow(windowScene: windowScene)
+    self.window = window
+
+    // Preserve compatibility with modules that still read the app delegate's window.
+    appDelegate.window = window
+
+    // Scene lifecycle cold starts carry links in connectionOptions. Rebuild the
+    // launch options shape that React Native's Linking.getInitialURL() expects.
+    let browsingWebActivity = connectionOptions.userActivities.first {
+      $0.activityType == NSUserActivityTypeBrowsingWeb
+    }
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: Self.launchOptions(
+        url: connectionOptions.urlContexts.first?.url,
+        userActivity: browsingWebActivity
+      )
+    )
+
+    Self.route(urlContexts: connectionOptions.urlContexts)
+    connectionOptions.userActivities.forEach { Self.route(userActivity: $0) }
+  }
+
+  func sceneDidDisconnect(_ scene: UIScene) {
+    window = nil
+  }
+
+  func sceneDidBecomeActive(_ scene: UIScene) {
+    ExpoAppDelegateSubscriberManager.applicationDidBecomeActive(UIApplication.shared)
+  }
+
+  func sceneWillResignActive(_ scene: UIScene) {
+    ExpoAppDelegateSubscriberManager.applicationWillResignActive(UIApplication.shared)
+  }
+
+  func sceneWillEnterForeground(_ scene: UIScene) {
+    ExpoAppDelegateSubscriberManager.applicationWillEnterForeground(UIApplication.shared)
+  }
+
+  func sceneDidEnterBackground(_ scene: UIScene) {
+    ExpoAppDelegateSubscriberManager.applicationDidEnterBackground(UIApplication.shared)
+  }
+
+  func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    Self.route(urlContexts: URLContexts)
+  }
+
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    Self.route(userActivity: userActivity)
+  }
+}
+
+extension SceneDelegate {
+  static func launchOptions(
+    url: URL?,
+    userActivity: NSUserActivity?
+  ) -> [UIApplication.LaunchOptionsKey: Any]? {
+    var launchOptions: [UIApplication.LaunchOptionsKey: Any] = [:]
+    if let url {
+      let urlKey = UIApplication.LaunchOptionsKey(rawValue: "UIApplicationLaunchOptionsURLKey")
+      launchOptions[urlKey] = url
+    }
+    if let userActivity {
+      let userActivityDictionaryKey = UIApplication.LaunchOptionsKey(
+        rawValue: "UIApplicationLaunchOptionsUserActivityDictionaryKey"
+      )
+      launchOptions[userActivityDictionaryKey] = [
+        "UIApplicationLaunchOptionsUserActivityTypeKey": userActivity.activityType,
+        "UIApplicationLaunchOptionsUserActivityKey": userActivity,
+      ]
+    }
+    return launchOptions.isEmpty ? nil : launchOptions
+  }
+
+  static func route(urlContexts: Set<UIOpenURLContext>) {
+    for context in urlContexts {
+      let options = openURLOptions(from: context.options)
+      _ = ExpoAppDelegateSubscriberManager.application(
+        UIApplication.shared,
+        open: context.url,
+        options: options
+      )
+      RCTLinkingManager.application(
+        UIApplication.shared,
+        open: context.url,
+        options: options
+      )
+    }
+  }
+
+  static func route(userActivity: NSUserActivity) {
+    _ = ExpoAppDelegateSubscriberManager.application(
+      UIApplication.shared,
+      continue: userActivity,
+      restorationHandler: { _ in }
+    )
+    RCTLinkingManager.application(
+      UIApplication.shared,
+      continue: userActivity,
+      restorationHandler: { _ in }
+    )
+  }
+
+  private static func openURLOptions(
+    from sceneOptions: UIScene.OpenURLOptions
+  ) -> [UIApplication.OpenURLOptionsKey: Any] {
+    var options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    if let sourceApplication = sceneOptions.sourceApplication {
+      options[.sourceApplication] = sourceApplication
+    }
+    if let annotation = sceneOptions.annotation {
+      options[.annotation] = annotation
+    }
+    options[.openInPlace] = sceneOptions.openInPlace
+    return options
+  }
+}
+`;
+
+export const withIosSceneLifecycle: ConfigPlugin = (config) => {
+  config = withInfoPlist(config, (config) => {
+    config.modResults.UIApplicationSceneManifest = IOS_SCENE_MANIFEST;
+    return config;
+  });
+
+  config = withAppDelegate(config, (config) => {
+    if (config.modResults.language !== "swift") {
+      throw new Error("PartyBooth's UIScene plugin requires Expo's Swift AppDelegate template.");
+    }
+    config.modResults.contents = migrateAppDelegateToSceneLifecycle(config.modResults.contents);
+    return config;
+  });
+
+  config = withXcodeProject(config, (config) => {
+    const projectName = IOSConfig.XcodeUtils.getProjectName(config.modRequest.projectRoot);
+    config.modResults = IOSConfig.XcodeUtils.addBuildSourceFileToGroup({
+      filepath: `${projectName}/SceneDelegate.swift`,
+      groupName: projectName,
+      project: config.modResults,
+      verbose: true,
+    });
+    return config;
+  });
+
+  return withDangerousMod(config, [
+    "ios",
+    async (config) => {
+      const projectName = IOSConfig.XcodeUtils.getProjectName(config.modRequest.projectRoot);
+      const sceneDelegatePath = path.join(
+        config.modRequest.platformProjectRoot,
+        projectName,
+        "SceneDelegate.swift",
+      );
+      await fs.promises.writeFile(sceneDelegatePath, IOS_SCENE_DELEGATE_SOURCE);
+      return config;
+    },
+  ]);
+};
+
 export default ({ config }: ConfigContext): ExpoConfig => {
   let expo: ExpoConfig = {
     ...config,
@@ -289,10 +526,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           // a silent clip — so the camera screen gates the hold gesture on the
           // microphone permission and falls back to a tap. See `useShutter`.
           recordAudioAndroid: true,
-          // Joining is by six-digit code / universal link, not by in-app
-          // scanning. Leaving the scanner off keeps the barcode framework — and
-          // the questions Play asks about it — out of the binary.
-          barcodeScannerEnabled: false,
+          // Guests can join by scanning the host's QR code. This must remain
+          // enabled in the native binary for CameraView to emit QR callbacks.
+          barcodeScannerEnabled: true,
         },
       ],
       [
@@ -352,6 +588,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
   expo = withAndroidReleaseBuildMemory(expo);
   expo = withDisabledAndroidVideoPictureInPicture(expo);
+  expo = withIosSceneLifecycle(expo);
 
   // Only wrap with Sentry when the org/project slugs exist. `withSentry` adds the
   // source-map upload build phase, which fails the build if it is configured with

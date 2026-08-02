@@ -66,7 +66,13 @@ export function isSentryEnabled(): boolean {
  */
 export function captureHandledError(error: unknown, context?: Record<string, unknown>): void {
   if (!initialised) {
-    if (__DEV__) console.warn("[sentry disabled]", error, context);
+    if (__DEV__) {
+      console.warn(
+        "[sentry disabled]",
+        scrubValue(error),
+        context ? scrubValue(context) : undefined,
+      );
+    }
     return;
   }
   // Scrubbed here as well as in `beforeSend`: callers pass arbitrary objects,

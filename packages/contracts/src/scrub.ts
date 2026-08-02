@@ -184,6 +184,17 @@ export function scrubValue(value: unknown, depth = 0, seen = new WeakSet<object>
   if (seen.has(value)) return "[circular]";
   seen.add(value);
 
+  // Error subclasses often carry request/response objects as enumerable fields.
+  // Logging the object directly can therefore print cookies, authorization
+  // headers and upload grants even when `message` itself is harmless. Keep the
+  // diagnostic identity and text; discard provider-specific attachments.
+  if (value instanceof Error) {
+    return {
+      name: scrubText(value.name),
+      message: scrubText(value.message),
+    };
+  }
+
   if (Array.isArray(value)) {
     return value.map((entry) => scrubValue(entry, depth + 1, seen));
   }

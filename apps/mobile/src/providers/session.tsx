@@ -48,7 +48,7 @@ import {
   type AuthClient,
 } from "../lib/auth-client";
 import { describeError } from "../lib/errors";
-import { resolveActiveEvent, sortEvents } from "../lib/events";
+import { areEventsLoading, resolveActiveEvent, sortEvents } from "../lib/events";
 import { clearLocalProfile, loadLocalProfile } from "../lib/local-profile";
 import { EMPTY_LOCAL_PROFILE, readDisplayName, type LocalProfile } from "../lib/profile";
 import { ANONYMOUS_ROLE_CONTEXT, type EventRole, type RoleContext } from "../lib/roles";
@@ -283,7 +283,7 @@ export function LiveSessionProvider({
   const { data, isPending } = authClient.useSession();
   // Convex's *own* view of authentication, not Better Auth's. The two are not the same
   // instant: Better Auth can have a session a beat before the token has reached Convex.
-  const { isAuthenticated } = useConvexAuth();
+  const { isAuthenticated, isLoading: convexAuthLoading } = useConvexAuth();
   const { previewEventRole, setPreviewEventRole } = usePreviewEventRole();
 
   const authUser = data?.user ?? null;
@@ -508,7 +508,12 @@ export function LiveSessionProvider({
       configured: true,
       events,
       activeEvent,
-      eventsLoading: signedIn && myEvents === undefined,
+      eventsLoading: areEventsLoading({
+        signedIn,
+        convexAuthLoading,
+        convexAuthenticated: isAuthenticated,
+        events: myEvents,
+      }),
       selectEvent,
       localProfile: profile,
       confirmProfile,
@@ -523,6 +528,8 @@ export function LiveSessionProvider({
       events,
       activeEvent,
       signedIn,
+      convexAuthLoading,
+      isAuthenticated,
       myEvents,
       selectEvent,
       profile,

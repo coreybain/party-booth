@@ -11,8 +11,8 @@ import type { EventState } from "@/lib/contracts";
 export interface InvitePanelProps {
   readonly code: string;
   /**
-   * The QR credential. **Absent for a global admin**, who is served the code and
-   * not the token — see `convex/invites.ts`. The panel degrades to the six
+   * The QR credential. **Absent for a global admin** viewing through the support
+   * console, which only needs the rotatable code. The panel degrades to the six
    * digits rather than pretending the QR failed to render.
    */
   readonly token?: string | undefined;

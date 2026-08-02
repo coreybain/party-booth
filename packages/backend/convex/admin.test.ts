@@ -521,8 +521,9 @@ describe("admin mutations — reason and audit invariants", () => {
   });
 });
 
-describe("admins cannot see media", () => {
+describe("admins without an event membership cannot see media", () => {
   let t: T;
+  let adminId: Id<"users">;
   let ownerId: Id<"users">;
   let guestId: Id<"users">;
   let eventId: Id<"events">;
@@ -531,7 +532,7 @@ describe("admins cannot see media", () => {
     t = makeTest();
     useFakeStorage();
     setAllowlist(ADMIN_EMAIL);
-    await seedUser(t, { authId: "admin", email: ADMIN_EMAIL, isGlobalAdmin: true });
+    adminId = await seedUser(t, { authId: "admin", email: ADMIN_EMAIL, isGlobalAdmin: true });
     ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
     guestId = await seedUser(t, { authId: "guest", email: "guest@partybooth.test" });
     eventId = await seedEvent(t, ownerId, { state: "live" });
@@ -550,18 +551,7 @@ describe("admins cannot see media", () => {
     setAllowlist(undefined);
   });
 
-  /**
-   * The pivot that made "the admin console has no media access" a statement
-   * about *capabilities* rather than about outcomes.
-   *
-   * `event.viewInviteCode` is in the `globalAdmin` set so the rotation dialog
-   * can say which code it is replacing. It also served the **QR token**, which
-   * is a 160-bit bearer credential — enough on its own to call `join.join` and
-   * be admitted as a `guest`. A guest membership then outranks the admin role in
-   * `resolveEventRole`, so `media.viewApproved` succeeds and the console
-   * receives signed read URLs for a stranger's whole gallery. Two independent
-   * barriers, because either alone is one edit from being removed.
-   */
+  /** The console needs the rotatable code, but not the durable QR bearer token. */
   it("serves the admin the join code but never the QR token", async () => {
     await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
 
@@ -583,36 +573,32 @@ describe("admins cannot see media", () => {
     expect(asOwner?.token).toBeTypeOf("string");
   });
 
-  it("refuses to let an admin join a party they do not own", async () => {
+  it("lets an admin who holds a current invite join as an event guest", async () => {
     const { code, token } = await seedInviteVersion(t, eventId, ownerId, { code: "482913" });
     const as = t.withIdentity({ subject: "admin" });
 
-    expect((await as.mutation(api.join.join, { invite: { via: "code", code } })).outcome).toBe(
-      "rejected",
-    );
-    expect((await as.mutation(api.join.join, { invite: { via: "token", token } })).outcome).toBe(
-      "rejected",
-    );
-    expect(await as.mutation(api.join.previewByCode, { code })).toBeNull();
+    expect(await as.mutation(api.join.previewByCode, { code })).toMatchObject({ eventId });
+    expect(await as.query(api.join.previewByToken, { token })).toMatchObject({ eventId });
+    expect(await as.mutation(api.join.join, { invite: { via: "code", code } })).toMatchObject({
+      outcome: "joined",
+      eventId,
+      role: "guest",
+      alreadyMember: false,
+    });
+    expect(await as.mutation(api.join.join, { invite: { via: "token", token } })).toMatchObject({
+      outcome: "joined",
+      role: "guest",
+      alreadyMember: true,
+    });
 
-    // No membership was created, so the admin never becomes a `guest` and the
-    // media paths above keep refusing.
     const membership = await t.run(async (ctx) =>
       ctx.db
         .query("memberships")
-        .withIndex("by_event", (q) => q.eq("eventId", eventId))
-        .collect(),
+        .withIndex("by_event_and_user", (q) => q.eq("eventId", eventId).eq("userId", adminId))
+        .unique(),
     );
-    expect(membership.map((row) => row.userId)).not.toContain(
-      (
-        await t.run(async (ctx) =>
-          ctx.db
-            .query("users")
-            .withIndex("by_authId", (q) => q.eq("authId", "admin"))
-            .unique(),
-        )
-      )?._id,
-    );
+    expect(membership).toMatchObject({ role: "guest", status: "active" });
+    expect(await as.query(api.media.eventMedia, { eventId })).toHaveLength(1);
   });
 
   it("does not hand the console a fresh QR token when it rotates a code", async () => {

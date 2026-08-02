@@ -109,9 +109,18 @@ export default function EventsRoute() {
         )}
 
         <Button
+          label="Scan a QR code"
+          icon="scan-outline"
+          variant={events.length === 0 ? "primary" : "secondary"}
+          onPress={() => router.push("/join/scan")}
+          disabled={!configured}
+          accessibilityHint="Opens the camera to scan the QR code on the host's sign."
+        />
+
+        <Button
           label="Enter a join code"
           icon="keypad-outline"
-          variant={events.length === 0 ? "primary" : "secondary"}
+          variant="secondary"
           onPress={() => router.push("/join")}
           disabled={!configured}
           accessibilityHint="Opens the six-digit code screen."

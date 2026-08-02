@@ -712,11 +712,8 @@ export const home = query({
 
     // Admins get the code because `event.viewInviteCode` is in their capability
     // set — rotating a code from the admin console needs to show which one it
-    // is replacing — but they are not `isHost`, so they get no host UI, and
-    // they do **not** get the QR token: it is a bearer credential that admits
-    // its holder as a `guest`, and a guest membership outranks the admin role in
-    // `resolveEventRole`, which would hand the console the media access it is
-    // defined as not having. Same rule, same words, as `invites.current`.
+    // is replacing — but they are not `isHost`, so they get no host UI. The
+    // durable QR token is unnecessary for that support workflow and is omitted.
     const maySeeCode = canSeeInviteCode(actor.role, actor.event.state, actor.user.accountState);
     const invite = maySeeCode ? await getActiveInviteVersion(ctx, actor.event) : null;
 

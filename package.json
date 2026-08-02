@@ -40,7 +40,7 @@
     "dev": "bun --env-file=.env.local run turbo run dev",
     "start": "bun --env-file=.env.local run turbo run dev --filter=@partybooth/backend --filter=@partybooth/web --filter=@partybooth/mobile",
     "start:web": "bun --env-file=.env.local run turbo run dev --filter=@partybooth/backend --filter=@partybooth/web",
-    "start:mobile": "bun --env-file=.env.local run turbo run dev --filter=@partybooth/backend --filter=@partybooth/mobile",
+    "start:mobile": "bun --env-file=.env.local run turbo run dev --filter=@partybooth/backend --filter=@partybooth/web --filter=@partybooth/mobile",
     "lint": "eslint . && turbo run lint",
     "lint:fix": "eslint . --fix && turbo run lint -- --fix",
     "typecheck": "tsc --noEmit && turbo run typecheck",

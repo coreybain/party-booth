@@ -10,6 +10,7 @@
 
 import type * as admin from "../admin.js";
 import type * as auth from "../auth.js";
+import type * as avatars from "../avatars.js";
 import type * as blocks from "../blocks.js";
 import type * as cohosts from "../cohosts.js";
 import type * as crons from "../crons.js";
@@ -22,6 +23,7 @@ import type * as invites from "../invites.js";
 import type * as join from "../join.js";
 import type * as lib_account_deletion from "../lib/account_deletion.js";
 import type * as lib_audit from "../lib/audit.js";
+import type * as lib_avatar_grants from "../lib/avatar_grants.js";
 import type * as lib_blocks from "../lib/blocks.js";
 import type * as lib_config from "../lib/config.js";
 import type * as lib_email_console from "../lib/email/console.js";
@@ -54,6 +56,8 @@ import type * as lib_storage_adapter from "../lib/storage/adapter.js";
 import type * as lib_storage_fake from "../lib/storage/fake.js";
 import type * as lib_storage_index from "../lib/storage/index.js";
 import type * as lib_storage_uploadthing from "../lib/storage/uploadthing.js";
+import type * as lib_storage_purge from "../lib/storage_purge.js";
+import type * as lib_upload_callback from "../lib/upload_callback.js";
 import type * as lib_upload_grants from "../lib/upload_grants.js";
 import type * as lib_upload_throttle from "../lib/upload_throttle.js";
 import type * as lib_user_mirror from "../lib/user_mirror.js";
@@ -76,6 +80,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   auth: typeof auth;
+  avatars: typeof avatars;
   blocks: typeof blocks;
   cohosts: typeof cohosts;
   crons: typeof crons;
@@ -88,6 +93,7 @@ declare const fullApi: ApiFromModules<{
   join: typeof join;
   "lib/account_deletion": typeof lib_account_deletion;
   "lib/audit": typeof lib_audit;
+  "lib/avatar_grants": typeof lib_avatar_grants;
   "lib/blocks": typeof lib_blocks;
   "lib/config": typeof lib_config;
   "lib/email/console": typeof lib_email_console;
@@ -120,6 +126,8 @@ declare const fullApi: ApiFromModules<{
   "lib/storage/fake": typeof lib_storage_fake;
   "lib/storage/index": typeof lib_storage_index;
   "lib/storage/uploadthing": typeof lib_storage_uploadthing;
+  "lib/storage_purge": typeof lib_storage_purge;
+  "lib/upload_callback": typeof lib_upload_callback;
   "lib/upload_grants": typeof lib_upload_grants;
   "lib/upload_throttle": typeof lib_upload_throttle;
   "lib/user_mirror": typeof lib_user_mirror;

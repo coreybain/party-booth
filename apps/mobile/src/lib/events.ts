@@ -90,6 +90,35 @@ export function describeEventState(state: EventState): EventStateDescription {
 export { acceptsUploads, isJoinableEventState, isViewableEventState };
 
 /* -------------------------------------------------------------------------- */
+/* Membership loading                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the party list is genuinely still loading.
+ *
+ * Better Auth and Convex settle independently. If Better Auth has a session but
+ * Convex has finished unauthenticated, the authenticated query remains skipped
+ * and therefore `undefined`; treating that as an in-flight query produces a
+ * spinner that can never finish. Once Convex auth is no longer loading, only an
+ * authenticated query can still be pending.
+ */
+export function areEventsLoading({
+  signedIn,
+  convexAuthLoading,
+  convexAuthenticated,
+  events,
+}: {
+  readonly signedIn: boolean;
+  readonly convexAuthLoading: boolean;
+  readonly convexAuthenticated: boolean;
+  readonly events: readonly EventSummary[] | undefined;
+}): boolean {
+  if (!signedIn) return false;
+  if (convexAuthLoading) return true;
+  return convexAuthenticated && events === undefined;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Schedule, in words                                                         */
 /* -------------------------------------------------------------------------- */
 

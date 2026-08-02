@@ -209,37 +209,6 @@ export function demoConfinementAllows(user: Doc<"users">, event: Doc<"events">):
 }
 
 /**
- * A global admin may not **join** a stranger's party.
- *
- * The console's defining constraint is "no media access, no impersonation", and
- * it is enforced by `globalAdmin` holding no `media.*` capability. That holds
- * only for as long as an admin stays an admin: `resolveEventRole` returns a
- * *membership* role in preference to the allowlist, so an admin who joins an
- * event becomes a `guest` there — and a guest may call `media.viewApproved` and
- * receive signed read URLs for the whole gallery. The console's guarantee would
- * then be one join away from false, for any event id `admin.events` hands over.
- *
- * So the pivot is closed at the door, in the same shape as
- * {@link demoConfinementAllows}: an allowlisted address is refused a **new**
- * membership in an event it does not own.
- *
- * An **existing** membership passes through, and deliberately. Being on the
- * admin allowlist is a job, not a vow of asociality — somebody who was a guest
- * at their friend's party before they were made an administrator keeps their
- * seat, and re-scanning the QR at that party still works. What they cannot do is
- * acquire a *new* seat off a credential the console handed them.
- */
-export function adminPivotAllows(
-  user: Doc<"users">,
-  event: Doc<"events">,
-  membership: Doc<"memberships"> | null,
-): boolean {
-  if (!isAdminEmail(user.email)) return true;
-  if (event.ownerUserId === user._id) return true;
-  return membership !== null && membership.status === "active";
-}
-
-/**
  * {@link requireEventActor}, with its refusal rewritten to the caller's subject.
  *
  * Every handler that looks a **media row** up by id and *then* resolves its

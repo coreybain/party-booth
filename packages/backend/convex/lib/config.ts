@@ -19,6 +19,22 @@ export function authBaseUrl(): string {
   return envOptional(serverEnv, "BETTER_AUTH_URL") ?? serverEnv.CONVEX_SITE_URL;
 }
 
+/**
+ * Whether Better Auth must add the `Secure` attribute and `__Secure-` prefix.
+ *
+ * Auth itself runs on Convex's HTTPS origin, but the Next.js development app
+ * proxies those endpoints through `http://localhost:3000`. Better Auth derives
+ * cookie security from its HTTPS base URL, so without this explicit development
+ * exception the proxy returns a cookie the local browser cannot retain.
+ *
+ * This fails secure: only an explicitly valid `development` marker opts out.
+ * Preview, production, unset, blank and malformed markers all keep secure
+ * cookies, even though the environment schema's parsed default is development.
+ */
+export function useSecureAuthCookies(): boolean {
+  return !isExplicitDevelopmentDeployment();
+}
+
 /** The public web app: emails, QR universal links, OAuth redirect targets. */
 export function siteUrl(): string {
   return serverEnv.SITE_URL;

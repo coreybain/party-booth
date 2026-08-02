@@ -22,12 +22,7 @@ import {
   resolveInviteByToken,
   type ResolvedInvite,
 } from "./lib/events";
-import {
-  adminPivotAllows,
-  demoConfinementAllows,
-  requireActiveUser,
-  type ReadCtx,
-} from "./lib/guards";
+import { demoConfinementAllows, requireActiveUser, type ReadCtx } from "./lib/guards";
 import { sha256Hex } from "./lib/hash";
 import { parseInput } from "./lib/input";
 import { checkJoinThrottle, recordJoinFailure } from "./lib/join_throttle";
@@ -196,18 +191,6 @@ async function evaluateCredential(
     .query("memberships")
     .withIndex("by_event_and_user", (q) => q.eq("eventId", invite.event._id).eq("userId", user._id))
     .unique();
-
-  /*
-   * A global admin cannot walk into a party off a credential the console gave
-   * them. See `adminPivotAllows`: the console is defined by having no media
-   * access, and a membership would outrank the admin role and hand it over. It
-   * is refused with `eventNotJoinable` — the same single sentence a paused party
-   * gets, because the caller learns nothing either way and the audit log records
-   * which it really was.
-   */
-  if (!adminPivotAllows(user, invite.event, membership)) {
-    return { ok: false, reason: "eventNotJoinable", eventId: invite.event._id };
-  }
 
   /*
    * A host removed this person. A fresh scan of the same QR must not undo that —

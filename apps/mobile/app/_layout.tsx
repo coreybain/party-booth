@@ -44,6 +44,10 @@ function RootLayout() {
             options={{ title: "Join a party", presentation: "modal" }}
           />
           <Stack.Screen
+            name="join/scan"
+            options={{ title: "Scan a QR code", presentation: "modal" }}
+          />
+          <Stack.Screen
             name="join/[token]"
             options={{ title: "Join event", presentation: "modal" }}
           />

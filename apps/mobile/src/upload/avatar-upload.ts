@@ -16,6 +16,7 @@ import { toHex } from "@partybooth/contracts/capture";
 
 import type { FileRoute } from "uploadthing/types";
 
+import { credentialSafeUploadFetch } from "./credential-safe-fetch";
 import { UploadCompletionError } from "./transport";
 
 export interface PreparedAvatar {
@@ -141,6 +142,7 @@ export const expoAvatarUploadRuntime: AvatarUploadRuntime = {
     const { uploadFiles } = genUploader<AvatarRouter>({
       url: `${siteUrl.replace(/\/$/, "")}${AVATAR_UPLOAD_ROUTE_PATH}`,
       package: "@partybooth/mobile",
+      fetch: credentialSafeUploadFetch,
     });
     const [uploaded] = await uploadFiles(AVATAR_UPLOAD_ROUTE_SLUG, {
       files: [nativeFile],
