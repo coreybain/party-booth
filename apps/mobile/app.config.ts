@@ -42,8 +42,8 @@ const SCHEME = "partybooth";
 const IOS_DEPLOYMENT_TARGET = "17.0";
 const ANDROID_MIN_SDK = 29;
 
-/** Fallback only — replaced as soon as EXPO_PUBLIC_SITE_URL is set. */
-const PLACEHOLDER_SITE_HOST = "partybooth.app";
+/** Canonical production host; overridden by EXPO_PUBLIC_SITE_URL for local builds. */
+const DEFAULT_SITE_HOST = "www.partybooth.dev";
 
 /**
  * Host used for iOS associated domains and Android App Links, derived from the site
@@ -51,21 +51,22 @@ const PLACEHOLDER_SITE_HOST = "partybooth.app";
  */
 function resolveSiteHost(): string {
   const raw = process.env.EXPO_PUBLIC_SITE_URL;
-  if (!raw) return PLACEHOLDER_SITE_HOST;
+  if (!raw) return DEFAULT_SITE_HOST;
   try {
     return new URL(raw).host;
   } catch {
-    return PLACEHOLDER_SITE_HOST;
+    return DEFAULT_SITE_HOST;
   }
 }
 
 const siteHost = resolveSiteHost();
 
-/** Set once `eas init` has run; until then EAS Update and push tokens stay disabled. */
-const easProjectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
+/** EAS project linkage. Environment overrides keep forks able to use their own project. */
+const easProjectId =
+  process.env.EXPO_PUBLIC_EAS_PROJECT_ID ?? "d05e1c88-901c-43a2-afc8-8e20b3abbd0a";
 
 /** Expo account or organisation that owns the EAS project. */
-const easOwner = process.env.EXPO_OWNER;
+const easOwner = process.env.EXPO_OWNER ?? "spiritdevs";
 
 const sentryOrg = process.env.SENTRY_ORG;
 const sentryProject = process.env.SENTRY_PROJECT;

@@ -4,7 +4,7 @@
  * that make a printed QR open the app.
  *
  *   bun run verify:app-links                      # uses SITE_URL / NEXT_PUBLIC_SITE_URL
- *   bun run verify:app-links https://partybooth.app
+ *   bun run verify:app-links https://www.partybooth.dev
  *
  * Why a script and not a test: the association files are the one part of the
  * deep-link chain that no unit test can reach. `app.config.ts` declares
@@ -42,7 +42,7 @@ const origin = (
 if (!origin) {
   console.error(
     red("No origin."),
-    "Pass one (`bun run verify:app-links https://partybooth.app`) or set SITE_URL.",
+    "Pass one (`bun run verify:app-links https://www.partybooth.dev`) or set SITE_URL.",
   );
   process.exit(1);
 }

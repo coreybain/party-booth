@@ -68,6 +68,48 @@ describe("managed camera configuration", () => {
   });
 });
 
+describe("production app links", () => {
+  it("points iOS universal links and Android App Links at partybooth.dev", () => {
+    const config = resolveExpoConfig({
+      projectRoot: "/tmp/partybooth",
+      staticConfigPath: null,
+      packageJsonPath: "/tmp/partybooth/package.json",
+      config: { name: "PartyBooth", slug: "partybooth" },
+    }) as ExportedConfig;
+
+    expect(config.ios?.associatedDomains).toContain("applinks:www.partybooth.dev");
+    expect(config.android?.intentFilters).toContainEqual(
+      expect.objectContaining({
+        action: "VIEW",
+        autoVerify: true,
+        data: [
+          {
+            scheme: "https",
+            host: "www.partybooth.dev",
+            pathPrefix: "/join",
+          },
+        ],
+      }),
+    );
+  });
+});
+
+describe("EAS project linkage", () => {
+  it("resolves the checked-in PartyBooth project without local environment files", () => {
+    const config = resolveExpoConfig({
+      projectRoot: "/tmp/partybooth",
+      staticConfigPath: null,
+      packageJsonPath: "/tmp/partybooth/package.json",
+      config: { name: "PartyBooth", slug: "partybooth" },
+    }) as ExportedConfig;
+
+    expect(config.owner).toBe("spiritdevs");
+    expect(config.extra?.eas).toEqual({
+      projectId: "d05e1c88-901c-43a2-afc8-8e20b3abbd0a",
+    });
+  });
+});
+
 describe("managed iOS scene lifecycle configuration", () => {
   it("moves React Native startup out of Expo's SDK 57 AppDelegate block", () => {
     const generatedAppDelegate = `class AppDelegate {

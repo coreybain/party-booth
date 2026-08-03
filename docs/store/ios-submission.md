@@ -26,7 +26,9 @@ is mobile web; TestFlight external is the middle option.
 | A deployed web app         | For the privacy policy URL. **See §3 — this is a real blocker.** |
 | `eas` CLI logged in        | `eas whoami`                                                     |
 
-Environment for `eas submit` (not secrets, but per-owner — see `eas.json`):
+Optional environment for non-interactive `eas submit` runs. PartyBooth's numeric
+`ascAppId` is already configured; interactive submission can reuse the authenticated
+Apple session:
 
 ```bash
 export APPLE_ID="you@example.com"          # your Apple account email

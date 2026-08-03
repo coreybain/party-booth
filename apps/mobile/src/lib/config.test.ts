@@ -5,7 +5,7 @@ import { convexSiteUrlFrom, REQUIRED_MOBILE_VARS, resolveAppConfig } from "./con
 import type { RawMobileEnv } from "./config";
 
 const COMPLETE: RawMobileEnv = {
-  EXPO_PUBLIC_SITE_URL: "https://partybooth.app",
+  EXPO_PUBLIC_SITE_URL: "https://www.partybooth.dev",
   EXPO_PUBLIC_CONVEX_URL: "https://acute-lynx-123.convex.cloud",
   EXPO_PUBLIC_SENTRY_DSN: "https://abc@o1.ingest.sentry.io/2",
   EXPO_PUBLIC_EAS_PROJECT_ID: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
@@ -66,7 +66,7 @@ describe("resolveAppConfig", () => {
 
     expect(config.convexUrl).toBe("https://acute-lynx-123.convex.cloud");
     expect(config.convexSiteUrl).toBe("https://acute-lynx-123.convex.site");
-    expect(config.siteUrl).toBe("https://partybooth.app");
+    expect(config.siteUrl).toBe("https://www.partybooth.dev");
     expect(config.scheme).toBe("partybooth");
     expect(config.features).toEqual({ sentry: true, push: true });
   });
@@ -109,10 +109,10 @@ describe("resolveAppConfig", () => {
   it("normalises a trailing slash off the site URL", () => {
     const config = resolveAppConfig({
       ...COMPLETE,
-      EXPO_PUBLIC_SITE_URL: "https://partybooth.app/",
+      EXPO_PUBLIC_SITE_URL: "https://www.partybooth.dev/",
     });
     if (config.status !== "ready") throw new Error("unreachable");
-    expect(config.siteUrl).toBe("https://partybooth.app");
+    expect(config.siteUrl).toBe("https://www.partybooth.dev");
   });
 
   it("accepts an overridden scheme", () => {

@@ -1,20 +1,4 @@
 {
-  "//": [
-    "EAS build and submit profiles for PartyBooth.",
-    "",
-    "Build numbers are NOT in app.config.ts. `cli.appVersionSource: remote` puts the",
-    "counter on EAS and `autoIncrement` bumps it per store build, because App Store",
-    "Connect refuses a build number it has already seen and says so only AFTER the",
-    "upload — a number kept in a file two people can edit is a rejected submission on",
-    "the day it matters. `eas build:version:get` reads the current values.",
-    "",
-    "Every value under `submit` that identifies an account is read from the environment",
-    "rather than committed. An App Store Connect app id and an Apple team id are not",
-    "secrets, but they are per-owner, and this repo has to clone and build with an empty",
-    "environment.",
-    "",
-    "Step-by-step: docs/store/ios-submission.md and docs/store/android-internal.md."
-  ],
   "cli": {
     "version": ">= 21.0.0",
     "appVersionSource": "remote",
@@ -23,7 +7,11 @@
   "build": {
     "base": {
       "env": {
-        "EXPO_NO_TELEMETRY": "1"
+        "EXPO_NO_TELEMETRY": "1",
+        "EXPO_OWNER": "spiritdevs",
+        "EXPO_PUBLIC_CONVEX_URL": "https://glad-emu-190.convex.cloud",
+        "EXPO_PUBLIC_EAS_PROJECT_ID": "d05e1c88-901c-43a2-afc8-8e20b3abbd0a",
+        "EXPO_PUBLIC_SITE_URL": "https://www.partybooth.dev"
       },
       "android": {
         "image": "latest"
@@ -86,18 +74,6 @@
   },
   "submit": {
     "internal": {
-      "//": [
-        "Android internal testing — the path to guests' phones on 5 Aug, because a new",
-        "Play account cannot reach production for 14 days (PLAN.md). Internal testing",
-        "has no review queue, so the opt-in link works within minutes of the upload.",
-        "",
-        "releaseStatus draft is deliberate: the upload lands, you look at it, and you",
-        "roll it out. On internal testing that costs one click and buys the chance to",
-        "notice a wrong version code before testers get it.",
-        "",
-        "iOS here is TestFlight — the fallback if the store build is still in review on",
-        "the 5th."
-      ],
       "android": {
         "track": "internal",
         "releaseStatus": "draft",
@@ -105,29 +81,17 @@
         "serviceAccountKeyPath": "$GOOGLE_SERVICE_ACCOUNT_KEY_PATH"
       },
       "ios": {
-        "appleId": "$APPLE_ID",
-        "ascAppId": "$ASC_APP_ID",
-        "appleTeamId": "$APPLE_TEAM_ID"
+        "ascAppId": "6797317089"
       }
     },
     "production": {
-      "//": [
-        "ascAppId is the NUMERIC App Store Connect app id (App Information → General →",
-        "Apple ID), not the bundle identifier. Confusing those two is the most common",
-        "`eas submit` failure and the error does not say which one it wanted.",
-        "",
-        "Set APPLE_APP_SPECIFIC_PASSWORD to run non-interactively; without it the CLI",
-        "prompts, which is fine locally and hangs in CI."
-      ],
       "android": {
         "track": "production",
         "releaseStatus": "draft",
         "serviceAccountKeyPath": "$GOOGLE_SERVICE_ACCOUNT_KEY_PATH"
       },
       "ios": {
-        "appleId": "$APPLE_ID",
-        "ascAppId": "$ASC_APP_ID",
-        "appleTeamId": "$APPLE_TEAM_ID"
+        "ascAppId": "6797317089"
       }
     }
   }

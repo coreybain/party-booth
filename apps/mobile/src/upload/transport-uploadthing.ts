@@ -101,7 +101,7 @@ async function toNativeFile(file: UploadRequest["file"]): Promise<File> {
 }
 
 export interface UploadThingTransportOptions {
-  /** Public site origin, e.g. `https://partybooth.app`. No trailing slash. */
+  /** Public site origin, e.g. `https://www.partybooth.dev`. No trailing slash. */
   readonly siteUrl: string;
   /**
    * Native fetch has no browser cookie jar for the website origin. Resolve the
