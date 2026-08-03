@@ -100,8 +100,7 @@ export default function PhotosScreen() {
   const { activeEvent, eventsLoading } = useSession();
 
   return (
-    // The tab shell renders the header and owns the notch; see `(tabs)/_layout.tsx`.
-    <Screen edges={["left", "right"]}>
+    <Screen>
       {/* Both lists are per-event, so the subtitle names the one they belong to —
           otherwise switching parties silently changes what "my media" means. */}
       <ScreenHeader title="Photos" subtitle={activeEvent?.name} />

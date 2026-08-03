@@ -55,7 +55,7 @@ export const DialogContent = forwardRef<
           "absolute right-4 top-4 grid size-10 place-items-center rounded-full text-muted",
           "transition-colors hover:bg-raised hover:text-ink",
         )}
-        aria-label="Close confirmation"
+        aria-label="Close dialog"
       >
         <XIcon size={18} />
       </DialogPrimitive.Close>

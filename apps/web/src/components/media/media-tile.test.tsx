@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { playableUrlOf, stillUrlOf } from "@/components/media/media-tile";
+import { playableUrlOf, reviewUrlOf, stillUrlOf } from "@/components/media/media-tile";
 import type { MediaItem } from "@/lib/convex-api";
 
 /**
@@ -53,5 +53,11 @@ describe("which URL a tile uses", () => {
     const withheld = item({ mediaType: "video", posterUrl: "poster" });
     expect(stillUrlOf(withheld)).toBe("poster");
     expect(playableUrlOf(withheld)).toBeUndefined();
+  });
+
+  it("reviews the original first and falls back to a derivative", () => {
+    expect(reviewUrlOf(item({ url: "original", previewUrl: "preview" }))).toBe("original");
+    expect(reviewUrlOf(item({ previewUrl: "preview" }))).toBe("preview");
+    expect(reviewUrlOf(item({ posterUrl: "poster" }))).toBe("poster");
   });
 });

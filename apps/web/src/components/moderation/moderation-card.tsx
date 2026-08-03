@@ -40,11 +40,12 @@ export interface ModerationCardProps {
   readonly busy: boolean;
   readonly onToggleSelect: (id: string, extend: boolean) => void;
   readonly onFocus: (id: string) => void;
+  readonly onReview: (id: string) => void;
   readonly onAct: (action: ModerationActionName, ids: readonly string[]) => void;
 }
 
 export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(function ModerationCard(
-  { item, now, selected, focused, busy, onToggleSelect, onFocus, onAct },
+  { item, now, selected, focused, busy, onToggleSelect, onFocus, onReview, onAct },
   ref,
 ) {
   const copy = MODERATION_STATE_COPY[item.state];
@@ -67,7 +68,17 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
       )}
     >
       <div className="relative">
-        <MediaTile item={item} />
+        <button
+          type="button"
+          aria-label={`Review ${item.mediaType} from ${item.uploaderDisplayName}`}
+          className="block w-full rounded-xl text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          onClick={(event) => {
+            event.stopPropagation();
+            onReview(item.id);
+          }}
+        >
+          <MediaTile item={item} playable={false} />
+        </button>
 
         <label
           className={cn(

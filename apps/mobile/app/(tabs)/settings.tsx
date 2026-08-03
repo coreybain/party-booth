@@ -91,8 +91,7 @@ export default function SettingsScreen() {
   const initial = (user?.name?.[0] ?? "?").toUpperCase();
 
   return (
-    // The tab shell renders the header and owns the notch; see `(tabs)/_layout.tsx`.
-    <Screen edges={["left", "right"]}>
+    <Screen>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader title="Settings" />
 
@@ -129,8 +128,7 @@ export default function SettingsScreen() {
           )}
         </Card>
 
-        {/* The header switcher is the primary route to this; Settings is where people
-            look when the header is not where they expect it. */}
+        {/* Party selection lives here rather than consuming space on every tab. */}
         {user ? (
           <Card>
             <Text style={styles.sectionLabel}>Parties</Text>

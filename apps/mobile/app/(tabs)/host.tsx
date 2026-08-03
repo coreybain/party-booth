@@ -93,7 +93,7 @@ export default function HostScreen() {
     const locked = roles.accountLocked === true && roles.eventRole !== null;
 
     return (
-      <Screen edges={["left", "right"]}>
+      <Screen>
         <ScreenHeader title="Host" />
         <EmptyState
           icon="lock-closed-outline"
@@ -109,8 +109,7 @@ export default function HostScreen() {
   }
 
   return (
-    // The tab shell renders the header and owns the notch; see `(tabs)/_layout.tsx`.
-    <Screen edges={["left", "right"]}>
+    <Screen>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader
           title="Host"
@@ -130,7 +129,7 @@ export default function HostScreen() {
           <EmptyState
             icon="qr-code-outline"
             title="No party selected"
-            body="Pick a party from the switcher at the top to see its queue."
+            body="Pick a party in Settings to see its queue."
           />
         ) : (
           <HostTools event={activeEvent} />

@@ -36,6 +36,10 @@ function setToken(value: string | undefined): void {
 afterEach(() => {
   setStorageAdapterOverride(undefined);
   setToken(undefined);
+  delete process.env["UPLOADTHING_ACL"];
+  delete process.env["UPLOADTHING_APP_ID"];
+  delete process.env["DEPLOYMENT_ENVIRONMENT"];
+  resetEnvCache(serverEnv);
 });
 
 describe("resolveStorageAdapter", () => {
@@ -62,6 +66,21 @@ describe("resolveStorageAdapter", () => {
     expect(adapter.provider).toBe("uploadthing");
     expect(adapter.configured).toBe(true);
     expect(adapter.region).toBe("pdx1");
+  });
+
+  it("uses the public file URL for a development free-tier project", async () => {
+    setToken("ut_v7_token_that_is_not_real");
+    process.env["UPLOADTHING_ACL"] = "public-read";
+    process.env["UPLOADTHING_APP_ID"] = "freeapp123";
+    process.env["DEPLOYMENT_ENVIRONMENT"] = "development";
+    resetEnvCache(serverEnv);
+
+    const result = await resolveStorageAdapter("pdx1").createReadUrl("file key", {
+      expiresInSeconds: 60,
+    });
+
+    expect(result.url).toBe("https://freeapp123.ufs.sh/f/file%20key");
+    expect(result.expiresAt).toBeGreaterThan(Date.now());
   });
 
   it("carries the region it was asked for, not the environment default", () => {

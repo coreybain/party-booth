@@ -63,6 +63,7 @@ import { captureHandledError } from "../lib/sentry";
 import {
   CAPTURE_SETTINGS_FILE_NAME,
   QUEUE_FILE_NAME,
+  captureFileUri,
   deleteLocalFile,
   readStoreFile,
   writeStoreFile,
@@ -77,7 +78,7 @@ import {
   queueReducer,
   undoableItem,
 } from "./queue-reducer";
-import { parseQueue, serialiseQueue } from "./persistence";
+import { parseQueue, relocateQueueCaptureUris, serialiseQueue } from "./persistence";
 import { nextReportedSet, queueReportsFor, type QueueReport } from "./queue-reporting";
 import {
   DEFAULT_CAPTURE_SETTINGS,
@@ -354,7 +355,11 @@ export function UploadQueueProvider({
       ]);
       if (cancelled) return;
       setSettings(parseCaptureSettings(rawSettings));
-      dispatch({ type: "hydrate", items: parseQueue(rawQueue), now: Date.now() });
+      dispatch({
+        type: "hydrate",
+        items: relocateQueueCaptureUris(parseQueue(rawQueue), captureFileUri),
+        now: Date.now(),
+      });
     })();
     return () => {
       cancelled = true;

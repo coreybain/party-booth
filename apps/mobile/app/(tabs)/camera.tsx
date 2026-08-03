@@ -55,6 +55,8 @@
 
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import * as Device from "expo-device";
+import { GlassView } from "expo-glass-effect";
+import * as ImagePicker from "expo-image-picker";
 import { useIsFocused, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -192,9 +194,6 @@ export default function CameraScreen() {
   const onLibrary = useCallback(() => {
     void (async () => {
       try {
-        // Imported on demand: the picker pulls a native module a guest who never
-        // opens it should not pay to load, and this matches `(auth)/onboarding`.
-        const ImagePicker = await import("expo-image-picker");
         const result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ["images"],
           allowsMultipleSelection: false,
@@ -357,9 +356,9 @@ export default function CameraScreen() {
     !recording && (!uploadsOpen || !hasCamera || mountError !== null || !shutter.ready);
 
   return (
-    // Full-bleed and edge-to-edge: the tab shell's header owns the notch, and a
-    // viewfinder with a margin around it looks like a bug rather than a frame.
-    <Screen edges={["left", "right"]} style={styles.screen}>
+    // Full-width below the status area: a viewfinder with side margins looks like
+    // a bug rather than a frame.
+    <Screen style={styles.screen}>
       <View style={styles.stage}>
         {hasCamera && mountError === null ? (
           <CameraView
@@ -412,6 +411,22 @@ export default function CameraScreen() {
             {recording ? (
               <RecordingIndicator seconds={shutter.seconds} remaining={shutter.remaining} />
             ) : null}
+
+            <View style={styles.topCenter}>
+              {/* A still uses the flash; a recording uses the continuous torch.
+                  Keeping the active light control top-centre mirrors the lens and
+                  leaves the bottom rail to the three capture actions. */}
+              {recording ? (
+                <TorchButton on={torch} onToggle={setTorch} />
+              ) : (
+                <FlashButton
+                  mode={flash}
+                  onChange={setFlash}
+                  disabled={!hasCamera || mountError !== null}
+                />
+              )}
+            </View>
+
             <PendingBadge count={pending} />
           </View>
 
@@ -445,19 +460,21 @@ export default function CameraScreen() {
               />
             ) : null}
 
-            <View style={[styles.controls, landscape && styles.controlsLandscape]}>
-              {/* The flash fires for a still and does nothing during a recording,
-                  so the two controls swap rather than sitting side by side —
-                  whichever one is on screen is the one that will do something. */}
-              {recording ? (
-                <TorchButton on={torch} onToggle={setTorch} />
-              ) : (
-                <FlashButton
-                  mode={flash}
-                  onChange={setFlash}
-                  disabled={!hasCamera || mountError !== null}
-                />
-              )}
+            <GlassView
+              glassEffectStyle="regular"
+              tintColor="rgba(18, 9, 27, 0.28)"
+              style={[styles.controls, landscape && styles.controlsLandscape]}
+            >
+              <View style={styles.controlSlot}>
+                {/* Gated on the *event's* flag, which is a live field on the
+                    `events.myEvents` subscription — a host turning library
+                    imports off mid-party removes this button without a restart.
+                    The empty slot keeps the shutter geometrically centred. */}
+                {allowLibrary && !recording ? (
+                  <LibraryButton onPress={onLibrary} disabled={busy} />
+                ) : null}
+              </View>
+
               <ShutterButton
                 onPressIn={shutter.onPressIn}
                 onPressOut={shutter.onPressOut}
@@ -467,19 +484,14 @@ export default function CameraScreen() {
                 busy={busy}
                 videoEnabled={videoEnabled}
               />
-              <FlipButton
-                onPress={onFlip}
-                disabled={!hasCamera || mountError !== null || recording}
-              />
-              {/* Gated on the *event's* flag, which is a live field on the
-                  `events.myEvents` subscription — a host turning library
-                  imports off mid-party removes this button without a restart.
-                  `checkGrantEligibility` refuses the same import server-side,
-                  so this is the affordance, not the enforcement. */}
-              {allowLibrary && !recording ? (
-                <LibraryButton onPress={onLibrary} disabled={busy} />
-              ) : null}
-            </View>
+
+              <View style={styles.controlSlot}>
+                <FlipButton
+                  onPress={onFlip}
+                  disabled={!hasCamera || mountError !== null || recording}
+                />
+              </View>
+            </GlassView>
 
             {videoEnabled || !hasCamera ? (
               <Text style={styles.hint}>{videoEnabled ? SHUTTER_HINT : SHUTTER_HINT_NO_VIDEO}</Text>
@@ -507,7 +519,7 @@ export default function CameraScreen() {
 /** The non-viewfinder states, in the same box the viewfinder would occupy. */
 function CameraFrame({ children }: { children: ReactNode }) {
   return (
-    <Screen edges={["left", "right"]}>
+    <Screen>
       <View style={styles.frame}>{children}</View>
     </Screen>
   );
@@ -542,25 +554,40 @@ const styles = StyleSheet.create({
   },
   topRow: {
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
+    alignItems: "center",
+    minHeight: 48 + spacing.lg * 2,
     padding: spacing.lg,
+    pointerEvents: "box-none",
+  },
+  topCenter: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
     pointerEvents: "box-none",
   },
   bottom: { padding: spacing.lg, gap: spacing.md, pointerEvents: "box-none" },
   controls: {
+    width: "100%",
+    maxWidth: 360,
+    alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-around",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: "rgba(18, 9, 27, 0.45)",
+    justifyContent: "space-between",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.2)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 244, 249, 0.24)",
+    elevation: 8,
   },
+  controlSlot: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
   // In landscape the short edge is the bottom one, so the row tightens toward
   // the middle rather than stretching a shutter to the far corners of a phone
   // held sideways — both thumbs are near the centre.
-  controlsLandscape: { alignSelf: "center", justifyContent: "center", gap: spacing.xl },
+  controlsLandscape: { maxWidth: 320 },
   hint: { ...typography.caption, color: colors.textMuted, textAlign: "center" },
   hintAction: { color: colors.accentSoft, textDecorationLine: "underline" },
 });

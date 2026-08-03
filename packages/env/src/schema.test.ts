@@ -128,6 +128,10 @@ describe("server schema behaviour", () => {
     expect(server().STORAGE_DEFAULT_REGION).toBe("pdx1");
   });
 
+  it("defaults UploadThing objects to private", () => {
+    expect(server().UPLOADTHING_ACL).toBe("private");
+  });
+
   it("defaults the email display name", () => {
     expect(server().RESEND_FROM_NAME).toBe("PartyBooth");
   });

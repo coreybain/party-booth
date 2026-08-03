@@ -102,6 +102,10 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
   const token = envOptional(serverEnv, "UPLOADTHING_TOKEN");
   const appId = envOptional(serverEnv, "UPLOADTHING_APP_ID");
   const configured = token !== undefined && token !== "";
+  const usesDevelopmentPublicFiles =
+    serverEnv.UPLOADTHING_ACL === "public-read" &&
+    serverEnv.DEPLOYMENT_ENVIRONMENT === "development" &&
+    appId !== undefined;
 
   const description: StorageAppDescription = {
     region,
@@ -118,6 +122,21 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
     async createReadUrl(key, options): Promise<SignedReadUrl> {
       if (!configured) throw new StorageNotConfiguredError(region);
       const expiresIn = options?.expiresInSeconds ?? SIGNED_READ_URL_TTL_SECONDS;
+
+      /*
+       * UploadThing's free plan stores public-read files. They do not need a
+       * signature, and trying to load the private-file signing SDK from inside
+       * a Convex V8 query can fail before a URL is returned. Keep this escape
+       * hatch strictly development-only: production and every private ACL still
+       * use short-lived signed URLs with the normal membership checks.
+       */
+      if (usesDevelopmentPublicFiles) {
+        return {
+          url: `https://${appId}.ufs.sh/f/${encodeURIComponent(key)}`,
+          expiresAt: Date.now() + expiresIn * 1000,
+        };
+      }
+
       const client = await utapi(token);
       const { ufsUrl } = await client.generateSignedURL(key, { expiresIn });
       // The provider signs against its own clock; ours is close enough to tell a

@@ -295,3 +295,46 @@ export function parseQueue(raw: string | null | undefined): QueueItem[] {
   }
   return items;
 }
+
+/* -------------------------------------------------------------------------- */
+/* iOS sandbox relocation                                                     */
+/* -------------------------------------------------------------------------- */
+
+const CAPTURE_DIRECTORY_MARKER = "/partybooth/captures/";
+
+function captureFileName(uri: string): string | null {
+  if (!uri.startsWith("file://")) return null;
+  const marker = uri.lastIndexOf(CAPTURE_DIRECTORY_MARKER);
+  if (marker < 0) return null;
+  const fileName = uri.slice(marker + CAPTURE_DIRECTORY_MARKER.length);
+  return fileName.length > 0 && !fileName.includes("/") ? fileName : null;
+}
+
+function relocateCaptureUri(uri: string, uriForFileName: (fileName: string) => string): string {
+  const fileName = captureFileName(uri);
+  return fileName === null ? uri : uriForFileName(fileName);
+}
+
+/**
+ * Rebase persisted capture paths onto the app's current Documents container.
+ *
+ * iOS preserves Documents during an app update but may mount it under a new
+ * container UUID. Persisting Expo's absolute `file://` URI therefore leaves a
+ * perfectly healthy queue pointing at the previous UUID after an update. Only
+ * files already under PartyBooth's own captures directory are relocated;
+ * arbitrary external file URLs are never rewritten.
+ */
+export function relocateQueueCaptureUris(
+  items: readonly QueueItem[],
+  uriForFileName: (fileName: string) => string,
+): QueueItem[] {
+  return items.map((item) => ({
+    ...item,
+    uri: relocateCaptureUri(item.uri, uriForFileName),
+    previewUri: relocateCaptureUri(item.previewUri, uriForFileName),
+    derivatives: item.derivatives.map((derivative) => ({
+      ...derivative,
+      uri: relocateCaptureUri(derivative.uri, uriForFileName),
+    })),
+  }));
+}

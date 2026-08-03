@@ -148,6 +148,10 @@ export const serverVars = {
     nonEmpty.optional(),
     "UploadThing dashboard → app id. Encoded inside the token; only set it if a tool asks for it separately.",
   ),
+  UPLOADTHING_ACL: envVar(
+    z.enum(["private", "public-read"]).default("private"),
+    "UploadThing object ACL. Defaults to private; public-read is accepted only by an explicitly marked development deployment for free-tier testing.",
+  ),
   STORAGE_DEFAULT_REGION: envVar(
     z.enum(STORAGE_REGIONS).default("pdx1"),
     "UploadThing region new events are created in. Beta is pdx1 (Portland) only.",

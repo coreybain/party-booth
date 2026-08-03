@@ -4,7 +4,9 @@ import { useQuery } from "convex/react";
 
 import { Placeholder } from "@/components/layout/card";
 import { MediaTile } from "@/components/media/media-tile";
+import { SIGNED_READ_URL_TTL_SECONDS } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
+import { useSignedUrlRefreshKey } from "@/lib/use-signed-url-refresh";
 
 /**
  * The approved gallery, as a guest sees it.
@@ -28,10 +30,12 @@ import { backendApi } from "@/lib/convex-api";
  */
 
 export function EventGallery({ eventId }: { readonly eventId: string }) {
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_READ_URL_TTL_SECONDS);
   const media = useQuery(backendApi.media.eventMedia, {
     eventId,
     states: ["approved"],
     limit: 200,
+    urlRefreshKey,
   });
 
   return (

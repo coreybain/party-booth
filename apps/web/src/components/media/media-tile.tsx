@@ -58,6 +58,11 @@ export function playableUrlOf(item: MediaItem): string | undefined {
   return item.url ?? item.previewUrl;
 }
 
+/** Full-size source for an explicit review action, with derivatives as fallback. */
+export function reviewUrlOf(item: MediaItem): string | undefined {
+  return item.url ?? item.previewUrl ?? item.posterUrl;
+}
+
 export function MediaTile({
   item,
   alt,

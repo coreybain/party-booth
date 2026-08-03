@@ -6,15 +6,29 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 
 import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { Card, Placeholder } from "@/components/layout/card";
+import { playableUrlOf, reviewUrlOf, stillUrlOf } from "@/components/media/media-tile";
 import { StorageCallouts } from "@/components/media/storage-callouts";
 import { FlaggedPanel } from "@/components/moderation/flagged-panel";
 import { ModerationCard } from "@/components/moderation/moderation-card";
 import { ModerationFilterBar } from "@/components/moderation/moderation-filter-bar";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { appErrorMessage } from "@/lib/app-errors";
-import { isHostRole, type ModerationActionName } from "@/lib/contracts";
+import {
+  isHostRole,
+  SIGNED_HOST_REVIEW_URL_TTL_SECONDS,
+  type ModerationActionName,
+} from "@/lib/contracts";
 import { backendApi, type MediaItem } from "@/lib/convex-api";
+import { MODERATION_STATE_COPY } from "@/lib/media-view";
 import {
   countModerationRows,
   DEFAULT_MODERATION_FILTERS,
@@ -24,12 +38,14 @@ import {
 } from "@/lib/moderation/filters";
 import {
   actionAvailability,
+  canAct,
   describeModerationResult,
   emptySelection,
   selectedInOrder,
   selectionReducer,
 } from "@/lib/moderation/selection";
 import { useNow } from "@/lib/use-now";
+import { useSignedUrlRefreshKey } from "@/lib/use-signed-url-refresh";
 
 /**
  * The moderation grid — the screen a host has open all night.
@@ -127,14 +143,24 @@ function ActiveEventModerationLive() {
 }
 
 function ModerationBoardLive({ eventId }: { readonly eventId: string }) {
-  const media = useQuery(backendApi.media.eventMedia, { eventId, limit: QUERY_LIMIT });
-  const flagged = useQuery(backendApi.moderation.flagged, { eventId, limit: 12 });
+  const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_HOST_REVIEW_URL_TTL_SECONDS);
+  const media = useQuery(backendApi.media.eventMedia, {
+    eventId,
+    limit: QUERY_LIMIT,
+    urlRefreshKey,
+  });
+  const flagged = useQuery(backendApi.moderation.flagged, {
+    eventId,
+    limit: 12,
+    urlRefreshKey,
+  });
   const moderate = useMutation(backendApi.moderation.moderate);
   const now = useNow();
 
   const [filters, setFilters] = useState<ModerationFilters>(DEFAULT_MODERATION_FILTERS);
   const [selection, dispatch] = useReducer(selectionReducer, emptySelection);
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [reviewId, setReviewId] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: "info" | "danger"; message: string } | undefined>(
     undefined,
@@ -146,6 +172,7 @@ function ModerationBoardLive({ eventId }: { readonly eventId: string }) {
   const visible = useMemo(() => visibleModerationRows(rows, filters), [rows, filters]);
   const orderedIds = useMemo(() => visible.map((item) => item.id), [visible]);
   const orderedKey = orderedIds.join(",");
+  const reviewItem = reviewId === undefined ? undefined : rows.find((item) => item.id === reviewId);
 
   /*
    * Reconcile the selection with what is actually on screen.
@@ -408,6 +435,10 @@ function ModerationBoardLive({ eventId }: { readonly eventId: string }) {
                   onFocus={(id) => {
                     dispatch({ type: "focus", id });
                   }}
+                  onReview={(id) => {
+                    dispatch({ type: "focus", id });
+                    setReviewId(id);
+                  }}
                   onToggleSelect={(id, extend) => {
                     dispatch(
                       extend ? { type: "extend", id, ordered: orderedIds } : { type: "toggle", id },
@@ -439,7 +470,127 @@ function ModerationBoardLive({ eventId }: { readonly eventId: string }) {
           dispatch({ type: "clear" });
         }}
       />
+
+      <ReviewDialog
+        item={reviewItem}
+        busy={busy}
+        onAct={act}
+        onClose={() => {
+          setReviewId(undefined);
+        }}
+      />
     </div>
+  );
+}
+
+function ReviewDialog({
+  item,
+  busy,
+  onAct,
+  onClose,
+}: {
+  readonly item: MediaItem | undefined;
+  readonly busy: boolean;
+  readonly onAct: (action: ModerationActionName, ids: readonly string[]) => void;
+  readonly onClose: () => void;
+}) {
+  const isVideo = item?.mediaType === "video";
+  const source = item === undefined ? undefined : isVideo ? playableUrlOf(item) : reviewUrlOf(item);
+  const videoPoster = item === undefined || !isVideo ? undefined : stillUrlOf(item);
+
+  return (
+    <Dialog
+      open={item !== undefined}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      {item === undefined ? null : (
+        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-5xl overflow-y-auto p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>
+              Review {item.mediaType} from {item.uploaderDisplayName}
+            </DialogTitle>
+            <DialogDescription>
+              {MODERATION_STATE_COPY[item.state].label} · open the full submission before deciding.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mt-4 grid min-h-64 place-items-center overflow-hidden rounded-xl border border-line bg-black">
+            {isVideo && source !== undefined ? (
+              <video
+                src={source}
+                poster={videoPoster}
+                controls
+                playsInline
+                preload="metadata"
+                className="max-h-[68vh] w-full object-contain"
+              />
+            ) : !isVideo && source !== undefined ? (
+              // eslint-disable-next-line @next/next/no-img-element -- private signed URLs must not pass through the Next image proxy.
+              <img
+                src={source}
+                alt={`Photo from ${item.uploaderDisplayName}`}
+                referrerPolicy="no-referrer"
+                className="max-h-[68vh] w-full object-contain"
+              />
+            ) : videoPoster !== undefined ? (
+              // eslint-disable-next-line @next/next/no-img-element -- private signed URLs must not pass through the Next image proxy.
+              <img
+                src={videoPoster}
+                alt={`Video preview from ${item.uploaderDisplayName}`}
+                referrerPolicy="no-referrer"
+                className="max-h-[68vh] w-full object-contain"
+              />
+            ) : (
+              <p className="px-6 py-16 text-center text-sm text-white/70">
+                The preview is being refreshed. Close and reopen this review if it does not appear.
+              </p>
+            )}
+          </div>
+
+          <DialogFooter className="mt-4 sm:justify-between">
+            <Button variant="ghost" onClick={onClose}>
+              Close
+            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              {canAct(item, "approve") ? (
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    onAct("approve", [item.id]);
+                  }}
+                >
+                  Approve
+                </Button>
+              ) : null}
+              {canAct(item, "decline") ? (
+                <Button
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => {
+                    onAct("decline", [item.id]);
+                  }}
+                >
+                  Decline
+                </Button>
+              ) : null}
+              {canAct(item, "revoke") ? (
+                <Button
+                  variant="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    onAct("revoke", [item.id]);
+                  }}
+                >
+                  Take down
+                </Button>
+              ) : null}
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      )}
+    </Dialog>
   );
 }
 

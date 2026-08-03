@@ -25,32 +25,47 @@ import { useSyncExternalStore } from "react";
  */
 const TICK_MS = 30_000;
 
-let cached = 0;
-let timer: ReturnType<typeof setInterval> | undefined;
-const listeners = new Set<() => void>();
-
-function tick(): void {
-  cached = Date.now();
-  for (const listener of listeners) listener();
+interface ClockStore {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getSnapshot: () => number;
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  if (timer === undefined) {
+const clocks = new Map<number, ClockStore>();
+
+function clockFor(intervalMs: number): ClockStore {
+  const existing = clocks.get(intervalMs);
+  if (existing !== undefined) return existing;
+
+  let cached = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const listeners = new Set<() => void>();
+
+  function tick(): void {
     cached = Date.now();
-    timer = setInterval(tick, TICK_MS);
+    for (const listener of listeners) listener();
   }
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0 && timer !== undefined) {
-      clearInterval(timer);
-      timer = undefined;
-    }
-  };
-}
 
-function getSnapshot(): number {
-  return cached;
+  const store: ClockStore = {
+    subscribe(listener) {
+      listeners.add(listener);
+      if (timer === undefined) {
+        cached = Date.now();
+        timer = setInterval(tick, intervalMs);
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0 && timer !== undefined) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      };
+    },
+    getSnapshot() {
+      return cached;
+    },
+  };
+  clocks.set(intervalMs, store);
+  return store;
 }
 
 /** `0` on the server and for the very first client render, then the wall clock. */
@@ -58,6 +73,7 @@ function getServerSnapshot(): number {
   return 0;
 }
 
-export function useNow(): number {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+export function useNow(intervalMs = TICK_MS): number {
+  const clock = clockFor(intervalMs);
+  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, getServerSnapshot);
 }

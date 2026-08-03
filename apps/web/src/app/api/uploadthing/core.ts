@@ -2,9 +2,9 @@ import "server-only";
 
 /**
  * The UploadThing FileRouter — the only place in PartyBooth that is allowed to
- * put bytes into private storage.
+ * put bytes into storage.
  *
- * Two routes share this private boundary. `partyMedia` is deliberately
+ * Two routes share this authorised boundary. `partyMedia` is deliberately
  * **media-type agnostic** (image and video), while `avatarImage` accepts only a
  * separately granted, re-encoded JPEG. Keeping the routes separate prevents an
  * account-level avatar grant from inheriting an event media limit or lifecycle.
@@ -40,7 +40,7 @@ import "server-only";
  * `MEDIA_LIMITS`, `ticket.mediaType` choosing which limit — so a guest holding a
  * legitimate 1 MB photo grant could send a ticket declaring
  * `mediaType: "video", mimeType: "video/mp4", byteSize: 250 MB`, be routed to
- * the 256 MB `video` slot, and have a quarter of a gigabyte written to private
+ * the 256 MB `video` slot, and have a quarter of a gigabyte written to
  * storage before Convex refused it on the way back out and scheduled the delete.
  * At sixty grants per five minutes that is fifteen gigabytes of transient stored
  * bytes and paid egress per guest, on the guaranteed party-night path.
@@ -68,14 +68,13 @@ import "server-only";
  * copy is a client's claim, and a preview relabelled `original` at the edge
  * would be measured against 20 MB instead of two.
  *
- * ## Private ACL
+ * ## Storage ACL
  *
- * `acl: "private"` is declared here, per file type, rather than inherited from
- * the app's dashboard default. PLAN.md makes private ACLs a non-negotiable
- * invariant, and an invariant that lives only in a dashboard checkbox is one
- * that a dashboard mis-click silently revokes for every photo taken afterwards.
- * Declaring it means the code asserts the property. (It does require "allow ACL
- * override" to be enabled on the UploadThing app — see the owner-action list.)
+ * Preview and production declare `acl: "private"` per file type rather than
+ * inheriting a dashboard default. Local development can explicitly select
+ * `public-read` for an UploadThing free-tier project. `configuredUploadAcl`
+ * refuses that setting unless `DEPLOYMENT_ENVIRONMENT=development` was itself
+ * explicitly supplied, so a missing production marker cannot widen access.
  */
 
 import { UploadThingError } from "@uploadthing/shared";
@@ -98,6 +97,7 @@ import {
 } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
 import { authoriseAvatarUploadAtEdge } from "@/lib/upload/avatar";
+import { configuredUploadAcl } from "@/lib/upload/acl";
 import {
   registerCompletedAvatarUpload,
   registerCompletedUpload,
@@ -162,14 +162,16 @@ const f = createUploadthing();
  * the backstop that catches a client lying about `byteSize`, and it bounds the
  * damage at 32 MB rather than at whatever the phone felt like sending.
  */
+const uploadAcl = configuredUploadAcl();
+
 const partyMediaConfig = {
-  image: { maxFileSize: "32MB", maxFileCount: 1, acl: "private" },
-  video: { maxFileSize: "256MB", maxFileCount: 1, acl: "private" },
+  image: { maxFileSize: "32MB", maxFileCount: 1, acl: uploadAcl },
+  video: { maxFileSize: "256MB", maxFileCount: 1, acl: uploadAcl },
 } as const;
 
-/** Avatars are a separately authorised, private, re-encoded JPEG route. */
+/** Avatars are a separately authorised, re-encoded JPEG route under the same ACL. */
 const avatarConfig = {
-  image: { maxFileSize: "2MB", maxFileCount: 1, acl: "private" },
+  image: { maxFileSize: "2MB", maxFileCount: 1, acl: uploadAcl },
 } as const;
 
 export const partyBoothFileRouter = {

@@ -30,6 +30,9 @@ vi.mock("expo-web-browser", () => ({
 vi.mock("expo-image", () => ({
   Image: () => createElement("img", { alt: "avatar" }),
 }));
+vi.mock("expo-image-picker", () => ({
+  launchImageLibraryAsync: vi.fn().mockResolvedValue({ canceled: true, assets: null }),
+}));
 vi.mock("@expo/vector-icons", () => ({
   Ionicons: (props: Record<string, unknown>) =>
     createElement("span", { "data-icon": String(props.name) }),

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_UNDO_DELAY_MS } from "./countdown";
-import { parseQueue, parseQueueItem, QUEUE_FORMAT_VERSION, serialiseQueue } from "./persistence";
+import {
+  parseQueue,
+  parseQueueItem,
+  QUEUE_FORMAT_VERSION,
+  relocateQueueCaptureUris,
+  serialiseQueue,
+} from "./persistence";
 import { queueItemFromDraft, queueReducer } from "./queue-reducer";
 import { EMPTY_QUEUE, type CaptureDraft, type QueueItem } from "./types";
 
@@ -98,6 +104,49 @@ describe("a restart", () => {
     const checksum = "0123456789abcdef".repeat(4);
     store.write(QUEUE_FILE, serialiseQueue([item({ checksum })]));
     expect(parseQueue(store.read(QUEUE_FILE))[0]?.checksum).toBe(checksum);
+  });
+
+  it("rebases PartyBooth files when iOS changes the app-container UUID", () => {
+    const previous = "file:///old-container/Documents/partybooth/captures/capture0001-original.jpg";
+    const previousPreview =
+      "file:///old-container/Documents/partybooth/captures/capture0001-preview.jpg";
+    const previousDerivative =
+      "file:///old-container/Documents/partybooth/captures/capture0001-preview-derivative.jpg";
+    const queued: QueueItem = {
+      ...item({ uri: previous, previewUri: previousPreview }),
+      derivatives: [
+        {
+          role: "preview",
+          state: "pending",
+          uri: previousDerivative,
+          byteSize: 100,
+          mimeType: "image/jpeg",
+          checksum: "c".repeat(64),
+          attempts: 0,
+          nextAttemptAt: 0,
+        },
+      ],
+    };
+
+    const [relocated] = relocateQueueCaptureUris(
+      [queued],
+      (fileName) => `file:///current-container/Documents/partybooth/captures/${fileName}`,
+    );
+
+    expect(relocated?.uri).toContain("/current-container/");
+    expect(relocated?.previewUri).toContain("/current-container/");
+    expect(relocated?.derivatives[0]?.uri).toContain("/current-container/");
+  });
+
+  it("does not rewrite a file outside PartyBooth's captures directory", () => {
+    const external = "file:///Documents/elsewhere/photo.jpg";
+    const [relocated] = relocateQueueCaptureUris(
+      [item({ uri: external, previewUri: external })],
+      (fileName) => `file:///current/${fileName}`,
+    );
+
+    expect(relocated?.uri).toBe(external);
+    expect(relocated?.previewUri).toBe(external);
   });
 });
 

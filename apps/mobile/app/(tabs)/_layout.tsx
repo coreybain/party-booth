@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
 
-import { EventHeader } from "@/components/event-header";
 import { canAccessHostTools } from "@/lib/roles";
 import { useSession } from "@/providers/session";
 import { colors } from "@/theme";
@@ -32,7 +31,7 @@ export default function TabsLayout() {
   // by direct navigation — the screen itself re-checks the role (see host.tsx).
   //
   // `roles.eventRole` is now the caller's real membership role for the **active**
-  // event, so switching parties in the header can add or remove this tab. That is
+  // event, so switching parties in Settings can add or remove this tab. That is
   // correct: a co-host at one party is a plain guest at another. It also means an
   // account matched to a co-host invitation by verified email gets the tab as soon as
   // `users.refreshRoles` lands, with no sign-out in between.
@@ -41,10 +40,9 @@ export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        // One header for every tab, so the active party is named in exactly one place
-        // and no screen can render a stale one. Tab screens therefore drop the `top`
-        // safe-area edge — this header owns the notch.
-        header: () => <EventHeader />,
+        // Party switching lives in Settings. The other tabs keep their full vertical
+        // space and name the active party only where that context is useful.
+        headerShown: false,
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textFaint,
         tabBarStyle: {

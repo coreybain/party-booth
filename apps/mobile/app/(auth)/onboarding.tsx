@@ -1,5 +1,6 @@
 import { TERMS_ACCEPTANCE_PROMPT, TERMS_PATH } from "@partybooth/contracts/terms";
 import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
 import { Redirect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -56,9 +57,6 @@ export default function OnboardingScreen() {
 
   const pickPhoto = useCallback(async () => {
     try {
-      // Imported lazily: the picker pulls a native module, and this screen renders on
-      // every first sign-in whether or not anybody taps the avatar.
-      const ImagePicker = await import("expo-image-picker");
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsEditing: true,
