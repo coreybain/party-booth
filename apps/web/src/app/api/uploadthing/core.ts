@@ -70,11 +70,10 @@ import "server-only";
  *
  * ## Storage ACL
  *
- * Preview and production declare `acl: "private"` per file type rather than
- * inheriting a dashboard default. Local development can explicitly select
- * `public-read` for an UploadThing free-tier project. `configuredUploadAcl`
- * refuses that setting unless `DEPLOYMENT_ENVIRONMENT=development` was itself
- * explicitly supplied, so a missing production marker cannot widen access.
+ * `UPLOADTHING_ACL` declares `private` or `public-read` per file type rather
+ * than inheriting a dashboard default. It is intentionally independent of the
+ * deployment label so staging can exercise either provider tier; the schema
+ * defaults an unset value to `private`.
  */
 
 import { UploadThingError } from "@uploadthing/shared";

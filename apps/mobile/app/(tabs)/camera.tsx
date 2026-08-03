@@ -82,6 +82,7 @@ import {
 import { UndoPill } from "@/components/undo-pill";
 import { Button, EmptyState, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
 import { useCapture } from "@/hooks/use-capture";
+import { zoomFromVerticalDrag } from "@/lib/camera-zoom";
 import { describeEventState } from "@/lib/events";
 import { useShutter, type RecordedClip } from "@/hooks/use-shutter";
 import { captureHandledError } from "@/lib/sentry";
@@ -93,6 +94,7 @@ import { VIDEO_MAX_DURATION_SECONDS } from "@partybooth/contracts/media";
 
 import type { CameraType } from "expo-camera";
 import type { ReactNode } from "react";
+import type { GestureResponderEvent } from "react-native";
 
 /**
  * The one line under the controls.
@@ -102,7 +104,7 @@ import type { ReactNode } from "react";
  * to discover the gesture by holding a button. Saying it on screen is cheaper
  * than the discovery.
  */
-export const SHUTTER_HINT = `Tap for a photo. Hold to record video, up to ${String(VIDEO_MAX_DURATION_SECONDS)} seconds.`;
+export const SHUTTER_HINT = `Tap for a photo. Hold to record up to ${String(VIDEO_MAX_DURATION_SECONDS)} seconds; slide up or down to zoom.`;
 
 /** What the shutter says when the microphone has been refused. */
 export const SHUTTER_HINT_NO_VIDEO = "Tap for a photo.";
@@ -122,11 +124,13 @@ export default function CameraScreen() {
   const { busy, capture, captureVideo } = useCapture(activeEvent);
 
   const cameraRef = useRef<CameraView | null>(null);
+  const zoomGestureRef = useRef<{ startY: number; startZoom: number } | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [microphone, requestMicrophone] = useMicrophonePermissions();
   const [facing, setFacing] = useState<CameraType>("back");
   const [flash, setFlash] = useState<FlashMode>("off");
   const [torch, setTorch] = useState(false);
+  const [zoom, setZoom] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
   /** One transient sentence under the controls — always a refusal, verbatim. */
   const [notice, setNotice] = useState<string | null>(null);
@@ -250,6 +254,28 @@ export default function CameraScreen() {
 
   const recording = shutter.recording;
 
+  const onShutterPressIn = useCallback(
+    (event: GestureResponderEvent) => {
+      zoomGestureRef.current = { startY: event.nativeEvent.pageY, startZoom: zoom };
+      shutter.onPressIn();
+    },
+    [shutter, zoom],
+  );
+
+  const onShutterPressMove = useCallback(
+    (event: GestureResponderEvent) => {
+      const gesture = zoomGestureRef.current;
+      if (gesture === null || !shutter.videoMode) return;
+      setZoom(zoomFromVerticalDrag(gesture.startZoom, gesture.startY, event.nativeEvent.pageY));
+    },
+    [shutter.videoMode],
+  );
+
+  const onShutterPressOut = useCallback(() => {
+    zoomGestureRef.current = null;
+    shutter.onPressOut();
+  }, [shutter]);
+
   const onFlip = useCallback(() => {
     // Flipping mid-recording stops it on both platforms, so the control is
     // disabled while recording rather than being allowed to end a clip by
@@ -335,11 +361,21 @@ export default function CameraScreen() {
           title="Join a party first"
           body="Scan the QR code on the host's sign, or type the six-digit code printed under it. Everything you capture goes to the party you're in."
           action={
-            <Button
-              label="Enter a join code"
-              icon="keypad-outline"
-              onPress={() => router.push("/join")}
-            />
+            <View style={[styles.joinActions, { width: Math.min(width - spacing.lg * 2, 360) }]}>
+              <Button
+                label="Scan a QR code"
+                icon="scan-outline"
+                onPress={() => router.push("/join/scan")}
+                accessibilityHint="Opens the camera to scan the QR code on the host's sign."
+              />
+              <Button
+                label="Enter a join code"
+                icon="keypad-outline"
+                variant="secondary"
+                onPress={() => router.push("/join")}
+                accessibilityHint="Opens the six-digit code screen."
+              />
+            </View>
           }
         />
       </CameraFrame>
@@ -362,10 +398,15 @@ export default function CameraScreen() {
       <View style={styles.stage}>
         {hasCamera && mountError === null ? (
           <CameraView
+            // iOS applies `mode` in place but emits `onCameraReady` only when
+            // the native view starts. A fresh view per mode gives the shutter's
+            // arming phase the readiness signal it requires before recordAsync.
+            key={shutter.videoMode ? "video" : "picture"}
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             facing={facing}
             flash={flash}
+            zoom={zoom}
             // Flipped by the shutter machine's `arming` phase and back again when
             // the clip is done. `recordAsync` refuses in `picture` mode, and
             // changing this rebuilds the capture session — which is exactly why
@@ -476,10 +517,13 @@ export default function CameraScreen() {
               </View>
 
               <ShutterButton
-                onPressIn={shutter.onPressIn}
-                onPressOut={shutter.onPressOut}
+                onPressIn={onShutterPressIn}
+                onPressMove={onShutterPressMove}
+                onPressOut={onShutterPressOut}
                 recording={recording}
                 progress={shutter.progress}
+                remaining={shutter.remaining}
+                zoom={zoom}
                 disabled={shutterDisabled}
                 busy={busy}
                 videoEnabled={videoEnabled}
@@ -528,6 +572,7 @@ function CameraFrame({ children }: { children: ReactNode }) {
 const styles = StyleSheet.create({
   screen: { paddingHorizontal: 0 },
   frame: { flex: 1, justifyContent: "center" },
+  joinActions: { gap: spacing.sm },
   stage: { flex: 1, backgroundColor: "#000", overflow: "hidden" },
   fallback: {
     position: "absolute",

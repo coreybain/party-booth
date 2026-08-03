@@ -68,11 +68,11 @@ describe("resolveStorageAdapter", () => {
     expect(adapter.region).toBe("pdx1");
   });
 
-  it("uses the public file URL for a development free-tier project", async () => {
+  it("uses the public file URL whenever the dedicated ACL requests it", async () => {
     setToken("ut_v7_token_that_is_not_real");
     process.env["UPLOADTHING_ACL"] = "public-read";
     process.env["UPLOADTHING_APP_ID"] = "freeapp123";
-    process.env["DEPLOYMENT_ENVIRONMENT"] = "development";
+    process.env["DEPLOYMENT_ENVIRONMENT"] = "production";
     resetEnvCache(serverEnv);
 
     const result = await resolveStorageAdapter("pdx1").createReadUrl("file key", {
@@ -81,6 +81,19 @@ describe("resolveStorageAdapter", () => {
 
     expect(result.url).toBe("https://freeapp123.ufs.sh/f/file%20key");
     expect(result.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it("uses the token app id when a stale standalone id disagrees", async () => {
+    setToken(
+      btoa(JSON.stringify({ apiKey: "not-real", appId: "token-app-123", regions: ["pdx1"] })),
+    );
+    process.env["UPLOADTHING_ACL"] = "public-read";
+    process.env["UPLOADTHING_APP_ID"] = "stale-app-456";
+    resetEnvCache(serverEnv);
+
+    const result = await resolveStorageAdapter("pdx1").createReadUrl("new-file-key");
+
+    expect(result.url).toBe("https://token-app-123.ufs.sh/f/new-file-key");
   });
 
   it("carries the region it was asked for, not the environment default", () => {

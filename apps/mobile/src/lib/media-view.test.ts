@@ -194,6 +194,49 @@ describe("mergeMediaTimeline", () => {
     expect(entries[0]?.thumbnailUri).toBe("file:///captures/m_1-preview.jpg");
   });
 
+  it("never treats a video file fallback as an image thumbnail", () => {
+    const videoUri = "file:///captures/m_1.mov";
+    const entries = mergeMediaTimeline(
+      [
+        row({
+          id: "media_1",
+          captureId: "m_1",
+          mediaType: "video",
+          mimeType: "video/quicktime",
+          url: "https://cdn/video.mov",
+        }),
+      ],
+      [
+        queued({
+          captureId: "m_1",
+          mediaType: "video",
+          mimeType: "video/quicktime",
+          uri: videoUri,
+          previewUri: videoUri,
+        }),
+      ],
+    );
+
+    expect(entries[0]?.thumbnailUri).toBeUndefined();
+  });
+
+  it("uses a real local video poster when one was generated", () => {
+    const entries = mergeMediaTimeline(
+      [],
+      [
+        queued({
+          captureId: "m_1",
+          mediaType: "video",
+          mimeType: "video/quicktime",
+          uri: "file:///captures/m_1.mov",
+          previewUri: "file:///captures/m_1-poster.jpg",
+        }),
+      ],
+    );
+
+    expect(entries[0]?.thumbnailUri).toBe("file:///captures/m_1-poster.jpg");
+  });
+
   it("orders newest first, on the local timestamp where there is one", () => {
     // So a photo does not jump position the instant its server row arrives.
     const entries = mergeMediaTimeline(

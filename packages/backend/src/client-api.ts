@@ -898,6 +898,11 @@ export interface BackendApi {
       { state: EventState; scheduledAt: number }
     >;
     readonly setActiveEvent: Mutation<{ eventId: EventId | null }, null>;
+    /**
+     * Walk out of a party. Refused for the owner (`events.requestDeletion` is
+     * their exit); reversible for everyone else by re-scanning a valid code.
+     */
+    readonly leave: Mutation<{ eventId: EventId }, null>;
     readonly myEvents: Query<NoArgs, EventSummary[]>;
     readonly activeEvent: Query<NoArgs, EventSummary | null>;
     readonly home: Query<{ eventId: EventId }, EventHome>;

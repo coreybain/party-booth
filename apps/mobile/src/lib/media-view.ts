@@ -150,6 +150,15 @@ function entryFor(input: {
 }): MediaTimelineEntry {
   const { item, media } = input;
   const useLocal = input.localWins && item !== undefined;
+  const mediaType = item?.mediaType ?? media?.mediaType ?? "photo";
+  const localPreview =
+    item === undefined || (mediaType === "video" && item.previewUri === item.uri)
+      ? undefined
+      : item.previewUri;
+  const thumbnailUri =
+    mediaType === "video"
+      ? (localPreview ?? media?.posterUrl ?? media?.previewUrl)
+      : (localPreview ?? media?.previewUrl ?? media?.url);
 
   const status = useLocal
     ? CAPTURE_STATE_COPY[item.state]
@@ -166,7 +175,7 @@ function entryFor(input: {
     status,
     // The local thumbnail is a file on this phone; a signed URL is a round trip
     // to Portland that expires. Local first, always.
-    thumbnailUri: item?.previewUri ?? media?.previewUrl ?? media?.url,
+    thumbnailUri,
     progress: useLocal && item.state === "uploading" ? item.progress : undefined,
     createdAt: item?.capturedAt ?? media?.createdAt ?? 0,
     // A permanent refusal (the party is paused, the file is too big) is not

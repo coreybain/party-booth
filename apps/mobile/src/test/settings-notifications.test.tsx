@@ -113,8 +113,10 @@ function aSession(events: { role: string }[]) {
 }
 
 async function renderSettings() {
-  const { default: SettingsScreen } = await import("../../app/(tabs)/settings");
-  render(createElement(SettingsScreen));
+  const { default: NotificationsScreen } = await import(
+    "../../app/(tabs)/settings/notifications"
+  );
+  render(createElement(NotificationsScreen));
 }
 
 beforeEach(() => {

@@ -21,6 +21,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, radius, spacing, typography } from "../theme";
 
 import type { ComponentProps } from "react";
+import type { GestureResponderEvent, ViewStyle } from "react-native";
 
 type IconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -172,27 +173,34 @@ export function TorchButton({
  *
  * ## The ring
  *
- * A conic gradient would be nicer and needs Skia. What is here is four absolutely
- * positioned edges whose *opacity* is driven by progress — a sweep that reads
- * correctly at a glance from across a room, redrawn ~20 times a second, costing
- * one extra dependency of zero. The precise second count is spoken by the label
- * next to it, which is what anybody actually reads.
+ * Sixty fixed ticks make elapsed time spatial: one turns red for every second
+ * recorded, while the centre counts down. Only opacity changes as the clock
+ * advances, keeping the interaction cheap enough to share a frame with the
+ * native camera preview and avoiding another rendering dependency.
  */
 export function ShutterButton({
   onPressIn,
+  onPressMove,
   onPressOut,
   recording = false,
   progress = 0,
+  remaining = 60,
+  zoom = 0,
   disabled = false,
   busy = false,
   videoEnabled = true,
 }: {
-  onPressIn: () => void;
+  onPressIn: (event: GestureResponderEvent) => void;
+  onPressMove?: ((event: GestureResponderEvent) => void) | undefined;
   onPressOut: () => void;
   /** True from the moment the recorder starts until the file is closed. */
   recording?: boolean;
   /** 0–1 of the 60-second cap. */
   progress?: number;
+  /** Whole seconds left, shown inside the shutter while recording. */
+  remaining?: number;
+  /** Native camera zoom, 0–1. Drives the drag feedback rail. */
+  zoom?: number;
   disabled?: boolean;
   busy?: boolean;
   /** False when the party is photo-only; the hint and the label drop the hold. */
@@ -200,23 +208,36 @@ export function ShutterButton({
 }) {
   const inactive = disabled || busy;
   const clamped = Math.min(1, Math.max(0, progress));
+  const clampedZoom = Math.min(1, Math.max(0, zoom));
+  const countdown = Math.max(0, Math.min(60, Math.ceil(remaining)));
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={recording ? "Stop recording" : "Take a photo"}
       accessibilityHint={
-        videoEnabled ? "Tap for a photo. Hold to record a video, up to 60 seconds." : undefined
+        videoEnabled
+          ? "Tap for a photo. Hold to record up to 60 seconds; slide up or down to zoom."
+          : undefined
       }
       accessibilityState={{ disabled: inactive, busy }}
       // A live progress value on the button itself, so a screen reader user gets
       // the same "how much is left" a sighted guest gets from the ring.
       accessibilityValue={
-        recording ? { now: Math.round(clamped * 100), min: 0, max: 100 } : undefined
+        recording
+          ? {
+              now: Math.round(clamped * 100),
+              min: 0,
+              max: 100,
+              text: `${String(countdown)} seconds remaining`,
+            }
+          : undefined
       }
       disabled={inactive}
       onPressIn={onPressIn}
+      onPressMove={onPressMove}
       onPressOut={onPressOut}
+      pressRetentionOffset={{ top: 280, bottom: 280, left: 96, right: 96 }}
       style={({ pressed }) => [
         styles.shutter,
         recording && styles.shutterRecording,
@@ -225,36 +246,93 @@ export function ShutterButton({
       ]}
     >
       {recording ? <RecordingRing progress={clamped} /> : null}
+      {recording ? <ZoomRail zoom={clampedZoom} /> : null}
       <View
         style={[
           styles.shutterCore,
           busy && styles.shutterCoreBusy,
-          // A filled circle becomes a rounded square while recording — the
-          // universal "stop" affordance, and the one shape change that reads at
-          // arm's length in a dark room.
           recording && styles.shutterCoreRecording,
         ]}
-      />
+      >
+        {recording ? (
+          <Text
+            style={styles.shutterCountdown}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          >
+            {countdown}
+          </Text>
+        ) : null}
+      </View>
     </Pressable>
   );
 }
 
 /**
- * The 60-second sweep, as four fading edges.
+ * Sixty ticks, one for every second available to the clip.
  *
- * Each quarter of the ring lights over its own quarter of the progress, so the
- * band travels clockwise from the top. Not a true arc — it is four straight
- * segments — which is invisible at 76 px and is the difference between shipping
- * this and adding a rendering dependency in launch week.
+ * Their geometry is calculated once at module load; recording only changes
+ * opacity, so the 20 fps clock never animates layout or asks the native camera
+ * thread to share time with a rendering dependency.
  */
+const RECORDING_RING_SIZE = 88;
+const RECORDING_RING_SEGMENT_COUNT = 60;
+const RECORDING_RING_SEGMENT_WIDTH = 2;
+const RECORDING_RING_SEGMENT_HEIGHT = 6;
+const RECORDING_RING_RADIUS = 41;
+const RECORDING_RING_CENTER = RECORDING_RING_SIZE / 2;
+const SHUTTER_SIZE = 76;
+const SHUTTER_BORDER_WIDTH = 4;
+// Absolute children are laid out from inside the parent's border on native.
+// Include that inset so the red ring and visible white shutter are concentric.
+export const RECORDING_RING_OFFSET = -(
+  (RECORDING_RING_SIZE - SHUTTER_SIZE) / 2 +
+  SHUTTER_BORDER_WIDTH
+);
+
+const RECORDING_RING_SEGMENTS: readonly ViewStyle[] = Array.from(
+  { length: RECORDING_RING_SEGMENT_COUNT },
+  (_, index): ViewStyle => {
+    const angle = (index / RECORDING_RING_SEGMENT_COUNT) * Math.PI * 2;
+    return {
+      left:
+        RECORDING_RING_CENTER +
+        Math.sin(angle) * RECORDING_RING_RADIUS -
+        RECORDING_RING_SEGMENT_WIDTH / 2,
+      top:
+        RECORDING_RING_CENTER -
+        Math.cos(angle) * RECORDING_RING_RADIUS -
+        RECORDING_RING_SEGMENT_HEIGHT / 2,
+      transform: [{ rotate: `${String(index * 6)}deg` }],
+    };
+  },
+);
+
 function RecordingRing({ progress }: { progress: number }) {
-  const quarter = (index: number) => Math.min(1, Math.max(0, progress * 4 - index));
+  const activeSegments = Math.ceil(progress * RECORDING_RING_SEGMENT_COUNT);
   return (
-    <View style={styles.ring} pointerEvents="none">
-      <View style={[styles.ringEdge, styles.ringTop, { opacity: quarter(0) }]} />
-      <View style={[styles.ringEdge, styles.ringRight, { opacity: quarter(1) }]} />
-      <View style={[styles.ringEdge, styles.ringBottom, { opacity: quarter(2) }]} />
-      <View style={[styles.ringEdge, styles.ringLeft, { opacity: quarter(3) }]} />
+    <View style={styles.ring} testID="recording-progress">
+      {RECORDING_RING_SEGMENTS.map((segment, index) => (
+        <View
+          // Geometry is stable and index is the segment's identity.
+          key={index}
+          style={[styles.ringSegment, segment, index < activeSegments && styles.ringSegmentActive]}
+        />
+      ))}
+    </View>
+  );
+}
+
+/** A quiet spatial cue for the held vertical zoom gesture. */
+function ZoomRail({ zoom }: { zoom: number }) {
+  return (
+    <View
+      style={styles.zoomRail}
+      testID="recording-zoom"
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      <View style={[styles.zoomThumb, { transform: [{ translateY: 20 - zoom * 40 }] }]} />
     </View>
   );
 }
@@ -309,17 +387,20 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.7 },
   disabled: { opacity: 0.4 },
   shutter: {
-    width: 76,
-    height: 76,
+    width: SHUTTER_SIZE,
+    height: SHUTTER_SIZE,
     borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 4,
+    borderWidth: SHUTTER_BORDER_WIDTH,
     borderColor: colors.text,
     backgroundColor: "rgba(18, 9, 27, 0.35)",
   },
   shutterPressed: { transform: [{ scale: 0.94 }] },
-  shutterRecording: { borderColor: colors.danger },
+  shutterRecording: {
+    borderColor: "rgba(255, 244, 249, 0.25)",
+    backgroundColor: "rgba(18, 9, 27, 0.62)",
+  },
   shutterCore: {
     width: 58,
     height: 58,
@@ -328,24 +409,46 @@ const styles = StyleSheet.create({
   },
   shutterCoreBusy: { backgroundColor: colors.textFaint },
   shutterCoreRecording: {
-    width: 30,
-    height: 30,
-    borderRadius: radius.sm,
-    backgroundColor: colors.danger,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 244, 249, 0.08)",
   },
+  shutterCountdown: { ...typography.title, color: colors.text, fontVariant: ["tabular-nums"] },
   ring: {
     position: "absolute",
-    top: -6,
-    left: -6,
-    right: -6,
-    bottom: -6,
+    top: RECORDING_RING_OFFSET,
+    left: RECORDING_RING_OFFSET,
+    width: RECORDING_RING_SIZE,
+    height: RECORDING_RING_SIZE,
     borderRadius: radius.pill,
+    pointerEvents: "none",
   },
-  ringEdge: { position: "absolute", backgroundColor: colors.danger },
-  ringTop: { top: 0, left: "25%", right: "25%", height: 3, borderRadius: radius.pill },
-  ringRight: { right: 0, top: "25%", bottom: "25%", width: 3, borderRadius: radius.pill },
-  ringBottom: { bottom: 0, left: "25%", right: "25%", height: 3, borderRadius: radius.pill },
-  ringLeft: { left: 0, top: "25%", bottom: "25%", width: 3, borderRadius: radius.pill },
+  ringSegment: {
+    position: "absolute",
+    width: RECORDING_RING_SEGMENT_WIDTH,
+    height: RECORDING_RING_SEGMENT_HEIGHT,
+    borderRadius: radius.pill,
+    backgroundColor: colors.danger,
+    opacity: 0.18,
+  },
+  ringSegmentActive: { opacity: 1 },
+  zoomRail: {
+    position: "absolute",
+    right: -24,
+    width: 3,
+    height: 48,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(255, 244, 249, 0.22)",
+    alignItems: "center",
+    justifyContent: "center",
+    pointerEvents: "none",
+  },
+  zoomThumb: {
+    width: 9,
+    height: 9,
+    borderRadius: radius.pill,
+    backgroundColor: colors.text,
+  },
   recording: {
     flexDirection: "row",
     alignItems: "center",

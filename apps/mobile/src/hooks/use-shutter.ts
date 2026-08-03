@@ -204,8 +204,10 @@ export function useShutter(input: UseShutterInput): ShutterController {
   const handledSeq = useRef(0);
   /** Set by `armRecorder`, cleared by the recording that answers it. */
   const pendingArm = useRef(false);
-  /** Which `readyTick` we armed at; recording waits for a strictly later one. */
+  /** Which `readyTick` the press began at; video waits for a strictly later one. */
   const armedAtTick = useRef(0);
+  /** Captured before the mode-changing render, so a fast remount cannot race it. */
+  const readyTickAtPress = useRef(0);
 
   /*
    * Mirrors of the callbacks, written after commit.
@@ -291,11 +293,12 @@ export function useShutter(input: UseShutterInput): ShutterController {
         return;
       case "armRecorder":
         // Nothing to call yet. `videoMode` is already true, so the screen has
-        // flipped `mode`; remembering the current tick is what makes the *next*
-        // `onCameraReady` mean "the rebuilt video session is up" rather than the
-        // stale one left over from picture mode.
+        // mounted its video-mode camera. Use the readiness tick captured when
+        // the finger landed: a fast native mount can report ready before this
+        // parent effect runs, and reading the current tick here would mistake
+        // that fresh video session for the stale picture session.
         pendingArm.current = true;
-        armedAtTick.current = readyTickRef.current;
+        armedAtTick.current = readyTickAtPress.current;
         return;
       case "stopRecording":
         try {
@@ -367,6 +370,7 @@ export function useShutter(input: UseShutterInput): ShutterController {
 
   const onPressIn = useCallback(() => {
     if (disabled) return;
+    readyTickAtPress.current = readyTickRef.current;
     dispatch({ type: "pressIn", now: Date.now() });
   }, [disabled]);
 

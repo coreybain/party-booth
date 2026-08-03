@@ -37,12 +37,12 @@ import {
   fitWithin,
   needsResize,
   newCaptureId as mintCaptureId,
-  posterFrameTime,
   toHex,
   videoContainerFor,
   type PixelSize,
 } from "@partybooth/contracts/capture";
 import { capturesDirectory, deleteLocalFile, readLocalBytes } from "./device-store";
+import { generateVideoPosterFrame } from "./video-poster";
 
 import type { MediaSource } from "@partybooth/contracts/media";
 import type { SharedRef } from "expo-modules-core/types";
@@ -329,28 +329,31 @@ export async function buildPhotoCapture(input: BuildCaptureInput): Promise<Captu
  * the shared rule waits a full second on anything long enough to allow it, which
  * is past the worst of the exposure ramp rather than merely past the start of it.
  *
- * Returns `null` rather than throwing. A missing poster costs a thumbnail; a
- * throw here would cost the video, and a capture with no derivative is never
- * stranded by design (`DERIVATIVE_ROLES_BY_TYPE`: "expected, not required").
+ * A newly-recorded clip does not enter the queue without this JPEG. Old queue
+ * rows still tolerate a missing derivative for backwards compatibility, but
+ * accepting a new poster-less capture would leave the gallery with no honest
+ * image to display.
  */
 async function buildVideoPoster(
   captureId: string,
   videoUri: string,
   durationSeconds: number,
-): Promise<DerivativeDraft | null> {
+): Promise<DerivativeDraft> {
   let player: { release: () => void } | null = null;
+  const posterPath = new DeviceFile(capturesDirectory(), derivativeFileName(captureId, "poster"));
   try {
     // Imported on demand. `expo-video` pulls a native player a guest who never
     // records anything should not pay to load, and this matches how the picker
     // is imported on the camera screen.
     const { createVideoPlayer } = await import("expo-video");
-    const created = createVideoPlayer({ uri: videoUri });
+    const created = createVideoPlayer(null);
     player = created;
-
-    const [thumbnail] = await created.generateThumbnailsAsync([posterFrameTime(durationSeconds)], {
-      maxWidth: NATIVE.sharedMaxEdge,
-    });
-    if (thumbnail === undefined) return null;
+    const thumbnail = await generateVideoPosterFrame(
+      created,
+      videoUri,
+      durationSeconds,
+      NATIVE.sharedMaxEdge,
+    );
 
     const poster = await encodeTo(
       thumbnail,
@@ -370,8 +373,9 @@ async function buildVideoPoster(
       width: poster.width,
       height: poster.height,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (posterPath.exists) posterPath.delete();
+    throw error;
   } finally {
     // A player holds a decoder. `useVideoPlayer` releases on unmount; one created
     // by hand is ours to release, and leaking one per video at a party is a
@@ -439,7 +443,16 @@ export async function buildVideoCapture(input: BuildVideoInput): Promise<Capture
   new DeviceFile(input.source.uri).moveSync(target);
 
   const described = await describeLocalFile(target.uri);
-  const poster = await buildVideoPoster(captureId, target.uri, input.source.durationSeconds);
+  let poster: DerivativeDraft;
+  try {
+    poster = await buildVideoPoster(captureId, target.uri, input.source.durationSeconds);
+  } catch (error) {
+    // Nothing owns the durable original until a draft reaches the queue. Do not
+    // leave an invisible multi-megabyte clip behind after poster generation
+    // refuses the capture.
+    await deleteLocalFile(target.uri);
+    throw error;
+  }
 
   return {
     captureId,
@@ -449,10 +462,9 @@ export async function buildVideoCapture(input: BuildVideoInput): Promise<Capture
     mediaSource: "capture",
     uri: target.uri,
     // The poster doubles as the local thumbnail, so "My media" draws the clip
-    // rather than a grey box while the bytes are still going up. When the poster
-    // could not be made, the row falls back to the video's own URI, which
-    // `expo-image` cannot render — and a grey box is the correct outcome there.
-    previewUri: poster?.uri ?? target.uri,
+    // rather than a grey box while the bytes are still going up. New videos do
+    // not enter the queue without this separate JPEG.
+    previewUri: poster.uri,
     byteSize: described.byteSize,
     mimeType,
     checksum: described.checksum,
@@ -472,6 +484,6 @@ export async function buildVideoCapture(input: BuildVideoInput): Promise<Capture
      * `sourceCarriesNoLocation` above is true. Transcoding is post-launch
      * (PLAN.md → P2).
      */
-    derivatives: poster === null ? [] : [poster],
+    derivatives: [poster],
   };
 }

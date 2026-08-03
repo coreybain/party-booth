@@ -13,11 +13,12 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createElement, forwardRef, useEffect, useImperativeHandle } from "react";
+import { createElement, forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EventSummary } from "@/lib/api";
 import type { QueueItem } from "@/upload/types";
+import type * as CameraControlsModule from "@/components/camera-controls";
 import type { ReactNode } from "react";
 
 /* -------------------------------------------------------------------------- */
@@ -52,11 +53,9 @@ vi.mock("expo-camera", () => ({
   // A stand-in that records the props the screen chose and exposes the three
   // imperative methods the shutter calls.
   //
-  // `onCameraReady` fires on every *mode* change as well as on mount, which is
-  // the behaviour the arming phase depends on: the screen flips `mode` to
-  // "video" and waits to be told the rebuilt session is up before recording.
-  // A fake that only fired once would make the recording path untestable and
-  // would hide a real regression.
+  // iOS emits `onCameraReady` when this native view mounts, not when its `mode`
+  // prop changes in place. Keeping the fake honest to that lifecycle is what
+  // catches a shutter left forever in `arming` after switching to video.
   CameraView: forwardRef<unknown, Record<string, unknown>>((props, ref) => {
     useImperativeHandle(ref, () => ({
       takePictureAsync: fake.takePictureAsync,
@@ -64,21 +63,46 @@ vi.mock("expo-camera", () => ({
       stopRecording: fake.stopRecording,
     }));
     const onCameraReady = props.onCameraReady as (() => void) | undefined;
-    const mode = props.mode;
+    const initialOnCameraReady = useRef(onCameraReady);
     useEffect(() => {
-      onCameraReady?.();
-    }, [onCameraReady, mode]);
+      initialOnCameraReady.current?.();
+    }, []);
     return createElement("div", {
       "data-testid": "camera-view",
       "data-facing": String(props.facing),
       "data-flash": String(props.flash),
       "data-mode": String(props.mode),
+      "data-zoom": String(props.zoom),
       "data-active": String(props.active),
       "data-torch": String(props.enableTorch),
       "data-video-quality": String(props.videoQuality),
     });
   }),
 }));
+
+vi.mock("@/components/camera-controls", async (importOriginal) => {
+  const actual = await importOriginal<typeof CameraControlsModule>();
+  return {
+    ...actual,
+    ShutterButton: (props: {
+      onPressIn: (event: { nativeEvent: { pageY: number } }) => void;
+      onPressMove?: (event: { nativeEvent: { pageY: number } }) => void;
+      onPressOut: () => void;
+      recording?: boolean;
+      disabled?: boolean;
+      busy?: boolean;
+    }) =>
+      createElement("button", {
+        "aria-label": props.recording ? "Stop recording" : "Take a photo",
+        "aria-busy": props.busy === true ? "true" : "false",
+        "aria-disabled": props.disabled === true || props.busy === true ? "true" : "false",
+        disabled: props.disabled === true || props.busy === true,
+        onMouseDown: () => props.onPressIn({ nativeEvent: { pageY: 360 } }),
+        onMouseMove: () => props.onPressMove?.({ nativeEvent: { pageY: 240 } }),
+        onMouseUp: props.onPressOut,
+      }),
+  };
+});
 
 vi.mock("expo-device", () => ({
   get isDevice() {
@@ -302,6 +326,27 @@ describe("CameraScreen — the shutter", () => {
     expect(view.getAttribute("data-torch")).toBe("false");
   });
 
+  it("starts recording only after a fresh video-mode camera session is ready", async () => {
+    fake.recordAsync.mockReturnValue(new Promise(() => undefined));
+    await renderCamera();
+
+    fireEvent.mouseDown(screen.getByLabelText("Take a photo"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("camera-view").getAttribute("data-mode")).toBe("video");
+    });
+    await waitFor(() => {
+      expect(fake.recordAsync).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.mouseMove(screen.getByLabelText("Stop recording"));
+    await waitFor(() => {
+      expect(Number(screen.getByTestId("camera-view").getAttribute("data-zoom"))).toBeGreaterThan(
+        0,
+      );
+    });
+  });
+
   it("drops the hold from the hint when the microphone has been refused", async () => {
     // `recordAudioAndroid` is on, so a recording without the permission fails
     // outright. Advertising a gesture that cannot work is worse than not
@@ -447,12 +492,15 @@ describe("CameraScreen — the states that are not a viewfinder", () => {
     expect(screen.getByLabelText("Take a photo").getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("sends a guest with no party to the join screen", async () => {
+  it("offers QR scanning and code entry to a guest with no party", async () => {
     fake.session = { activeEvent: null, eventsLoading: false };
     await renderCamera();
 
     expect(screen.queryByTestId("camera-view")).toBeNull();
-    fireEvent.click(screen.getByText("Enter a join code"));
+    fireEvent.click(screen.getByLabelText("Scan a QR code"));
+    expect(fake.push).toHaveBeenCalledWith("/join/scan");
+
+    fireEvent.click(screen.getByLabelText("Enter a join code"));
     expect(fake.push).toHaveBeenCalledWith("/join");
   });
 

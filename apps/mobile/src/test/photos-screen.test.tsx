@@ -107,6 +107,7 @@ vi.mock("expo-video", () => ({
 vi.mock("react-native-safe-area-context", () => ({
   SafeAreaView: (props: { children?: ReactNode }) =>
     createElement("div", null, props.children as ReactNode),
+  useSafeAreaInsets: () => ({ top: 47, right: 21, bottom: 34, left: 18 }),
 }));
 
 vi.mock("@/providers/session", () => ({ useSession: () => fake.session }));
@@ -234,7 +235,8 @@ describe("PhotosScreen — My media", () => {
     await renderPhotos();
 
     expect(screen.queryByText("Nothing sent yet")).toBeNull();
-    expect(screen.getByText("ADDED")).toBeTruthy();
+    expect(screen.getByText("Added")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /view photo — added/i })).toBeTruthy();
   });
 
   it("waits for the subscription rather than claiming there is nothing", async () => {
@@ -254,11 +256,11 @@ describe("PhotosScreen — My media", () => {
 
     // The local row wins while the guest can still act on it, so this reads
     // "SENDING" with a progress bar rather than the server's bare "processing".
-    expect(screen.getAllByText("SENDING")).toHaveLength(1);
+    expect(screen.getAllByText("Sending")).toHaveLength(1);
     const bar = screen.getByLabelText("Upload progress");
     expect(bar.getAttribute("role")).toBe("progressbar");
     expect((bar.firstElementChild as HTMLElement | null)?.style.width).toBe("45%");
-    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(screen.getByLabelText("Cancel upload")).toBeTruthy();
   });
 
   it("draws the local thumbnail rather than a signed URL while one exists", async () => {
@@ -273,6 +275,61 @@ describe("PhotosScreen — My media", () => {
     );
   });
 
+  it("opens a full-screen viewer from a My media thumbnail", async () => {
+    fake.myMedia = [aRow({ id: "media_1", captureId: "m_1", state: "approved" })];
+    fake.items = [anItem({ captureId: "m_1", state: "uploaded" })];
+    await renderPhotos();
+
+    fireEvent.click(screen.getByRole("button", { name: /view photo — added/i }));
+
+    expect(screen.getByLabelText("Close media viewer")).toBeTruthy();
+    expect(screen.getByText("Your photo")).toBeTruthy();
+    expect(getComputedStyle(screen.getByTestId("media-viewer-top-controls"))).toMatchObject({
+      top: "59px",
+      right: "37px",
+      left: "34px",
+    });
+    expect(getComputedStyle(screen.getByTestId("media-viewer-actions"))).toMatchObject({
+      right: "33px",
+      bottom: "46px",
+      left: "30px",
+    });
+    expect(
+      screen
+        .getAllByTestId("thumbnail")
+        .some((image) => image.getAttribute("data-uri") === "file:///captures/m_1.jpg"),
+    ).toBe(true);
+  });
+
+  it("stays closed after dismissing the media viewer", async () => {
+    fake.myMedia = [aRow({ id: "media_1", captureId: "m_1", state: "approved" })];
+    fake.items = [anItem({ captureId: "m_1", state: "uploaded" })];
+    await renderPhotos();
+
+    fireEvent.click(screen.getByRole("button", { name: /view photo — added/i }));
+    const close = screen.getByLabelText("Close media viewer");
+    fireEvent.click(close);
+
+    // React Native Web keeps a fading Modal mounted because jsdom does not run
+    // CSS animations. Its non-interactive, transparent ancestor is the closed
+    // state we need to assert here.
+    let fadingLayer: HTMLElement | null = close;
+    while (
+      fadingLayer !== null &&
+      !(
+        getComputedStyle(fadingLayer).pointerEvents === "none" &&
+        getComputedStyle(fadingLayer).opacity === "0"
+      )
+    ) {
+      fadingLayer = fadingLayer.parentElement;
+    }
+    expect(fadingLayer).not.toBeNull();
+    expect(getComputedStyle(fadingLayer as HTMLElement)).toMatchObject({
+      opacity: "0",
+      pointerEvents: "none",
+    });
+  });
+
   it("offers a retry for a failure that a retry could fix", async () => {
     const retry = vi.fn();
     fake.queue = { ...fake.queue, retry };
@@ -285,8 +342,9 @@ describe("PhotosScreen — My media", () => {
     ];
     await renderPhotos();
 
-    expect(screen.getByText("The network dropped.")).toBeTruthy();
-    fireEvent.click(screen.getByText("Try again"));
+    fireEvent.click(screen.getByRole("button", { name: /view photo — did not send/i }));
+    expect(screen.getByText(/The network dropped/i)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Try again"));
     expect(retry).toHaveBeenCalledWith("m_1");
   });
 
@@ -302,8 +360,9 @@ describe("PhotosScreen — My media", () => {
     ];
     await renderPhotos();
 
-    expect(screen.getByText("That party is paused.")).toBeTruthy();
-    expect(screen.queryByText("Try again")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /view photo — did not send/i }));
+    expect(screen.getByText(/That party is paused/i)).toBeTruthy();
+    expect(screen.queryByLabelText("Try again")).toBeNull();
   });
 
   it("cancels an upload that is still in flight", async () => {
@@ -312,7 +371,7 @@ describe("PhotosScreen — My media", () => {
     fake.items = [anItem({ captureId: "m_1", state: "queued" })];
     await renderPhotos();
 
-    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByLabelText("Cancel upload"));
     expect(cancel).toHaveBeenCalledWith("m_1");
   });
 });
@@ -329,20 +388,20 @@ describe("PhotosScreen — withdrawal", () => {
   it("asks before it deletes, and says that deletion is permanent", async () => {
     await renderPhotos();
 
-    fireEvent.click(screen.getByText("Take it back"));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
 
     // ADR 0004 §6: the row goes to `deleted`, unspent grants are expired and the
     // object is purged. None of that is undoable, and the copy has to say so
     // rather than asking "Are you sure?".
-    expect(screen.getByText(/deleted for good/i)).toBeTruthy();
+    expect(screen.getByText(/deleted permanently/i)).toBeTruthy();
     expect(fake.withdraw).not.toHaveBeenCalled();
   });
 
   it("withdraws once the second tap confirms it", async () => {
     await renderPhotos();
 
-    fireEvent.click(screen.getByText("Take it back"));
-    fireEvent.click(screen.getByText("Yes, delete it"));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
+    fireEvent.click(screen.getByLabelText("Withdraw permanently"));
 
     await waitFor(() => {
       expect(fake.withdraw).toHaveBeenCalledWith({ mediaId: "media_1" });
@@ -352,19 +411,19 @@ describe("PhotosScreen — withdrawal", () => {
   it("backs out without deleting anything", async () => {
     await renderPhotos();
 
-    fireEvent.click(screen.getByText("Take it back"));
-    fireEvent.click(screen.getByText("Keep it"));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
+    fireEvent.click(screen.getByLabelText("Keep it"));
 
     expect(fake.withdraw).not.toHaveBeenCalled();
-    expect(screen.getByText("Take it back")).toBeTruthy();
+    expect(screen.getByLabelText("Withdraw")).toBeTruthy();
   });
 
   it("shows the failure rather than pretending it worked", async () => {
     fake.withdraw.mockRejectedValue(new Error("Not allowed"));
     await renderPhotos();
 
-    fireEvent.click(screen.getByText("Take it back"));
-    fireEvent.click(screen.getByText("Yes, delete it"));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
+    fireEvent.click(screen.getByLabelText("Withdraw permanently"));
 
     await waitFor(() => {
       expect(screen.getByText(/That didn't work/i)).toBeTruthy();
@@ -375,7 +434,7 @@ describe("PhotosScreen — withdrawal", () => {
     fake.myMedia = [aRow({ id: "media_2", captureId: "w_2", state: "approved", isOwn: false })];
     await renderPhotos();
 
-    expect(screen.queryByText("Take it back")).toBeNull();
+    expect(screen.queryByLabelText("Withdraw")).toBeNull();
   });
 });
 
@@ -398,6 +457,8 @@ describe("PhotosScreen — Event gallery", () => {
         captureId: "w_2",
         state: "approved",
         uploaderDisplayName: "Ada",
+        uploaderUserId: "user_2",
+        isOwn: false,
         url: "https://cdn/b.jpg",
         urlExpiresAt: Date.now() + 600_000,
       }),
@@ -410,6 +471,60 @@ describe("PhotosScreen — Event gallery", () => {
     expect(tiles[0]?.getAttribute("data-uri")).toBe("https://cdn/a.jpg");
     expect(tiles[1]?.getAttribute("data-uri")).toBe("https://cdn/b.jpg");
     expect(screen.getByAltText("Photo from Ada")).toBeTruthy();
+  });
+
+  it("opens every photo and moves through the gallery without closing it", async () => {
+    fake.eventMedia = [
+      aRow({
+        id: "media_1",
+        captureId: "w_1",
+        state: "approved",
+        previewUrl: "https://cdn/a.jpg",
+        previewUrlExpiresAt: Date.now() + 600_000,
+      }),
+      aRow({
+        id: "media_2",
+        captureId: "w_2",
+        state: "approved",
+        uploaderDisplayName: "Ada",
+        uploaderUserId: "user_2",
+        isOwn: false,
+        previewUrl: "https://cdn/b.jpg",
+        previewUrlExpiresAt: Date.now() + 600_000,
+      }),
+    ];
+    await renderPhotos();
+    openGallery();
+
+    fireEvent.click(screen.getByRole("button", { name: "View Photo from Sam" }));
+    expect(screen.getByText("Your photo")).toBeTruthy();
+    expect(screen.getByLabelText("Withdraw")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Next media"));
+    expect(screen.getByText("Photo by Ada")).toBeTruthy();
+    expect(screen.getByLabelText("Report or block")).toBeTruthy();
+  });
+
+  it("withdraws an owned photo from the event gallery after confirmation", async () => {
+    fake.eventMedia = [
+      aRow({
+        id: "media_1",
+        captureId: "w_1",
+        state: "approved",
+        previewUrl: "https://cdn/a.jpg",
+        previewUrlExpiresAt: Date.now() + 600_000,
+      }),
+    ];
+    await renderPhotos();
+    openGallery();
+
+    fireEvent.click(screen.getByRole("button", { name: "View Photo from Sam" }));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
+    fireEvent.click(screen.getByLabelText("Withdraw permanently"));
+
+    await waitFor(() => {
+      expect(fake.withdraw).toHaveBeenCalledWith({ mediaId: "media_1" });
+    });
   });
 
   it("draws a placeholder rather than a URL whose signature has expired", async () => {
@@ -482,7 +597,7 @@ describe("PhotosScreen — nothing to show", () => {
     await renderPhotos();
 
     expect(screen.getByText(/Nothing can be sent from this build/i)).toBeTruthy();
-    expect(screen.getByText("READY")).toBeTruthy();
+    expect(screen.getByText("Ready")).toBeTruthy();
     vi.doUnmock("@/env");
     vi.resetModules();
   });

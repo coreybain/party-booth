@@ -50,6 +50,11 @@ vi.mock("expo-device", () => ({
 vi.mock("@/providers/session", () => ({ useSession: () => fake.session }));
 vi.mock("@/hooks/use-now", () => ({ useNow: () => Date.UTC(2026, 7, 5, 20, 0, 0) }));
 
+// The parties page reaches Convex for `events.leave`; this suite only exercises
+// its join affordances, so the mutation is a stub.
+vi.mock("convex/react", () => ({ useMutation: () => vi.fn() }));
+vi.mock("@/lib/sentry", () => ({ captureHandledError: vi.fn() }));
+
 vi.mock("@expo/vector-icons", () => ({
   Ionicons: (props: Record<string, unknown>) =>
     createElement("span", { "data-icon": String(props.name) }),
@@ -71,8 +76,8 @@ beforeEach(() => {
 
 describe("Your parties join actions", () => {
   it("shows both QR scanning and code entry when there are no parties", async () => {
-    const { default: EventsRoute } = await import("../../app/events");
-    render(createElement(EventsRoute));
+    const { default: PartiesRoute } = await import("../../app/(tabs)/settings/parties");
+    render(createElement(PartiesRoute));
 
     expect(screen.getByText("You haven't joined a party yet")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Scan a QR code"));

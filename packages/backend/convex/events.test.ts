@@ -376,6 +376,76 @@ describe("events.setState", () => {
   });
 });
 
+describe("events.leave", () => {
+  let t: T;
+  let ownerId: Id<"users">;
+  let guestId: Id<"users">;
+  let eventId: Id<"events">;
+
+  beforeEach(async () => {
+    t = makeTest();
+    ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    guestId = await seedUser(t, { authId: "guest", email: "guest@partybooth.test" });
+    eventId = await seedEvent(t, ownerId, { state: "live", name: "Main party" });
+    await seedMembership(t, eventId, guestId, "guest");
+  });
+
+  it("marks the membership left, takes the party off the list, and audits it", async () => {
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.events.leave, { eventId });
+
+    const membership = await t.run(async (ctx) =>
+      ctx.db
+        .query("memberships")
+        .withIndex("by_event_and_user", (q) => q.eq("eventId", eventId).eq("userId", guestId))
+        .unique(),
+    );
+    expect(membership?.status).toBe("left");
+    expect(await as.query(api.events.myEvents, {})).toEqual([]);
+    expect(await auditActions(t)).toContain(AUDIT_ACTIONS.membershipLeft);
+  });
+
+  it("clears the active-event pointer when it pointed at the left party", async () => {
+    await t.run(async (ctx) => ctx.db.patch(guestId, { activeEventId: eventId }));
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.events.leave, { eventId });
+    expect((await t.run(async (ctx) => ctx.db.get(guestId)))?.activeEventId).toBeUndefined();
+  });
+
+  it("leaves the active-event pointer alone when it pointed elsewhere", async () => {
+    const other = await seedEvent(t, ownerId, { name: "Other" });
+    await seedMembership(t, other, guestId, "guest");
+    await t.run(async (ctx) => ctx.db.patch(guestId, { activeEventId: other }));
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.events.leave, { eventId });
+    expect((await t.run(async (ctx) => ctx.db.get(guestId)))?.activeEventId).toBe(other);
+  });
+
+  it("refuses the owner, whose exit is deletion", async () => {
+    const as = t.withIdentity({ subject: "owner" });
+    await expect(as.mutation(api.events.leave, { eventId })).rejects.toThrow(/host/i);
+    const list = await as.query(api.events.myEvents, {});
+    expect(list.map((entry) => entry.id)).toEqual([eventId]);
+  });
+
+  it("answers a stranger with not-found, exactly like a read would", async () => {
+    await seedUser(t, { authId: "stranger", email: "s@partybooth.test" });
+    const as = t.withIdentity({ subject: "stranger" });
+    await expect(as.mutation(api.events.leave, { eventId })).rejects.toThrow(/could not be found/i);
+  });
+
+  it("lets the same person walk back in through the join door", async () => {
+    // Leaving must stay reversible by the same credential that admitted them —
+    // `join.ts` re-activates a `left` row rather than refusing it.
+    const { code } = await seedInviteVersion(t, eventId, ownerId, { makeActive: true });
+    const as = t.withIdentity({ subject: "guest" });
+    await as.mutation(api.events.leave, { eventId });
+    const outcome = await as.mutation(api.join.join, { invite: { via: "code", code } });
+    expect(outcome.outcome).toBe("joined");
+    expect((await as.query(api.events.myEvents, {})).map((entry) => entry.id)).toEqual([eventId]);
+  });
+});
+
 describe("events.myEvents / activeEvent / home", () => {
   let t: T;
   let ownerId: Id<"users">;

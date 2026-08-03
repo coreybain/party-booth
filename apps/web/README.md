@@ -245,7 +245,7 @@ Vercel project settings:
   defaults so Vercel's own Turborepo support applies.
 - Environment variables: every `NEXT_PUBLIC_*` from `.env.example`, plus
   `CONVEX_URL`, `CONVEX_SITE_URL`, `BETTER_AUTH_*`, `RESEND_*`, `SENTRY_*`,
-  `UPLOADTHING_TOKEN`, and `UPLOAD_CALLBACK_SECRET` — the last one set to the
+  `UPLOADTHING_TOKEN`, `UPLOADTHING_ACL`, and `UPLOAD_CALLBACK_SECRET` — the last one set to the
   **same value** here and in the Convex dashboard, or completion callbacks are
   refused and nothing ever leaves `processing`.
 - The UploadThing app needs a paid plan, region `pdx1`, default ACL **Private**

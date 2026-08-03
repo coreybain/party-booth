@@ -24,6 +24,7 @@
  */
 
 import type * as ExpoNotifications from "expo-notifications";
+import { Platform } from "react-native";
 
 import type { PushPermission, PushPermissionSnapshot } from "./registration";
 
@@ -102,7 +103,6 @@ export function createExpoNotificationsAdapter(): PushNotificationsAdapter {
         }),
       });
 
-      const { Platform } = await import("react-native");
       if (Platform.OS === "android") {
         // Android 8+ ignores per-notification importance; the channel is what
         // decides whether a ping makes a sound. Created before any notification

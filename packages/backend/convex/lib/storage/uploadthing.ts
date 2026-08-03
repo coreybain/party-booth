@@ -89,6 +89,32 @@ export function resetUploadThingClient(): void {
 }
 
 /**
+ * UploadThing's v7 token is a base64url-encoded JSON object whose app id is the
+ * authority used by the upload route itself. Prefer it over the legacy
+ * standalone variable so the writer and public URL reader cannot silently
+ * drift onto different apps.
+ */
+function appIdFromToken(token: string): string | undefined {
+  try {
+    const normalised = token.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = normalised.padEnd(Math.ceil(normalised.length / 4) * 4, "=");
+    const decoded: unknown = JSON.parse(atob(padded));
+    if (
+      typeof decoded === "object" &&
+      decoded !== null &&
+      "appId" in decoded &&
+      typeof decoded.appId === "string" &&
+      decoded.appId.length > 0
+    ) {
+      return decoded.appId;
+    }
+  } catch {
+    // Older/opaque tokens can still use the explicit compatibility variable.
+  }
+  return undefined;
+}
+
+/**
  * Resolve the provider app for a region.
  *
  * Today every region resolves to the same app, because the beta has one region
@@ -100,12 +126,12 @@ export function resetUploadThingClient(): void {
  */
 export function createUploadThingAdapter(region: StorageRegion): StorageAdapter {
   const token = envOptional(serverEnv, "UPLOADTHING_TOKEN");
-  const appId = envOptional(serverEnv, "UPLOADTHING_APP_ID");
+  const appId =
+    token === undefined
+      ? envOptional(serverEnv, "UPLOADTHING_APP_ID")
+      : (appIdFromToken(token) ?? envOptional(serverEnv, "UPLOADTHING_APP_ID"));
   const configured = token !== undefined && token !== "";
-  const usesDevelopmentPublicFiles =
-    serverEnv.UPLOADTHING_ACL === "public-read" &&
-    serverEnv.DEPLOYMENT_ENVIRONMENT === "development" &&
-    appId !== undefined;
+  const usesPublicFiles = serverEnv.UPLOADTHING_ACL === "public-read" && appId !== undefined;
 
   const description: StorageAppDescription = {
     region,
@@ -127,10 +153,10 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
        * UploadThing's free plan stores public-read files. They do not need a
        * signature, and trying to load the private-file signing SDK from inside
        * a Convex V8 query can fail before a URL is returned. Keep this escape
-       * hatch strictly development-only: production and every private ACL still
-       * use short-lived signed URLs with the normal membership checks.
+       * hatch controlled by the dedicated ACL setting: every private ACL still
+       * uses short-lived signed URLs with the normal membership checks.
        */
-      if (usesDevelopmentPublicFiles) {
+      if (usesPublicFiles) {
         return {
           url: `https://${appId}.ufs.sh/f/${encodeURIComponent(key)}`,
           expiresAt: Date.now() + expiresIn * 1000,

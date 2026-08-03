@@ -35,7 +35,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery } from "convex/react";
 import { Image } from "expo-image";
 import { useCallback, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import type { ReportReason } from "@partybooth/contracts/media";
 import { SIGNED_READ_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
@@ -45,13 +45,11 @@ import {
   VideoPoster,
   playableVideoUri,
   usablePosterUri,
-  useVideoLightbox,
 } from "@/components/media-video";
+import { MediaViewer, type MediaViewerItem } from "@/components/media-viewer";
 import { ItemActionsMenu, ReportSheet, type ReportTarget } from "@/components/report-sheet";
 import {
-  Badge,
   Button,
-  Card,
   EmptyState,
   Loading,
   MutedText,
@@ -66,6 +64,7 @@ import { api, type EventSummary, type MediaItem } from "@/lib/api";
 import { describeError } from "@/lib/errors";
 import {
   formatBytes,
+  isUrlUsable,
   mergeMediaTimeline,
   usableMediaUri,
   usableUploaderAvatarUri,
@@ -172,15 +171,13 @@ function MyMedia({ event, eventsLoading }: { event: EventSummary | null; eventsL
             body="Photos you take on the Camera tab are kept here until there is somewhere to send them."
           />
         ) : (
-          mergeMediaTimeline([], items).map((entry) => (
-            <TimelineRow
-              key={entry.captureId}
-              entry={entry}
-              onRetry={queue.retry}
-              onCancel={queue.cancel}
-              onWithdraw={null}
-            />
-          ))
+          <MyMediaGrid
+            entries={mergeMediaTimeline([], items)}
+            onRetry={queue.retry}
+            onCancel={queue.cancel}
+            onWithdraw={null}
+            workingMediaId={null}
+          />
         )}
       </View>
     );
@@ -207,6 +204,7 @@ function MyMediaLive({ event, items }: { event: EventSummary; items: readonly Qu
       } catch (caught) {
         captureHandledError(caught, { scope: "photos.withdraw" });
         setError(describeError(caught).message);
+        throw caught;
       } finally {
         setWorking(null);
       }
@@ -235,143 +233,241 @@ function MyMediaLive({ event, items }: { event: EventSummary; items: readonly Qu
           body="Everything you capture shows up here with its moderation status. You can retry a failed upload, or withdraw something you'd rather the host didn't see."
         />
       ) : (
-        entries.map((entry) => (
-          <TimelineRow
-            key={entry.captureId}
-            entry={entry}
-            onRetry={queue.retry}
-            onCancel={queue.cancel}
-            onWithdraw={onWithdraw}
-            working={working === entry.media?.id}
-          />
-        ))
+        <MyMediaGrid
+          entries={entries}
+          onRetry={queue.retry}
+          onCancel={queue.cancel}
+          onWithdraw={onWithdraw}
+          workingMediaId={working}
+        />
       )}
     </View>
   );
 }
 
 /**
- * One row of "My media".
+ * My media as a compact contact sheet.
  *
- * Withdrawal is two taps and the second one says what it means. `media.withdraw`
- * is **permanent** (ADR 0004 §6): the row goes to `deleted`, every unspent grant
- * for the capture is expired so an upload still in flight cannot complete, and
- * the object is purged from storage — which kills every signed URL ever issued
- * for it, whatever its expiry said. None of that can be undone, so the
- * confirmation says so in those words rather than "Are you sure?".
- *
- * The row then vanishes on its own, because `canSeeMedia` excludes `deleted`
- * for everybody including its submitter. That is the correct feedback and it
- * needs no toast.
+ * Status lives on the thumbnail and details/actions move into the full-screen
+ * viewer. That keeps ten captures visible in roughly the space the old cards
+ * used for three, without hiding retry, cancel or withdrawal.
  */
-function TimelineRow({
-  entry,
+function MyMediaGrid({
+  entries,
   onRetry,
   onCancel,
   onWithdraw,
-  working = false,
+  workingMediaId,
 }: {
-  entry: MediaTimelineEntry;
+  entries: readonly MediaTimelineEntry[];
   onRetry: (captureId: string) => void;
   onCancel: (captureId: string) => void;
   /** `null` in a build with no backend, where withdrawal cannot be performed. */
   onWithdraw: ((mediaId: string) => Promise<void>) | null;
-  working?: boolean;
+  workingMediaId: string | null;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  const mediaId = entry.media?.id;
-  const canWithdraw = entry.canWithdraw && mediaId !== undefined && onWithdraw !== null;
+  const now = useNow();
+  const [viewerKey, setViewerKey] = useState<string | null>(null);
+  const [withdrawTarget, setWithdrawTarget] = useState<MediaTimelineEntry | null>(null);
+  const viewerItems = entries.map((entry) => viewerItemForTimeline(entry, now));
+  const entryByKey = new Map(entries.map((entry) => [entry.captureId, entry]));
 
-  const isVideo = entry.item?.mediaType === "video" || entry.media?.mediaType === "video";
-  // The local file first, always — it needs no network and no signature. The
-  // server's poster is the fallback for a row whose local copy has been swept.
-  const durationSeconds = entry.item?.durationSeconds ?? entry.media?.durationSeconds;
+  const requestWithdraw = (entry: MediaTimelineEntry) => {
+    setViewerKey(null);
+    setWithdrawTarget(entry);
+  };
+
+  const confirmWithdraw = async () => {
+    const mediaId = withdrawTarget?.media?.id;
+    if (mediaId === undefined || onWithdraw === null) return;
+    try {
+      await onWithdraw(mediaId);
+      setWithdrawTarget(null);
+    } catch {
+      // The parent owns the visible error message. Keep the confirmation open
+      // so a failed request never looks like a successful withdrawal.
+    }
+  };
 
   return (
-    <Card>
-      <View style={styles.row}>
-        <View>
-          <Thumb uri={entry.thumbnailUri} label={isVideo ? "Your video" : "Your photo"} size={64} />
-          {/* No play button on this one: "My media" is a status list, and the
-              row's own controls are retry / cancel / withdraw. The badge says
-              what it is; the gallery is where it gets watched. */}
-          {isVideo ? <DurationBadge seconds={durationSeconds} /> : null}
-        </View>
-
-        <View style={styles.rowBody}>
-          <Badge label={entry.status.label} tone={TONE_COLORS[entry.status.tone]} />
-          {entry.status.detail.length > 0 ? <MutedText>{entry.status.detail}</MutedText> : null}
-
-          {entry.progress !== undefined ? (
-            <ProgressBar value={entry.progress} label="Upload progress" />
-          ) : null}
-
-          {entry.message !== undefined ? (
-            <Text style={styles.failure} accessibilityLiveRegion="polite">
-              {entry.message}
-            </Text>
-          ) : null}
-
-          {entry.media !== undefined ? (
-            <Text style={styles.meta}>{formatBytes(entry.media.byteSize)}</Text>
-          ) : null}
-        </View>
+    <>
+      <View style={styles.grid}>
+        {entries.map((entry) => (
+          <MyMediaTile
+            key={entry.captureId}
+            entry={entry}
+            onOpen={() => setViewerKey(entry.captureId)}
+            onRetry={() => onRetry(entry.captureId)}
+            onCancel={() => onCancel(entry.captureId)}
+            onWithdraw={
+              entry.canWithdraw && onWithdraw !== null ? () => requestWithdraw(entry) : undefined
+            }
+          />
+        ))}
       </View>
 
-      <View style={styles.actions}>
-        {entry.canRetry ? (
-          <Button
-            label="Try again"
-            icon="refresh-outline"
-            onPress={() => onRetry(entry.captureId)}
-          />
-        ) : null}
+      <MediaViewer
+        items={viewerItems}
+        selectedKey={viewerKey}
+        onClose={() => setViewerKey(null)}
+        onSelect={setViewerKey}
+        renderActions={(item) => {
+          const entry = entryByKey.get(item.key);
+          if (entry === undefined) return null;
+          return (
+            <>
+              {entry.canRetry ? (
+                <Button
+                  label="Try again"
+                  icon="refresh-outline"
+                  onPress={() => onRetry(entry.captureId)}
+                />
+              ) : null}
+              {entry.canCancel ? (
+                <Button
+                  label="Cancel upload"
+                  variant="secondary"
+                  icon="close-outline"
+                  onPress={() => onCancel(entry.captureId)}
+                />
+              ) : null}
+              {entry.canWithdraw && onWithdraw !== null ? (
+                <Button
+                  label="Withdraw"
+                  variant="danger"
+                  icon="arrow-undo-outline"
+                  accessibilityHint="Asks you to confirm. Withdrawing deletes the item permanently."
+                  onPress={() => requestWithdraw(entry)}
+                />
+              ) : null}
+            </>
+          );
+        }}
+      />
 
-        {entry.canCancel ? (
-          <Button
-            label="Cancel"
-            variant="secondary"
-            icon="close-outline"
-            onPress={() => onCancel(entry.captureId)}
-          />
-        ) : null}
-
-        {canWithdraw && !confirming ? (
-          <Button
-            label="Take it back"
-            variant="secondary"
-            icon="arrow-undo-outline"
-            accessibilityHint="Asks you to confirm. Withdrawing deletes the photo permanently."
-            onPress={() => setConfirming(true)}
-          />
-        ) : null}
-      </View>
-
-      {canWithdraw && confirming ? (
-        <Notice tone="danger" title="Take this photo back?">
-          <MutedText>
-            It is deleted for good — the host loses it too, and it cannot be sent again.
-          </MutedText>
-          <View style={styles.actions}>
-            <Button
-              label="Yes, delete it"
-              variant="danger"
-              busy={working}
-              onPress={() => {
-                void onWithdraw(mediaId);
-              }}
-            />
-            <Button
-              label="Keep it"
-              variant="secondary"
-              disabled={working}
-              onPress={() => setConfirming(false)}
-            />
-          </View>
-        </Notice>
-      ) : null}
-    </Card>
+      <WithdrawSheet
+        target={withdrawTarget === null ? null : labelForTimeline(withdrawTarget)}
+        busy={workingMediaId === withdrawTarget?.media?.id}
+        onConfirm={() => void confirmWithdraw()}
+        onClose={() => setWithdrawTarget(null)}
+      />
+    </>
   );
+}
+
+function MyMediaTile({
+  entry,
+  onOpen,
+  onRetry,
+  onCancel,
+  onWithdraw,
+}: {
+  entry: MediaTimelineEntry;
+  onOpen: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+  onWithdraw: (() => void) | undefined;
+}) {
+  const isVideo = mediaTypeForTimeline(entry) === "video";
+  const label = `${isVideo ? "Video" : "Photo"} — ${entry.status.label}`;
+  const quickAction = entry.canRetry
+    ? { label: "Try upload again", icon: "refresh-outline" as const, onPress: onRetry }
+    : entry.canCancel
+      ? { label: "Cancel upload", icon: "close-outline" as const, onPress: onCancel }
+      : onWithdraw === undefined
+        ? null
+        : { label: "Withdraw", icon: "arrow-undo-outline" as const, onPress: onWithdraw };
+
+  return (
+    <View style={styles.tile}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`View ${label.toLowerCase()}`}
+        onPress={onOpen}
+        style={({ pressed }) => [styles.tilePressable, pressed && styles.tilePressed]}
+      >
+        <Thumb uri={entry.thumbnailUri} label={label} size="fill" />
+        {isVideo ? (
+          <DurationBadge seconds={entry.item?.durationSeconds ?? entry.media?.durationSeconds} />
+        ) : null}
+        <View style={styles.mediaStatus} pointerEvents="none">
+          <View
+            style={[styles.mediaStatusDot, { backgroundColor: TONE_COLORS[entry.status.tone] }]}
+          />
+          <Text style={styles.mediaStatusLabel}>{entry.status.label}</Text>
+        </View>
+        {entry.progress === undefined ? null : (
+          <View style={styles.tileProgress}>
+            <ProgressBar value={entry.progress} label="Upload progress" />
+          </View>
+        )}
+      </Pressable>
+
+      {quickAction === null ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={quickAction.label}
+          onPress={quickAction.onPress}
+          hitSlop={8}
+          style={({ pressed }) => [styles.tileAction, pressed && styles.tilePressed]}
+        >
+          <Ionicons name={quickAction.icon} size={15} color={colors.text} />
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function mediaTypeForTimeline(entry: MediaTimelineEntry): "photo" | "video" {
+  return entry.item?.mediaType ?? entry.media?.mediaType ?? "photo";
+}
+
+function labelForTimeline(entry: MediaTimelineEntry): "photo" | "video" {
+  return mediaTypeForTimeline(entry);
+}
+
+function bestFullImageUri(media: MediaItem, now: number): string | undefined {
+  if (media.url !== undefined && isUrlUsable(media.urlExpiresAt, now)) return media.url;
+  return usableMediaUri(media, now);
+}
+
+function viewerItemForTimeline(entry: MediaTimelineEntry, now: number): MediaViewerItem {
+  const mediaType = mediaTypeForTimeline(entry);
+  const media = entry.media;
+  const item = entry.item;
+  const remoteImage =
+    media === undefined
+      ? undefined
+      : mediaType === "video"
+        ? usablePosterUri(media, now)
+        : bestFullImageUri(media, now);
+  const remoteVideo = media === undefined ? undefined : playableVideoUri(media, now);
+  const localVideoPoster =
+    item === undefined || item.previewUri === item.uri ? undefined : item.previewUri;
+  const detail = [
+    entry.message,
+    entry.status.detail.length === 0 ? undefined : entry.status.detail,
+    media === undefined ? undefined : formatBytes(media.byteSize),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" · ");
+
+  return {
+    key: entry.captureId,
+    mediaType,
+    imageUri:
+      mediaType === "video"
+        ? (remoteImage ?? localVideoPoster)
+        : (remoteImage ?? item?.uri ?? entry.thumbnailUri),
+    ...(mediaType === "video"
+      ? {
+          videoUri: remoteVideo ?? item?.uri,
+        }
+      : {}),
+    title: `Your ${mediaType}`,
+    ...(detail.length === 0 ? {} : { subtitle: detail }),
+    status: { label: entry.status.label, color: TONE_COLORS[entry.status.tone] },
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -423,13 +519,17 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
   // every tile agrees about which signed URLs have expired (ADR 0004 §5).
   const now = useNow();
 
-  const video = useVideoLightbox();
   const report = useMutation(api.moderation.report);
   const block = useMutation(api.blocks.block);
+  const withdraw = useMutation(api.media.withdraw);
 
   /** Which item's menu is open, and which item is being reported. */
+  const [viewerKey, setViewerKey] = useState<string | null>(null);
   const [menuTarget, setMenuTarget] = useState<ReportTarget | null>(null);
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const [withdrawTarget, setWithdrawTarget] = useState<MediaItem | null>(null);
+  const [withdrawWorking, setWithdrawWorking] = useState(false);
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [blockError, setBlockError] = useState<string | null>(null);
 
   const onReport = useCallback(
@@ -445,6 +545,22 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
     },
     [block, event.id],
   );
+
+  const onWithdraw = useCallback(async (): Promise<void> => {
+    const target = withdrawTarget;
+    if (target === null) return;
+    setWithdrawWorking(true);
+    setWithdrawError(null);
+    try {
+      await withdraw({ mediaId: target.id });
+      setWithdrawTarget(null);
+    } catch (caught) {
+      captureHandledError(caught, { scope: "photos.galleryWithdraw" });
+      setWithdrawError(describeError(caught).message);
+    } finally {
+      setWithdrawWorking(false);
+    }
+  }, [withdraw, withdrawTarget]);
 
   /**
    * Block straight from the menu, without a report first.
@@ -480,11 +596,13 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
     );
   }
 
+  const viewerItems = media.map((item) => viewerItemForGallery(item, now));
+
   return (
     <>
-      {blockError !== null ? (
+      {blockError !== null || withdrawError !== null ? (
         <Notice tone="danger" title="That didn't work">
-          <MutedText>{blockError}</MutedText>
+          <MutedText>{blockError ?? withdrawError}</MutedText>
         </Notice>
       ) : null}
 
@@ -494,15 +612,60 @@ function EventGalleryLive({ event }: { event: EventSummary }) {
             key={item.id}
             item={item}
             now={now}
-            onPlay={video.open}
-            // Your own item has no menu: reporting yourself to yourself is
-            // noise, and "Take it back" in My media is the real control.
+            onOpen={() => setViewerKey(item.id)}
             onMenu={item.isOwn ? undefined : () => setMenuTarget(targetFor(item))}
+            onWithdraw={
+              item.isOwn
+                ? () => {
+                    setWithdrawError(null);
+                    setWithdrawTarget(item);
+                  }
+                : undefined
+            }
           />
         ))}
       </View>
 
-      {video.lightbox}
+      <MediaViewer
+        items={viewerItems}
+        selectedKey={viewerKey}
+        onClose={() => setViewerKey(null)}
+        onSelect={setViewerKey}
+        renderActions={(viewerItem) => {
+          const item = media.find((candidate) => candidate.id === viewerItem.key);
+          if (item === undefined) return null;
+          return item.isOwn ? (
+            <Button
+              label="Withdraw"
+              variant="danger"
+              icon="arrow-undo-outline"
+              accessibilityHint="Asks you to confirm. Withdrawing deletes the item permanently."
+              onPress={() => {
+                setViewerKey(null);
+                setWithdrawError(null);
+                setWithdrawTarget(item);
+              }}
+            />
+          ) : (
+            <Button
+              label="Report or block"
+              variant="secondary"
+              icon="ellipsis-horizontal"
+              onPress={() => {
+                setViewerKey(null);
+                setMenuTarget(targetFor(item));
+              }}
+            />
+          );
+        }}
+      />
+
+      <WithdrawSheet
+        target={withdrawTarget?.mediaType ?? null}
+        busy={withdrawWorking}
+        onConfirm={() => void onWithdraw()}
+        onClose={() => setWithdrawTarget(null)}
+      />
 
       <ItemActionsMenu
         target={menuTarget}
@@ -537,23 +700,25 @@ function targetFor(item: MediaItem): ReportTarget {
 function GalleryTile({
   item,
   now,
-  onPlay,
+  onOpen,
   onMenu,
+  onWithdraw,
 }: {
   item: MediaItem;
   now: number;
-  onPlay: (uri: string) => void;
+  onOpen: () => void;
   /** `undefined` on your own item — there is nothing to report or block. */
   onMenu: (() => void) | undefined;
+  /** Present on your own item as the quick action in the tile corner. */
+  onWithdraw: (() => void) | undefined;
 }) {
   const label = `${item.mediaType === "video" ? "Video" : "Photo"} from ${item.uploaderDisplayName}`;
 
   if (item.mediaType === "video") {
-    const playable = playableVideoUri(item, now);
     return (
       <Pressable
         style={styles.tile}
-        onLongPress={onMenu}
+        onLongPress={onMenu ?? onWithdraw}
         // Long enough that scrolling a grid does not open menus by accident.
         delayLongPress={400}
         accessibilityLabel={label}
@@ -565,11 +730,12 @@ function GalleryTile({
           posterUri={usablePosterUri(item, now)}
           durationSeconds={item.durationSeconds}
           label={label}
-          onPlay={playable === undefined ? undefined : () => onPlay(playable)}
+          onPlay={onOpen}
           fill
         />
         <UploaderBadge item={item} now={now} />
         {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
+        {onWithdraw === undefined ? null : <WithdrawDot label={label} onPress={onWithdraw} />}
       </Pressable>
     );
   }
@@ -577,14 +743,16 @@ function GalleryTile({
   return (
     <Pressable
       style={styles.tile}
-      onLongPress={onMenu}
+      onPress={onOpen}
+      onLongPress={onMenu ?? onWithdraw}
       delayLongPress={400}
-      accessibilityLabel={label}
-      accessibilityRole={onMenu === undefined ? undefined : "none"}
+      accessibilityLabel={`View ${label}`}
+      accessibilityRole="button"
     >
       <Thumb uri={usableMediaUri(item, now)} label={label} size="fill" />
       <UploaderBadge item={item} now={now} />
       {onMenu === undefined ? null : <ReportDot label={label} onPress={onMenu} />}
+      {onWithdraw === undefined ? null : <WithdrawDot label={label} onPress={onWithdraw} />}
     </Pressable>
   );
 }
@@ -634,6 +802,83 @@ function ReportDot({ label, onPress }: { label: string; onPress: () => void }) {
     >
       <Ionicons name="ellipsis-horizontal" size={14} color={colors.text} />
     </Pressable>
+  );
+}
+
+/** Owned media uses the same discoverable corner affordance, with the real action. */
+function WithdrawDot({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Withdraw — ${label}`}
+      accessibilityHint="Asks you to confirm before permanently deleting it."
+      onPress={onPress}
+      hitSlop={10}
+      style={styles.reportDot}
+    >
+      <Ionicons name="arrow-undo-outline" size={14} color={colors.text} />
+    </Pressable>
+  );
+}
+
+function viewerItemForGallery(item: MediaItem, now: number): MediaViewerItem {
+  const noun = item.mediaType === "video" ? "Video" : "Photo";
+  return {
+    key: item.id,
+    mediaType: item.mediaType,
+    imageUri: item.mediaType === "video" ? usablePosterUri(item, now) : bestFullImageUri(item, now),
+    ...(item.mediaType === "video" ? { videoUri: playableVideoUri(item, now) } : {}),
+    title: item.isOwn ? `Your ${noun.toLowerCase()}` : `${noun} by ${item.uploaderDisplayName}`,
+    subtitle: `${formatBytes(item.byteSize)} · Approved in the event gallery`,
+    ...(item.isOwn ? { status: { label: "Yours", color: colors.accent } } : {}),
+  };
+}
+
+/**
+ * Permanent withdrawal confirmation, shared by My media and Event gallery.
+ *
+ * It is a sheet rather than an expanding card so the compact grid does not jump
+ * around, and because the destructive consequence deserves one focused choice.
+ */
+function WithdrawSheet({
+  target,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  target: "photo" | "video" | null;
+  busy: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const noun = target ?? "item";
+  return (
+    <Modal
+      visible={target !== null}
+      animationType="slide"
+      transparent
+      supportedOrientations={["portrait", "landscape"]}
+      onRequestClose={busy ? () => undefined : onClose}
+    >
+      <View style={styles.withdrawBackdrop}>
+        <View style={styles.withdrawSheet}>
+          <View style={styles.withdrawIcon}>
+            <Ionicons name="arrow-undo-outline" size={22} color={colors.danger} />
+          </View>
+          <View style={styles.withdrawCopy}>
+            <Text style={styles.withdrawTitle}>Withdraw this {noun}?</Text>
+            <Text style={styles.withdrawBody}>
+              It will be deleted permanently. The host and gallery lose it too, and it cannot be
+              sent again.
+            </Text>
+          </View>
+          <View style={styles.actions}>
+            <Button label="Withdraw permanently" variant="danger" busy={busy} onPress={onConfirm} />
+            <Button label="Keep it" variant="secondary" disabled={busy} onPress={onClose} />
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -713,16 +958,49 @@ const styles = StyleSheet.create({
   segmentLabelActive: { color: colors.text },
   content: { paddingTop: spacing.lg, paddingBottom: spacing.xxl },
   list: { gap: spacing.md },
-  row: { flexDirection: "row", gap: spacing.md },
-  rowBody: { flex: 1, gap: spacing.sm },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  failure: { ...typography.body, color: colors.danger },
-  meta: { ...typography.caption, color: colors.textFaint },
   thumb: { borderRadius: radius.sm, backgroundColor: colors.surfaceRaised },
   thumbFill: { width: "100%", aspectRatio: 1 },
   track: { height: 4, borderRadius: radius.pill, backgroundColor: colors.surfaceRaised },
   fill: { height: 4, borderRadius: radius.pill, backgroundColor: colors.accent },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  tilePressable: { position: "relative", overflow: "hidden", borderRadius: radius.sm },
+  tilePressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
+  tileAction: {
+    position: "absolute",
+    top: spacing.xs,
+    right: spacing.xs,
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.78)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  mediaStatus: {
+    position: "absolute",
+    left: spacing.xs,
+    bottom: spacing.xs,
+    maxWidth: "76%",
+    minHeight: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(18, 9, 27, 0.78)",
+  },
+  mediaStatusDot: { width: 6, height: 6, borderRadius: radius.pill },
+  mediaStatusLabel: {
+    ...typography.caption,
+    color: colors.text,
+    fontSize: 9,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  tileProgress: { position: "absolute", left: 0, right: 0, bottom: 0 },
   reportDot: {
     position: "absolute",
     top: spacing.xs,
@@ -760,7 +1038,35 @@ const styles = StyleSheet.create({
   uploaderAvatarImage: { width: "100%", height: "100%" },
   uploaderInitial: { ...typography.caption, fontSize: 10, color: colors.accent },
   uploaderName: { ...typography.caption, flex: 1, color: colors.text, fontSize: 10 },
+  withdrawBackdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+    padding: spacing.md,
+    backgroundColor: "rgba(12, 6, 17, 0.72)",
+  },
+  withdrawSheet: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  withdrawIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceRaised,
+  },
+  withdrawCopy: { flex: 1, minWidth: 220, gap: spacing.xs },
+  withdrawTitle: { ...typography.heading, color: colors.text },
+  withdrawBody: { ...typography.body, color: colors.textMuted, lineHeight: 21 },
   // Three across on a phone, with the gap taken out of each column. `gap` on a
   // wrapping row does not subtract from a percentage basis, so the width does.
-  tile: { width: "31.5%" },
+  tile: { position: "relative", width: "31.5%", borderRadius: radius.sm },
 });

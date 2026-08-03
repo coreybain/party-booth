@@ -197,7 +197,7 @@ describe("Settings — verified invitation addresses", () => {
       { email: "host@example.com", status: "verified", verifiedAt: 1 },
       { email: "other@example.com", status: "pending" },
     ];
-    await renderSettings();
+    await renderEmails();
 
     expect(screen.getByText("host@example.com")).toBeTruthy();
     expect(screen.getByText("other@example.com")).toBeTruthy();
@@ -211,7 +211,7 @@ describe("Settings — verified invitation addresses", () => {
       organiserUnlocked: true,
       cohostEventIds: ["event_1"],
     });
-    await renderSettings();
+    await renderEmails();
 
     fireEvent.change(screen.getByLabelText("Address to verify"), {
       target: { value: " Invited@Example.com " },
@@ -241,7 +241,7 @@ describe("Settings — verified invitation addresses", () => {
       reason: "invalid",
       message: "That code is not valid, or it has expired. Ask for a new one.",
     });
-    await renderSettings();
+    await renderEmails();
 
     fireEvent.change(screen.getByLabelText("Address to verify"), {
       target: { value: "invited@example.com" },
@@ -457,20 +457,40 @@ describe("block a user — Guideline 1.2", () => {
 /* Settings: blocked list and deletion                                        */
 /* -------------------------------------------------------------------------- */
 
-async function renderSettings() {
-  const { default: SettingsScreen } = await import("../../app/(tabs)/settings");
+/**
+ * Settings is a stack now, and each App Review flow lives on its own subpage.
+ * Each flow is rendered where a reviewer would find it: the blocked list on
+ * Blocked People, deletion on Account Data, the policy link on the main page.
+ */
+async function renderSettingsHome() {
+  const { default: SettingsScreen } = await import("../../app/(tabs)/settings/index");
   return render(createElement(SettingsScreen));
+}
+
+async function renderBlocked() {
+  const { default: BlockedScreen } = await import("../../app/(tabs)/settings/blocked");
+  return render(createElement(BlockedScreen));
+}
+
+async function renderAccount() {
+  const { default: AccountScreen } = await import("../../app/(tabs)/settings/account");
+  return render(createElement(AccountScreen));
+}
+
+async function renderEmails() {
+  const { default: EmailsScreen } = await import("../../app/(tabs)/settings/emails");
+  return render(createElement(EmailsScreen));
 }
 
 describe("Settings — the blocked list", () => {
   it("explains what blocking does when nobody is blocked", async () => {
-    await renderSettings();
+    await renderBlocked();
     expect(screen.getByText(/have not blocked anyone/i)).toBeTruthy();
   });
 
   it("lists blocked accounts and unblocks them", async () => {
     fake.myBlocks = [{ userId: "user_2", displayName: "Sam", createdAt: 0 }];
-    await renderSettings();
+    await renderBlocked();
 
     expect(screen.getByText("Sam")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Unblock"));
@@ -483,12 +503,12 @@ describe("Settings — the blocked list", () => {
 
 describe("Settings — in-app account deletion (5.1.1(v))", () => {
   it("offers deletion without leaving the app", async () => {
-    await renderSettings();
+    await renderAccount();
     expect(screen.getByLabelText("Delete my account")).toBeTruthy();
   });
 
   it("asks first, and the second step says what actually happens", async () => {
-    await renderSettings();
+    await renderAccount();
     fireEvent.click(screen.getByLabelText("Delete my account"));
 
     // Access now, everything erased in thirty days, photographs anonymised in
@@ -502,13 +522,13 @@ describe("Settings — in-app account deletion (5.1.1(v))", () => {
   });
 
   it("points at withdrawal for somebody who wants the photographs gone", async () => {
-    await renderSettings();
+    await renderAccount();
     fireEvent.click(screen.getByLabelText("Delete my account"));
     expect(screen.getByText(/take it back/i)).toBeTruthy();
   });
 
   it("schedules the deletion, signs out, and leaves the tabs", async () => {
-    await renderSettings();
+    await renderAccount();
     fireEvent.click(screen.getByLabelText("Delete my account"));
     fireEvent.click(screen.getByLabelText("Yes, delete my account"));
 
@@ -525,7 +545,7 @@ describe("Settings — in-app account deletion (5.1.1(v))", () => {
     // The other order would leave a guest signed out with no idea whether the
     // deletion happened, and no session left to retry it with.
     fake.requestAccountDeletion.mockRejectedValue(new Error("offline"));
-    await renderSettings();
+    await renderAccount();
 
     fireEvent.click(screen.getByLabelText("Delete my account"));
     fireEvent.click(screen.getByLabelText("Yes, delete my account"));
@@ -538,7 +558,7 @@ describe("Settings — in-app account deletion (5.1.1(v))", () => {
   });
 
   it("lets a guest back out", async () => {
-    await renderSettings();
+    await renderAccount();
     fireEvent.click(screen.getByLabelText("Delete my account"));
     fireEvent.click(screen.getByLabelText("Keep my account"));
 
@@ -549,7 +569,7 @@ describe("Settings — in-app account deletion (5.1.1(v))", () => {
 
 describe("Settings — the privacy policy (5.1.1(i))", () => {
   it("opens the policy from the configured site", async () => {
-    await renderSettings();
+    await renderSettingsHome();
     fireEvent.click(screen.getByLabelText("Privacy policy"));
 
     await waitFor(() => {

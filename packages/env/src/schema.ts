@@ -146,11 +146,11 @@ export const serverVars = {
   ),
   UPLOADTHING_APP_ID: envVar(
     nonEmpty.optional(),
-    "UploadThing dashboard → app id. Encoded inside the token; only set it if a tool asks for it separately.",
+    "UploadThing dashboard → app id. Optional compatibility fallback; PartyBooth normally derives it from the v7 token to prevent app drift.",
   ),
   UPLOADTHING_ACL: envVar(
     z.enum(["private", "public-read"]).default("private"),
-    "UploadThing object ACL. Defaults to private; public-read is accepted only by an explicitly marked development deployment for free-tier testing.",
+    "UploadThing object ACL, independent of the deployment label. Defaults to private; set public-read only for a free-tier app whose objects may be public.",
   ),
   STORAGE_DEFAULT_REGION: envVar(
     z.enum(STORAGE_REGIONS).default("pdx1"),

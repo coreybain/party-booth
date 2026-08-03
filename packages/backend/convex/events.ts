@@ -18,7 +18,7 @@ import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
-import { writeEventAudit } from "./lib/audit";
+import { writeAuditEvent, writeEventAudit } from "./lib/audit";
 import { ACCOUNT_DELETION_GRACE_MS } from "./lib/account_deletion";
 import { forbidden, invalidState, notFound } from "./lib/errors";
 import { ensureCodeIsFree, getActiveInviteVersion, mintInviteVersion } from "./lib/events";
@@ -584,6 +584,64 @@ export const setActiveEvent = mutation({
     // right answer here: you cannot point your camera at a party you are not at.
     await requireEventActor(ctx, args.eventId);
     await ctx.db.patch(user._id, { activeEventId: args.eventId, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/* -------------------------------------------------------------------------- */
+/* Leaving                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Walk out of a party you were a guest (or co-host) at.
+ *
+ * The membership goes to `"left"`, not away: `join.ts` re-activates a left row
+ * on a fresh scan of a valid code, so leaving is always reversible by the same
+ * door the guest came in through. Nothing they uploaded is touched — withdrawal
+ * of individual items is "My media"'s job, and conflating the two would make
+ * "leave" quietly destructive.
+ *
+ * The owner is refused. An event whose owner has left is a party nobody can
+ * moderate, rotate or close; the owner's exit is `events.requestDeletion`.
+ *
+ * `requireUser` rather than `requireActiveUser`, deliberately: leaving shrinks
+ * the account's footprint, and a locked account must still be able to walk out
+ * of a party — the same reasoning that lets it request deletion.
+ */
+export const leave = mutation({
+  args: { eventId: v.id("events") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+
+    const membership = await getActiveMembership(ctx, args.eventId, user._id);
+    const event = await ctx.db.get(args.eventId);
+    // A stranger asking to leave gets the same answer as a stranger asking to
+    // look: this party does not exist for you.
+    if (!membership || !event) throw notFound("That party");
+
+    if (event.ownerUserId === user._id) {
+      throw forbidden(
+        "You are the host — a party can't be left by the person running it. Delete the party instead.",
+      );
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(membership._id, { status: "left" });
+    // The camera must not stay pointed at a party its owner just walked out of.
+    if (user.activeEventId === args.eventId) {
+      await ctx.db.patch(user._id, { activeEventId: undefined, updatedAt: now });
+    }
+
+    await writeAuditEvent(ctx, {
+      action: AUDIT_ACTIONS.membershipLeft,
+      subjectType: "membership",
+      subjectId: membership._id,
+      actor: { userId: user._id, role: membership.role },
+      eventId: args.eventId,
+      metadata: { role: membership.role },
+      now,
+    });
     return null;
   },
 });

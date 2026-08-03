@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { HeaderDismissButton } from "@/components/header-dismiss";
 import { appConfig } from "@/env";
 import { initSentry, Sentry } from "@/lib/sentry";
 import { AppProviders } from "@/providers";
@@ -33,23 +34,33 @@ function RootLayout() {
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          {/* The event switcher. A modal rather than a tab: it is a decision you make
-              and dismiss, not a place you spend time, and a fifth tab would push the
-              Host tab off the comfortable reach of a thumb. */}
-          <Stack.Screen name="events" options={{ title: "Your parties", presentation: "modal" }} />
           {/* Both join doors are modals over whatever the guest was doing, because a
-              universal link can land on any screen and must not destroy its state. */}
+              universal link can land on any screen and must not destroy its state.
+              Each gets a labelled Cancel button: a native-stack modal has no back
+              button and the swipe-down gesture alone is undiscoverable. */}
           <Stack.Screen
             name="join/index"
-            options={{ title: "Join a party", presentation: "modal" }}
+            options={{
+              title: "Join a party",
+              presentation: "modal",
+              headerRight: () => <HeaderDismissButton />,
+            }}
           />
           <Stack.Screen
             name="join/scan"
-            options={{ title: "Scan a QR code", presentation: "modal" }}
+            options={{
+              title: "Scan a QR code",
+              presentation: "modal",
+              headerRight: () => <HeaderDismissButton />,
+            }}
           />
           <Stack.Screen
             name="join/[token]"
-            options={{ title: "Join event", presentation: "modal" }}
+            options={{
+              title: "Join event",
+              presentation: "modal",
+              headerRight: () => <HeaderDismissButton />,
+            }}
           />
           <Stack.Screen name="+not-found" options={{ title: "Not found" }} />
         </Stack>
