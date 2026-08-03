@@ -90,24 +90,9 @@ import { useSession } from "@/providers/session";
 import { useUploadQueue } from "@/upload/queue-provider";
 import { colors, radius, spacing, typography } from "@/theme";
 
-import { VIDEO_MAX_DURATION_SECONDS } from "@partybooth/contracts/media";
-
 import type { CameraType } from "expo-camera";
 import type { ReactNode } from "react";
 import type { GestureResponderEvent } from "react-native";
-
-/**
- * The one line under the controls.
- *
- * `accessibilityHint` on the shutter says the same thing, but a hint is read
- * only by a screen reader and only after a pause — which leaves a sighted guest
- * to discover the gesture by holding a button. Saying it on screen is cheaper
- * than the discovery.
- */
-export const SHUTTER_HINT = `Tap for a photo. Hold to record up to ${String(VIDEO_MAX_DURATION_SECONDS)} seconds; slide up or down to zoom.`;
-
-/** What the shutter says when the microphone has been refused. */
-export const SHUTTER_HINT_NO_VIDEO = "Tap for a photo.";
 
 const PICKER_FAILED = "That photo couldn't be opened. Try choosing it again.";
 const MICROPHONE_REFUSED =
@@ -537,9 +522,7 @@ export default function CameraScreen() {
               </View>
             </GlassView>
 
-            {videoEnabled || !hasCamera ? (
-              <Text style={styles.hint}>{videoEnabled ? SHUTTER_HINT : SHUTTER_HINT_NO_VIDEO}</Text>
-            ) : (
+            {hasCamera && !videoEnabled ? (
               // Not a blocking gate: photographs work perfectly well without the
               // microphone, so this is an offer rather than a wall.
               <Pressable
@@ -552,7 +535,7 @@ export default function CameraScreen() {
                   Tap for a photo. To record video, allow the microphone.
                 </Text>
               </Pressable>
-            )}
+            ) : null}
           </View>
         </View>
       </View>

@@ -309,10 +309,7 @@ describe("CameraScreen — the shutter", () => {
 
     const shutter = screen.getByLabelText("Take a photo");
     expect(shutter).toBeTruthy();
-    // The hold is advertised on screen, not only in an accessibility hint that
-    // a sighted guest never hears.
-    const { SHUTTER_HINT } = await import("../../app/(tabs)/camera");
-    expect(screen.getByText(SHUTTER_HINT)).toBeTruthy();
+    expect(screen.queryByText(/Tap for a photo\. Hold to record/i)).toBeNull();
   });
 
   it("says the camera is 1080p and starts in picture mode", async () => {
@@ -347,15 +344,14 @@ describe("CameraScreen — the shutter", () => {
     });
   });
 
-  it("drops the hold from the hint when the microphone has been refused", async () => {
+  it("offers microphone permission without showing the normal capture instructions", async () => {
     // `recordAudioAndroid` is on, so a recording without the permission fails
     // outright. Advertising a gesture that cannot work is worse than not
     // advertising it — photos still work, and the copy says only that.
     fake.microphone = { granted: false, canAskAgain: true };
     await renderCamera();
 
-    const { SHUTTER_HINT } = await import("../../app/(tabs)/camera");
-    expect(screen.queryByText(SHUTTER_HINT)).toBeNull();
+    expect(screen.queryByText(/Tap for a photo\. Hold to record/i)).toBeNull();
     expect(screen.getByLabelText("Allow the microphone to record video")).toBeTruthy();
   });
 
