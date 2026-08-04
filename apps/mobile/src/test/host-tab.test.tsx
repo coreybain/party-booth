@@ -182,6 +182,14 @@ beforeEach(() => {
 /* -------------------------------------------------------------------------- */
 
 describe("who gets the host tools", () => {
+  it("shows the schedule-aware past-event status to the host", async () => {
+    fake.session = session({ eventRole: "owner" }, anEvent({ endsAt: 1 }));
+    await renderHost();
+
+    expect(screen.getByText("PAST EVENT")).toBeTruthy();
+    expect(screen.queryByText("LIVE")).toBeNull();
+  });
+
   it("shows a guest nothing but an explanation", async () => {
     // `href: null` in the tab layout removes the *button*. The route stays
     // reachable by `router.push` and by a notification tap, so the screen has to

@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   areEventsLoading,
+  describeEvent,
   describeEventState,
   describeJoinWindow,
   describeSchedule,
+  eventHasEnded,
   formatEventDateTime,
+  isPastEvent,
   resolveActiveEvent,
   sortEvents,
 } from "./events";
@@ -53,6 +56,37 @@ describe("describeEventState", () => {
   it("keeps the gallery available after the party ends", () => {
     expect(describeEventState("archived").viewable).toBe(true);
     expect(describeEventState("draft").viewable).toBe(false);
+  });
+});
+
+describe("schedule-aware event presentation", () => {
+  it("calls a live event past once its scheduled end has passed", () => {
+    const finished = event({ id: "past", startsAt: NOW - DAY, endsAt: NOW - 1 });
+
+    expect(eventHasEnded(finished, NOW)).toBe(true);
+    expect(describeEvent(finished, NOW)).toMatchObject({
+      label: "Past event",
+      acceptsUploads: false,
+      viewable: true,
+      tone: "closed",
+    });
+  });
+
+  it("keeps the event live through its exact scheduled end", () => {
+    const endingNow = event({ id: "ending", startsAt: NOW - DAY, endsAt: NOW });
+
+    expect(eventHasEnded(endingNow, NOW)).toBe(false);
+    expect(describeEvent(endingNow, NOW)).toMatchObject({
+      label: "Live",
+      acceptsUploads: true,
+    });
+  });
+
+  it("treats an archived event as past even when it had no scheduled end", () => {
+    const archived = event({ id: "archived", state: "archived" });
+
+    expect(isPastEvent(archived, NOW)).toBe(true);
+    expect(describeEvent(archived, NOW).label).toBe("Past event");
   });
 });
 

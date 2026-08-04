@@ -86,6 +86,38 @@ export function describeEventState(state: EventState): EventStateDescription {
   };
 }
 
+export interface EventPresentationInput {
+  readonly state: EventState;
+  readonly endsAt?: number | undefined;
+}
+
+/** The schedule has a definite end and that moment has passed. */
+export function eventHasEnded(event: Pick<EventPresentationInput, "endsAt">, now: number): boolean {
+  return event.endsAt !== undefined && now > event.endsAt;
+}
+
+/** An archived event, or one beyond its scheduled end, is now a past event. */
+export function isPastEvent(event: EventPresentationInput, now: number): boolean {
+  return event.state === "archived" || eventHasEnded(event, now);
+}
+
+/**
+ * Describe the state the guest can act on, including a live event whose scheduled
+ * end has passed before its host archives it.
+ */
+export function describeEvent(event: EventPresentationInput, now: number): EventStateDescription {
+  if (isPastEvent(event, now) && isViewableEventState(event.state)) {
+    return {
+      label: "Past event",
+      detail: "This party is over. The approved gallery stays here to look back at.",
+      tone: "closed",
+      acceptsUploads: false,
+      viewable: true,
+    };
+  }
+  return describeEventState(event.state);
+}
+
 /** Re-exported so screens ask one module rather than two. */
 export { acceptsUploads, isJoinableEventState, isViewableEventState };
 

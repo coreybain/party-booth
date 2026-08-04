@@ -20,7 +20,7 @@ import { useJoinEvent } from "@/hooks/use-join";
 import { useNow } from "@/hooks/use-now";
 import { api } from "@/lib/api";
 import { parseJoinLink, type JoinTarget } from "@/lib/deep-links";
-import { describeEventState, describeJoinWindow, describeSchedule } from "@/lib/events";
+import { describeEvent, describeJoinWindow, describeSchedule } from "@/lib/events";
 import { JOIN_REJECTED_MESSAGE } from "@/lib/join";
 import { rememberPendingInvite } from "@/lib/pending-invite";
 import { useSession } from "@/providers/session";
@@ -170,7 +170,7 @@ function JoinByTokenLive({ target }: { target: JoinTarget }) {
     return <Redirect href="/onboarding" />;
   }
 
-  const description = preview ? describeEventState(preview.state) : null;
+  const description = preview ? describeEvent(preview, now) : null;
   const windowNote = preview ? describeJoinWindow(preview, now) : null;
   const deadToken = target.kind === "token" && preview === null;
 

@@ -42,6 +42,7 @@ const fake = vi.hoisted(() => ({
   capture: vi.fn(),
   captureBusy: false,
   push: vi.fn(),
+  now: Date.UTC(2026, 7, 5, 21, 0, 0),
   focused: true,
   session: {} as Record<string, unknown>,
   queue: {} as Record<string, unknown>,
@@ -117,6 +118,8 @@ vi.mock("expo-image-picker", () => ({
 vi.mock("expo-router", () => ({
   useRouter: () => ({ push: fake.push, replace: vi.fn(), back: vi.fn() }),
   useIsFocused: () => fake.focused,
+  Redirect: (props: { href: string }) =>
+    createElement("div", { "data-testid": "redirect", "data-href": props.href }),
 }));
 
 vi.mock("expo-image", () => ({
@@ -144,6 +147,8 @@ vi.mock("@/hooks/use-capture", () => ({
     captureVideo: fake.captureVideo,
   }),
 }));
+
+vi.mock("@/hooks/use-now", () => ({ useNow: () => fake.now }));
 
 vi.mock("@/providers/session", () => ({ useSession: () => fake.session }));
 vi.mock("@/upload/queue-provider", () => ({ useUploadQueue: () => fake.queue }));
@@ -206,6 +211,7 @@ beforeEach(() => {
   fake.permission = { granted: true, canAskAgain: true };
   fake.microphone = { granted: true, canAskAgain: true };
   fake.captureBusy = false;
+  fake.now = NOW;
   fake.recordAsync.mockResolvedValue({ uri: "file:///tmp/clip.mov" });
   fake.captureVideo.mockResolvedValue({ status: "queued", item: anUndoableItem() });
   fake.takePictureAsync.mockResolvedValue({
@@ -449,6 +455,25 @@ describe("CameraScreen — the undo window", () => {
 });
 
 describe("CameraScreen — the states that are not a viewfinder", () => {
+  it("moves a guest to Photos when the active event has ended", async () => {
+    fake.session = {
+      activeEvent: anEvent({ startsAt: NOW - 60_000, endsAt: NOW + 1 }),
+      eventsLoading: false,
+    };
+    const { default: CameraScreen } = await import("../../app/(tabs)/camera");
+    const view = render(createElement(CameraScreen));
+
+    expect(screen.getByTestId("camera-view")).toBeTruthy();
+
+    // The clock hook ticks while the tab remains mounted. Crossing the event's
+    // end must replace the viewfinder without requiring another navigation.
+    fake.now = NOW + 2;
+    view.rerender(createElement(CameraScreen));
+
+    expect(screen.queryByTestId("camera-view")).toBeNull();
+    expect(screen.getByTestId("redirect").getAttribute("data-href")).toBe("/photos");
+  });
+
   it("asks for the camera before it has been granted", async () => {
     fake.permission = { granted: false, canAskAgain: true };
     await renderCamera();

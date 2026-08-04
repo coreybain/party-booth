@@ -23,7 +23,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-nati
 import { Badge, Button, EmptyState, Loading, MutedText, Notice, Screen } from "@/components/ui";
 import { api } from "@/lib/api";
 import { describeError } from "@/lib/errors";
-import { describeEventState, describeSchedule } from "@/lib/events";
+import { describeEvent, describeSchedule } from "@/lib/events";
 import { captureHandledError } from "@/lib/sentry";
 import { useNow } from "@/hooks/use-now";
 import { useSession } from "@/providers/session";
@@ -187,7 +187,7 @@ function EventRow({
   /** `null` for the owner, who cannot leave their own party. */
   onLeave: (() => void) | null;
 }) {
-  const description = describeEventState(event.state);
+  const description = describeEvent(event, now);
 
   return (
     <View style={[styles.row, active && styles.rowActive]}>

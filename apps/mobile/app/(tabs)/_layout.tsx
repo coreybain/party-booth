@@ -1,6 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
 
+import { useNow } from "@/hooks/use-now";
+import { isPastEvent } from "@/lib/events";
 import { canAccessHostTools } from "@/lib/roles";
 import { useSession } from "@/providers/session";
 import { colors } from "@/theme";
@@ -18,7 +20,8 @@ function icon(name: IconName) {
 }
 
 export default function TabsLayout() {
-  const { state, roles } = useSession();
+  const { state, roles, activeEvent } = useSession();
+  const now = useNow();
 
   // Deep links and restored tab state can bypass the entry route. Keep the
   // content-creation shell behind the same profile/terms gate as `/` and join.
@@ -36,6 +39,10 @@ export default function TabsLayout() {
   // account matched to a co-host invitation by verified email gets the tab as soon as
   // `users.refreshRoles` lands, with no sign-out in between.
   const showHostTab = canAccessHostTools(roles);
+  // Archived events and events beyond their scheduled end no longer accept
+  // uploads, so remove the route rather than advertising a camera whose
+  // captures will be refused.
+  const showCameraTab = activeEvent === null || !isPastEvent(activeEvent, now);
 
   return (
     <Tabs
@@ -54,7 +61,11 @@ export default function TabsLayout() {
     >
       <Tabs.Screen
         name="camera"
-        options={{ title: "Camera", tabBarIcon: icon("camera-outline") }}
+        options={{
+          title: "Camera",
+          tabBarIcon: icon("camera-outline"),
+          href: showCameraTab ? "/camera" : null,
+        }}
       />
       <Tabs.Screen
         name="photos"

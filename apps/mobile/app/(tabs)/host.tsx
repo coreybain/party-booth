@@ -68,7 +68,7 @@ import { useSignedUrlRefreshKey } from "@/hooks/use-signed-url-refresh";
 import { api, type EventSummary, type FlaggedItem, type MediaItem } from "@/lib/api";
 import { buildJoinUrl } from "@/lib/deep-links";
 import { describeError } from "@/lib/errors";
-import { describeEventState, describeSchedule } from "@/lib/events";
+import { describeEvent, describeSchedule } from "@/lib/events";
 import { usableMediaUri, usableUploaderAvatarUri } from "@/lib/media-view";
 import { canAccessHostTools, hostAbilities, type HostAbilities } from "@/lib/roles";
 import { captureHandledError } from "@/lib/sentry";
@@ -182,7 +182,7 @@ function StatusSection({ event, abilities }: { event: EventSummary; abilities: H
   const [error, setError] = useState<string | null>(null);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
 
-  const description = describeEventState(event.state);
+  const description = describeEvent(event, now);
 
   const run = useCallback(async (key: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(key);

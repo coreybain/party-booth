@@ -57,7 +57,7 @@ import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo
 import * as Device from "expo-device";
 import { GlassView } from "expo-glass-effect";
 import * as ImagePicker from "expo-image-picker";
-import { useIsFocused, useRouter } from "expo-router";
+import { Redirect, useIsFocused, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import {
   Linking,
@@ -82,8 +82,9 @@ import {
 import { UndoPill } from "@/components/undo-pill";
 import { Button, EmptyState, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
 import { useCapture } from "@/hooks/use-capture";
+import { useNow } from "@/hooks/use-now";
 import { zoomFromVerticalDrag } from "@/lib/camera-zoom";
-import { describeEventState } from "@/lib/events";
+import { describeEvent, isPastEvent } from "@/lib/events";
 import { useShutter, type RecordedClip } from "@/hooks/use-shutter";
 import { captureHandledError } from "@/lib/sentry";
 import { useSession } from "@/providers/session";
@@ -103,6 +104,7 @@ export default function CameraScreen() {
   const isFocused = useIsFocused();
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
+  const now = useNow();
 
   const { activeEvent, eventsLoading } = useSession();
   const queue = useUploadQueue();
@@ -126,7 +128,8 @@ export default function CameraScreen() {
   // is how the whole upload spine gets exercised without a physical device.
   const hasCamera = Device.isDevice;
 
-  const description = activeEvent ? describeEventState(activeEvent.state) : null;
+  const pastEvent = activeEvent !== null && isPastEvent(activeEvent, now);
+  const description = activeEvent ? describeEvent(activeEvent, now) : null;
   const uploadsOpen = description?.acceptsUploads === true;
   const pending = queue.pendingFor(activeEvent?.id);
   const undoable = queue.undoableFor(activeEvent?.id);
@@ -287,6 +290,11 @@ export default function CameraScreen() {
   /* ---------------------------------------------------------------- */
   /* Gates, outermost first                                           */
   /* ---------------------------------------------------------------- */
+
+  // A restored tab or deep link must not leave a guest looking at a camera for
+  // an archived event, or one beyond its scheduled end, whose captures can
+  // only be refused.
+  if (pastEvent) return <Redirect href="/photos" />;
 
   // `null` means the native permission has not been read yet. Rendering the
   // "allow the camera" prompt during that beat would flash it at every guest
