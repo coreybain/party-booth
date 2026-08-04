@@ -1,7 +1,8 @@
 "use client";
 
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
+import { type FormEvent, useState } from "react";
 
 import { CohostPanel } from "@/components/events/cohost-panel";
 import { RotationPanel } from "@/components/events/rotation-panel";
@@ -9,6 +10,7 @@ import { StateBadge } from "@/components/events/state-badge";
 import { SectionHeading } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import { ChoiceGroup } from "@/components/ui/choice-group";
 import {
   Sheet,
   SheetContent,
@@ -16,8 +18,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type EventSummary } from "@/lib/convex-api";
-import { isEditableEventState } from "@/lib/contracts";
+import { isEditableEventState, type LaunchModerationMode } from "@/lib/contracts";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import { MODERATION_MODE_COPY } from "@/lib/event-view";
 
@@ -69,8 +72,6 @@ function EventSettingsBody({
   const router = useRouter();
   const me = useQuery(backendApi.users.currentUser, {});
   const editable = isEditableEventState(event.state);
-  const moderationCopy =
-    MODERATION_MODE_COPY[event.moderationMode === "automatic" ? "automatic" : "manual"];
 
   return (
     <div className="mt-6 space-y-4">
@@ -81,15 +82,12 @@ function EventSettingsBody({
           action={<StateBadge state={event.state} />}
         />
         <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
-          <div className="min-w-0 space-y-1">
-            <p className="text-sm text-ink">
-              {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
-              <span className="text-faint">
-                ({timeZoneAbbreviation(event.startsAt, event.timeZone)})
-              </span>
-            </p>
-            <p className="text-sm text-muted">{moderationCopy.label}</p>
-          </div>
+          <p className="min-w-0 text-sm text-ink">
+            {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
+            <span className="text-faint">
+              ({timeZoneAbbreviation(event.startsAt, event.timeZone)})
+            </span>
+          </p>
           <Button
             variant="secondary"
             size="sm"
@@ -102,6 +100,12 @@ function EventSettingsBody({
             Edit event
           </Button>
         </div>
+        <ModerationSetting
+          key={`${event.id}:${event.moderationMode}`}
+          eventId={event.id}
+          initialMode={event.moderationMode === "automatic" ? "automatic" : "manual"}
+          disabled={!editable}
+        />
       </section>
 
       <section className="rounded-2xl border border-line bg-canvas/35 p-4">
@@ -134,5 +138,95 @@ function EventSettingsBody({
         />
       </section>
     </div>
+  );
+}
+
+/**
+ * The moderation switch hosts need during a party, without making them leave
+ * the settings sheet for the full event form. It still uses the same
+ * `events.update` mutation as that form, so permissions, auditing and live
+ * gallery behaviour have one source of truth.
+ */
+function ModerationSetting({
+  eventId,
+  initialMode,
+  disabled,
+}: {
+  readonly eventId: EventSummary["id"];
+  readonly initialMode: LaunchModerationMode;
+  readonly disabled: boolean;
+}) {
+  const update = useMutation(backendApi.events.update);
+  const [mode, setMode] = useState<LaunchModerationMode>(initialMode);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [saved, setSaved] = useState(false);
+  const changed = mode !== initialMode;
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!changed || pending || disabled) return;
+
+    setPending(true);
+    setError(undefined);
+    setSaved(false);
+    try {
+      await update({ eventId, moderationMode: mode });
+      setSaved(true);
+    } catch (caught) {
+      setError(appErrorMessage(caught));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form
+      className="mt-4 space-y-3 border-t border-line pt-4"
+      onSubmit={(event) => {
+        void save(event);
+      }}
+    >
+      <ChoiceGroup<LaunchModerationMode>
+        legend="What happens to a new photo"
+        value={mode}
+        onChange={(value) => {
+          setMode(value);
+          setError(undefined);
+          setSaved(false);
+        }}
+        choices={[
+          { value: "manual", ...MODERATION_MODE_COPY.manual },
+          { value: "automatic", ...MODERATION_MODE_COPY.automatic },
+        ]}
+        disabled={disabled || pending}
+      />
+
+      {error === undefined ? null : (
+        <Callout tone="danger" live="assertive">
+          {error}
+        </Callout>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          type="submit"
+          variant="secondary"
+          size="sm"
+          loading={pending}
+          disabled={disabled || !changed}
+        >
+          Save moderation
+        </Button>
+        {saved ? (
+          <span className="text-sm text-positive" role="status">
+            Moderation saved.
+          </span>
+        ) : null}
+        {disabled ? (
+          <span className="text-sm text-muted">Archived events are read-only.</span>
+        ) : null}
+      </div>
+    </form>
   );
 }
