@@ -12,7 +12,6 @@ import { StateBadge } from "@/components/events/state-badge";
 import { UsersIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Card, SectionHeading } from "@/components/layout/card";
-import { Callout } from "@/components/ui/callout";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import { eventStatusLine, formatGuestCount } from "@/lib/event-view";
@@ -95,17 +94,13 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
       </div>
 
       <div className="space-y-4">
-        <Card>
-          <SectionHeading
-            title="Join code & QR"
-            description="Hold this up, or print it. Both work from the moment the event is scheduled."
-          />
-          <div className="mt-4">
-            {invite === undefined ? (
-              <Callout tone="info">
-                Only the host and co-hosts can see the join code. Ask them to show you the QR.
-              </Callout>
-            ) : (
+        {isHost && invite !== undefined ? (
+          <Card>
+            <SectionHeading
+              title="Join code & QR"
+              description="Hold this up, or print it. Both work from the moment the event is scheduled."
+            />
+            <div className="mt-4">
               <InvitePanel
                 code={invite.code}
                 token={invite.token}
@@ -113,9 +108,9 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
                 state={event.state}
                 eventName={event.name}
               />
-            )}
-          </div>
-        </Card>
+            </div>
+          </Card>
+        ) : null}
 
         {/*
           Sprint 4 replaces the two placeholders that stood here with the real
