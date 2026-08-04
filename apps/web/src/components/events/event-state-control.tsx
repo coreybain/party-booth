@@ -2,7 +2,7 @@
 
 import { useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { EventSettingsSheet } from "@/components/events/event-settings-sheet";
 import { CalendarIcon, MediaIcon, MoreVerticalIcon, SettingsIcon } from "@/components/icons";
@@ -26,7 +26,13 @@ import {
 import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type EventSummary } from "@/lib/convex-api";
 import { isEditableEventState, type HostSettableEventState } from "@/lib/contracts";
-import { allowedNextStates, eventHasEnded } from "@/lib/event-view";
+import {
+  allowedNextStates,
+  END_EVENT_CONFIRMATION_SECONDS,
+  eventHasEnded,
+  eventHasNotStarted,
+  tickEndEventConfirmation,
+} from "@/lib/event-view";
 
 type PendingAction = HostSettableEventState | "delete" | "publicGallery";
 type Confirmation = "archive" | "delete";
@@ -39,6 +45,8 @@ type Confirmation = "archive" | "delete";
  * published. The backend still owns the detailed states:
  *
  * - Publish moves any legal non-live state to `live`.
+ * - End event arms a short inline confirmation before moving `live` to
+ *   `archived`; doing nothing disarms it automatically.
  * - Unpublish moves `live` to `paused`, keeping the gallery and memberships.
  * - Archive remains the explicit end-of-event transition.
  * - Delete enters the scheduled-deletion lifecycle rather than silently
@@ -66,6 +74,19 @@ export function EventStateControl({
   const [error, setError] = useState<string | undefined>(undefined);
   const [reissuedCode, setReissuedCode] = useState<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [endConfirmation, setEndConfirmation] = useState<number | undefined>(undefined);
+
+  useEffect(() => {
+    if (endConfirmation === undefined) return;
+
+    const timeout = window.setTimeout(() => {
+      setEndConfirmation(tickEndEventConfirmation);
+    }, 1_000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [endConfirmation]);
 
   const applyState = useCallback(
     async (next: HostSettableEventState) => {
@@ -75,6 +96,7 @@ export function EventStateControl({
         const result = await setState({ eventId, state: next });
         setReissuedCode(result.reissuedCode);
         setConfirming(undefined);
+        setEndConfirmation(undefined);
       } catch (caught) {
         setError(appErrorMessage(caught));
       } finally {
@@ -111,17 +133,70 @@ export function EventStateControl({
 
   const live = state === "live";
   const past = eventHasEnded(event, nowMs);
+  const futureLive = live && eventHasNotStarted(event, nowMs);
   const canPublish = !past && state !== "live" && state !== "deletionScheduled";
   const canEdit = isEditableEventState(state);
   const canArchive = isOwner && allowedNextStates(state).includes("archived");
   const canDelete = isOwner && state !== "deletionScheduled";
   const canOpenSettings = state !== "deletionScheduled";
   const hasMenu = canOpenSettings || live || canEdit || canArchive || canDelete;
+  const endEventButton = canArchive ? (
+    <Button
+      variant={endConfirmation === undefined ? "secondary" : "danger"}
+      size="sm"
+      loading={pending === "archived"}
+      disabled={pending !== undefined}
+      aria-live="polite"
+      aria-label={
+        endConfirmation === undefined
+          ? "End event"
+          : `Confirm end event, ${String(endConfirmation)} seconds remaining`
+      }
+      onClick={() => {
+        if (endConfirmation === undefined) {
+          setError(undefined);
+          setEndConfirmation(END_EVENT_CONFIRMATION_SECONDS);
+          return;
+        }
+        setEndConfirmation(undefined);
+        void applyState("archived");
+      }}
+    >
+      {endConfirmation === undefined ? (
+        "End event"
+      ) : (
+        <>
+          Confirm end · <span className="tabular-nums">{endConfirmation}s</span>
+        </>
+      )}
+    </Button>
+  ) : null;
+  const liveStatus = (
+    <span
+      className={
+        futureLive
+          ? "inline-flex h-10 items-center gap-2 rounded-full border border-info/40 bg-info-soft px-3 text-sm font-medium text-info"
+          : "inline-flex h-10 items-center gap-2 rounded-full border border-accent/35 bg-accent-soft px-3 text-sm font-medium text-accent"
+      }
+      role="status"
+      aria-label={futureLive ? "Event is live and starts in the future" : "Event is live"}
+    >
+      <span className="relative flex size-2.5" aria-hidden="true">
+        <span
+          className={`absolute inline-flex size-full animate-ping rounded-full opacity-60 ${futureLive ? "bg-info" : "bg-accent"}`}
+        />
+        <span
+          className={`relative inline-flex size-2.5 rounded-full ${futureLive ? "bg-info" : "bg-accent"}`}
+        />
+      </span>
+      {futureLive ? "Live future event" : "Live event"}
+    </span>
+  );
 
   return (
     <>
       <div className="flex flex-col items-end gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {past ? (
             <>
               <span
@@ -132,6 +207,7 @@ export function EventStateControl({
                 <CalendarIcon size={16} />
                 Past event
               </span>
+              {endEventButton}
               {isOwner ? (
                 <Button
                   variant="secondary"
@@ -149,17 +225,10 @@ export function EventStateControl({
               ) : null}
             </>
           ) : live ? (
-            <span
-              className="inline-flex h-10 items-center gap-2 rounded-full border border-accent/35 bg-accent-soft px-3 text-sm font-medium text-accent"
-              role="status"
-              aria-label="Event is live"
-            >
-              <span className="relative flex size-2.5" aria-hidden="true">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
-                <span className="relative inline-flex size-2.5 rounded-full bg-accent" />
-              </span>
-              Live event
-            </span>
+            <>
+              {liveStatus}
+              {endEventButton}
+            </>
           ) : canPublish ? (
             <Button
               size="sm"
@@ -169,7 +238,7 @@ export function EventStateControl({
                 void applyState("live");
               }}
             >
-              Publish
+              Start now
             </Button>
           ) : null}
 

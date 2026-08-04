@@ -95,6 +95,22 @@ export interface EventStatusInput {
   readonly endsAt?: number | undefined;
 }
 
+export const END_EVENT_CONFIRMATION_SECONDS = 5;
+
+/** One countdown tick; `undefined` disarms the end-event confirmation. */
+export function tickEndEventConfirmation(remaining: number | undefined): number | undefined {
+  if (remaining === undefined || remaining <= 1) return undefined;
+  return remaining - 1;
+}
+
+/** The scheduled start time is still ahead. */
+export function eventHasNotStarted(
+  event: Pick<EventStatusInput, "startsAt">,
+  now: number,
+): boolean {
+  return now < event.startsAt;
+}
+
 /** The schedule has a definite end and that moment has passed. */
 export function eventHasEnded(event: Pick<EventStatusInput, "endsAt">, now: number): boolean {
   return event.endsAt !== undefined && now > event.endsAt;

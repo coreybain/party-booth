@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import { EVENT_STATES, eventStateMachine, type EventState } from "./contracts";
 import {
   allowedNextStates,
+  END_EVENT_CONFIRMATION_SECONDS,
   EVENT_STATE_COPY,
   eventHasEnded,
+  eventHasNotStarted,
   eventStatusLine,
   formatGuestCount,
   galleryIsVisible,
@@ -12,6 +14,7 @@ import {
   guestsCanJoin,
   guestsCanUpload,
   STATE_ACTION_LABELS,
+  tickEndEventConfirmation,
 } from "./event-view";
 
 /**
@@ -114,6 +117,34 @@ describe("eventHasEnded", () => {
   it("keeps future and open-ended events current", () => {
     expect(eventHasEnded({ endsAt: now + 1 }, now)).toBe(false);
     expect(eventHasEnded({}, now)).toBe(false);
+  });
+});
+
+describe("eventHasNotStarted", () => {
+  const now = Date.UTC(2026, 7, 5, 12, 0);
+
+  it("distinguishes a future start from a current or past one", () => {
+    expect(eventHasNotStarted({ startsAt: now + 1 }, now)).toBe(true);
+    expect(eventHasNotStarted({ startsAt: now }, now)).toBe(false);
+    expect(eventHasNotStarted({ startsAt: now - 1 }, now)).toBe(false);
+  });
+});
+
+describe("end-event confirmation countdown", () => {
+  it("counts down to an automatic reset", () => {
+    let remaining: number | undefined = END_EVENT_CONFIRMATION_SECONDS;
+    const seen: Array<number | undefined> = [];
+
+    for (let tick = 0; tick < END_EVENT_CONFIRMATION_SECONDS; tick += 1) {
+      remaining = tickEndEventConfirmation(remaining);
+      seen.push(remaining);
+    }
+
+    expect(seen).toEqual([4, 3, 2, 1, undefined]);
+  });
+
+  it("keeps a disarmed confirmation disarmed", () => {
+    expect(tickEndEventConfirmation(undefined)).toBeUndefined();
   });
 });
 
