@@ -49,6 +49,17 @@ export function joinUrl(token: string, origin = canonicalOrigin()): string | und
   return origin === undefined ? undefined : inviteUrl(origin, token);
 }
 
+/**
+ * Open an invite in the installed PartyBooth app.
+ *
+ * The HTTPS invite remains the QR's durable destination. This custom-scheme
+ * version is only for an explicit "open the app" action once the guest is
+ * already looking at the browser fallback.
+ */
+export function mobileJoinUrl(token: string): string {
+  return `partybooth://join/${normalizeInviteToken(token)}`;
+}
+
 /** The absolute code-entry URL, or `undefined` when there is no origin. */
 export function joinFallbackUrl(origin = canonicalOrigin()): string | undefined {
   return origin === undefined ? undefined : buildJoinFallbackUrl(origin);

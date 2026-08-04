@@ -1,7 +1,10 @@
 "use client";
 
+import { useId, useState } from "react";
+
 import { GoogleSignInButton } from "@/components/guest/google-sign-in-button";
 import { OtpSignInForm } from "@/components/otp-sign-in-form";
+import { Button } from "@/components/ui/button";
 
 export interface GuestSignInProps {
   /** Absolute URL Google returns to. Usually the page the guest is standing on. */
@@ -23,17 +26,39 @@ export interface GuestSignInProps {
  * code next month is still one person with one set of photos.
  */
 export function GuestSignIn({ callbackURL, onSignedIn }: GuestSignInProps) {
+  const [showEmail, setShowEmail] = useState(false);
+  const emailRegionId = useId();
+
   return (
-    <div className="space-y-5">
-      <GoogleSignInButton callbackURL={callbackURL} />
+    <div className="space-y-4">
+      <GoogleSignInButton
+        callbackURL={callbackURL}
+        onUnavailable={() => {
+          setShowEmail(true);
+        }}
+      />
 
-      <div className="flex items-center gap-3 text-xs uppercase tracking-widest text-faint">
-        <span className="h-px flex-1 bg-line" />
-        or use your email
-        <span className="h-px flex-1 bg-line" />
-      </div>
-
-      <OtpSignInForm audience="guest" onSignedIn={onSignedIn} />
+      {showEmail ? (
+        <div id={emailRegionId} className="space-y-5 border-t border-line pt-5">
+          <p className="text-center text-xs uppercase tracking-widest text-faint">
+            Sign in with email
+          </p>
+          <OtpSignInForm audience="guest" onSignedIn={onSignedIn} />
+        </div>
+      ) : (
+        <Button
+          variant="ghost"
+          size="md"
+          fullWidth
+          aria-expanded={false}
+          aria-controls={emailRegionId}
+          onClick={() => {
+            setShowEmail(true);
+          }}
+        >
+          Use email instead
+        </Button>
+      )}
 
       <p className="text-xs leading-relaxed text-faint">
         Signing in tells the host who took which photo, and lets you take yours back down. Private

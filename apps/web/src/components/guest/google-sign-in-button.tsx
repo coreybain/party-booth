@@ -15,6 +15,8 @@ export interface GoogleSignInButtonProps {
    */
   readonly callbackURL: string;
   readonly className?: string;
+  /** Reveals the email fallback when Google cannot start. */
+  readonly onUnavailable?: () => void;
 }
 
 /**
@@ -33,7 +35,11 @@ export interface GoogleSignInButtonProps {
  * `signIn.social` navigates the whole page away on success, so there is no
  * success branch to write — only the failure one.
  */
-export function GoogleSignInButton({ callbackURL, className }: GoogleSignInButtonProps) {
+export function GoogleSignInButton({
+  callbackURL,
+  className,
+  onUnavailable,
+}: GoogleSignInButtonProps) {
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -58,11 +64,13 @@ export function GoogleSignInButton({ callbackURL, className }: GoogleSignInButto
               if (result.error) {
                 setFailed(true);
                 setPending(false);
+                onUnavailable?.();
               }
             })
             .catch(() => {
               setFailed(true);
               setPending(false);
+              onUnavailable?.();
             });
         }}
         className={cn(
@@ -79,7 +87,7 @@ export function GoogleSignInButton({ callbackURL, className }: GoogleSignInButto
 
       {failed ? (
         <Callout tone="warning" live="polite">
-          Google sign-in is not available right now. Use your email address below instead.
+          Google sign-in is not available right now. Try signing in with email instead.
         </Callout>
       ) : null}
     </div>

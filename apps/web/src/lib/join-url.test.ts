@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { joinFallbackUrl, joinUrl } from "./join-url";
+import { joinFallbackUrl, joinUrl, mobileJoinUrl } from "./join-url";
 
 /**
  * What is left to test here is the *origin*, not the link.
@@ -38,5 +38,17 @@ describe("joinFallbackUrl", () => {
 
   it("returns undefined with no origin", () => {
     expect(joinFallbackUrl(undefined)).toBeUndefined();
+  });
+});
+
+describe("mobileJoinUrl", () => {
+  it("opens the same invite in the installed app", () => {
+    expect(mobileJoinUrl(TOKEN)).toBe(`partybooth://join/${TOKEN}`);
+  });
+
+  it("normalises a token before handing it to the app", () => {
+    expect(mobileJoinUrl("abcdefgh-jkmn pqrs tvwx yz01 2345 6789")).toBe(
+      `partybooth://join/${TOKEN}`,
+    );
   });
 });

@@ -9,8 +9,8 @@ import { GuestSignIn } from "@/components/guest/guest-sign-in";
 import { NameConfirmForm } from "@/components/guest/name-confirm-form";
 import { EventPreviewCard } from "@/components/join/event-preview-card";
 import { JoinLoading, JoinRejected, JoinThrottled } from "@/components/join/join-states";
+import { OpenInApp } from "@/components/join/open-in-app";
 import { PastEventGallery } from "@/components/join/past-event-gallery";
-import { StoreBadges } from "@/components/join/store-badges";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { backendApi } from "@/lib/convex-api";
@@ -112,6 +112,7 @@ function JoinByTokenLive({ token }: { readonly token: string }) {
     return (
       <div className="space-y-6">
         {eventCard}
+        <OpenInApp token={token} />
         <GuestSignIn
           // Absolute, and on the canonical origin, so Google returns the guest
           // to the same invitation rather than to a preview deployment.
@@ -120,7 +121,6 @@ function JoinByTokenLive({ token }: { readonly token: string }) {
             // Nothing to do: `useConvexAuth` flips and the flow moves on.
           }}
         />
-        <StoreBadges />
       </div>
     );
   }
