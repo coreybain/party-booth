@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { PlayIcon } from "@/components/icons";
 import { cn } from "@/lib/cn";
-import type { MediaItem } from "@/lib/convex-api";
+import type { MediaItem, PublicGalleryItem } from "@/lib/convex-api";
 import { formatDuration } from "@/lib/upload/video";
 
 /**
@@ -41,7 +41,7 @@ import { formatDuration } from "@/lib/upload/video";
  */
 
 export interface MediaTileProps {
-  readonly item: MediaItem;
+  readonly item: MediaItem | PublicGalleryItem;
   readonly alt?: string;
   readonly className?: string;
   /** Square for even grids; `natural` lets the masonry column breathe. */
@@ -50,16 +50,16 @@ export interface MediaTileProps {
   readonly playable?: boolean;
 }
 
-export function stillUrlOf(item: MediaItem): string | undefined {
+export function stillUrlOf(item: MediaItem | PublicGalleryItem): string | undefined {
   return item.posterUrl ?? item.previewUrl ?? item.url;
 }
 
-export function playableUrlOf(item: MediaItem): string | undefined {
+export function playableUrlOf(item: MediaItem | PublicGalleryItem): string | undefined {
   return item.url ?? item.previewUrl;
 }
 
 /** Full-size source for an explicit review action, with derivatives as fallback. */
-export function reviewUrlOf(item: MediaItem): string | undefined {
+export function reviewUrlOf(item: MediaItem | PublicGalleryItem): string | undefined {
   return item.url ?? item.previewUrl ?? item.posterUrl;
 }
 
@@ -77,7 +77,11 @@ export function MediaTile({
   const source = playableUrlOf(item);
   const isVideo = item.mediaType === "video";
   const canPlay = playable && isVideo && source !== undefined;
-  const label = alt ?? `${isVideo ? "Video" : "Photo"} from ${item.uploaderDisplayName}`;
+  const label =
+    alt ??
+    (`uploaderDisplayName` in item
+      ? `${isVideo ? "Video" : "Photo"} from ${item.uploaderDisplayName}`
+      : `${isVideo ? "Video" : "Photo"} from the event`);
 
   // A landscape 4:3 default: it is the shape most phone video lands in, and a
   // tile with no ratio at all makes the whole column jump when the image loads.
@@ -128,7 +132,7 @@ export function MediaTile({
         />
       ) : (
         <span className="absolute inset-0 grid place-items-center px-3 text-center text-xs text-faint">
-          {item.state === "processing" ? "Still arriving…" : "No preview"}
+          {"state" in item && item.state === "processing" ? "Still arriving…" : "No preview"}
         </span>
       )}
 

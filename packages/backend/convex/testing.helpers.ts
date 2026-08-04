@@ -184,6 +184,7 @@ export interface SeedEventOptions {
   startsAt?: number;
   endsAt?: number;
   allowLibraryImport?: boolean;
+  publicGalleryEnabled?: boolean;
 }
 
 /**
@@ -207,6 +208,9 @@ export async function seedEvent(
       ...(over.endsAt === undefined ? {} : { endsAt: over.endsAt }),
       timeZone: "Europe/London",
       allowLibraryImport: over.allowLibraryImport ?? true,
+      ...(over.publicGalleryEnabled === undefined
+        ? {}
+        : { publicGalleryEnabled: over.publicGalleryEnabled }),
       counts: { pending: 0, approved: 0, declined: 0, total: 0 },
       createdAt: now,
       updatedAt: now,

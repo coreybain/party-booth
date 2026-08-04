@@ -4,6 +4,7 @@ import { EVENT_STATES, eventStateMachine, type EventState } from "./contracts";
 import {
   allowedNextStates,
   EVENT_STATE_COPY,
+  eventHasEnded,
   eventStatusLine,
   formatGuestCount,
   galleryIsVisible,
@@ -100,6 +101,19 @@ describe("eventStatusLine", () => {
     expect(eventStatusLine({ state: "draft", startsAt: now }, now)).toBe(
       EVENT_STATE_COPY.draft.description,
     );
+  });
+});
+
+describe("eventHasEnded", () => {
+  const now = Date.UTC(2026, 7, 5, 12, 0);
+
+  it("marks a scheduled end in the past as ended", () => {
+    expect(eventHasEnded({ endsAt: now - 1 }, now)).toBe(true);
+  });
+
+  it("keeps future and open-ended events current", () => {
+    expect(eventHasEnded({ endsAt: now + 1 }, now)).toBe(false);
+    expect(eventHasEnded({}, now)).toBe(false);
   });
 });
 

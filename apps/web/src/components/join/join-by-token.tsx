@@ -9,6 +9,7 @@ import { GuestSignIn } from "@/components/guest/guest-sign-in";
 import { NameConfirmForm } from "@/components/guest/name-confirm-form";
 import { EventPreviewCard } from "@/components/join/event-preview-card";
 import { JoinLoading, JoinRejected, JoinThrottled } from "@/components/join/join-states";
+import { PastEventGallery } from "@/components/join/past-event-gallery";
 import { StoreBadges } from "@/components/join/store-badges";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -84,6 +85,28 @@ function JoinByTokenLive({ token }: { readonly token: string }) {
   /* --- The party ---------------------------------------------------------- */
 
   const eventCard = <EventPreviewCard preview={preview} />;
+
+  if (preview.kind === "past") {
+    return (
+      <div className="space-y-7">
+        {eventCard}
+        <Callout tone="info">
+          This event has ended. You can’t join or add new photos, but the host may leave the
+          finished gallery open here.
+        </Callout>
+        {preview.publicGalleryEnabled ? (
+          <PastEventGallery token={token} />
+        ) : (
+          <div className="border-t border-line pt-5">
+            <h2 className="text-base font-semibold text-ink">The photos are private</h2>
+            <p className="mt-1 text-sm text-muted">
+              The host hasn’t made this event’s approved photos available through the QR link.
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (

@@ -34,6 +34,8 @@ import {
   type UploadCompletionOutcome,
   type UploadRejectionReason,
 } from "@partybooth/contracts/upload";
+import { inviteTokenSchema, normalizeInviteToken } from "@partybooth/contracts/codes";
+import { isViewableEventState } from "@partybooth/contracts/events";
 import {
   completeUploadInputSchema,
   confirmUploadInputSchema,
@@ -42,7 +44,11 @@ import {
   withdrawMediaInputSchema,
 } from "@partybooth/contracts/schemas";
 import { envOptional, serverEnv } from "@partybooth/env/server";
-import type { FunctionReference } from "convex/server";
+import {
+  paginationOptsValidator,
+  paginationResultValidator,
+  type FunctionReference,
+} from "convex/server";
 import { v } from "convex/values";
 
 import { internal } from "./_generated/api";
@@ -67,7 +73,7 @@ import {
   type EventActor,
 } from "./lib/guards";
 import { parseInput } from "./lib/input";
-import { eventFreeze } from "./lib/lock";
+import { eventFreeze, eventIsUsable } from "./lib/lock";
 import {
   applyCountChange,
   attachDerivative,
@@ -75,6 +81,8 @@ import {
   findMediaByCapture,
   mediaViewValidator,
   projectMedia,
+  projectPublicMedia,
+  publicMediaViewValidator,
   settleAfterProcessing,
   storageKeysOf,
   type MediaView,
@@ -2029,6 +2037,65 @@ export const eventMedia = query({
     return await projectAll(ctx, limited, { userId: actor.user._id, role: actor.role });
   },
 });
+
+/**
+ * Approved media for an anonymous visitor holding the event's current QR.
+ *
+ * The token is the access path and is re-checked on every page. Public access
+ * exists only after the scheduled end, only while the owner toggle is on, and
+ * only for lifecycle states whose approved gallery is otherwise viewable.
+ * Pending, declined, processing and deleted rows cannot enter the indexed
+ * query at all.
+ */
+export const publicEventMedia = query({
+  args: {
+    token: v.string(),
+    urlRefreshKey: v.optional(v.number()),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: paginationResultValidator(publicMediaViewValidator),
+  handler: async (ctx, args) => {
+    const parsedToken = inviteTokenSchema.safeParse(args.token);
+    if (!parsedToken.success) return emptyPublicPage(args.paginationOpts.cursor);
+
+    const version = await ctx.db
+      .query("inviteVersions")
+      .withIndex("by_token", (q) => q.eq("token", normalizeInviteToken(parsedToken.data)))
+      .unique();
+    if (!version || version.status !== "active") {
+      return emptyPublicPage(args.paginationOpts.cursor);
+    }
+
+    const event = await ctx.db.get(version.eventId);
+    if (
+      !event ||
+      event.publicGalleryEnabled !== true ||
+      event.endsAt === undefined ||
+      Date.now() <= event.endsAt ||
+      !isViewableEventState(event.state) ||
+      !(await eventIsUsable(ctx, event))
+    ) {
+      return emptyPublicPage(args.paginationOpts.cursor);
+    }
+
+    const page = await ctx.db
+      .query("media")
+      .withIndex("by_event_state_and_created", (q) =>
+        q.eq("eventId", event._id).eq("state", "approved"),
+      )
+      .order("desc")
+      .paginate(args.paginationOpts);
+
+    return {
+      ...page,
+      page: await Promise.all(page.page.map((row) => projectPublicMedia(row))),
+    };
+  },
+});
+
+function emptyPublicPage(cursor: string | null) {
+  return { page: [], continueCursor: cursor ?? "", isDone: true };
+}
 
 async function projectAll(
   ctx: Parameters<typeof projectMedia>[0],

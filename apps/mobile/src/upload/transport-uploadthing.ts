@@ -36,12 +36,12 @@ import {
 import { genUploader } from "uploadthing/client";
 
 import { credentialSafeUploadFetch } from "./credential-safe-fetch";
+import { toNativeUploadFile } from "./native-upload-file";
 import {
   UploadCancelledError,
   UploadCompletionError,
   isAborted,
   isUploadCancelled,
-  type UploadRequest,
   type UploadTransport,
 } from "./transport";
 
@@ -83,23 +83,6 @@ type PartyMediaRouter = {
 /* The transport                                                              */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Build the React-Native-shaped `File` the SDK expects.
- *
- * This is UploadThing's own documented Expo pattern: read the local file into a
- * (natively-backed, not JS-heap) Blob, wrap it in a `File` so the SDK can read
- * `name`/`size`/`type`, then attach `uri` — because React Native's `FormData`
- * treats "an object with a uri attribute" as a file to stream from disk rather
- * than a buffer to serialise. Without the `uri`, a 15 MB photo is copied through
- * JavaScript on its way out.
- */
-async function toNativeFile(file: UploadRequest["file"]): Promise<File> {
-  const response = await fetch(file.uri);
-  const blob = await response.blob();
-  const nativeFile = new File([blob], file.name, { type: file.mimeType });
-  return Object.assign(nativeFile, { uri: file.uri });
-}
-
 export interface UploadThingTransportOptions {
   /** Public site origin, e.g. `https://www.partybooth.dev`. No trailing slash. */
   readonly siteUrl: string;
@@ -124,7 +107,7 @@ export function createUploadThingTransport(options: UploadThingTransportOptions)
     async upload(request) {
       if (isAborted(request.signal)) throw new UploadCancelledError();
 
-      const file = await toNativeFile(request.file);
+      const file = toNativeUploadFile(request.file);
 
       try {
         const [uploaded] = await uploadFiles(UPLOAD_ROUTE_SLUG, {

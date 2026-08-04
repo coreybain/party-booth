@@ -48,6 +48,9 @@ const EXPECTED_CAPABILITIES: Record<Action, readonly Role[]> = {
   "event.update": ["owner", "cohost"],
   "event.updateSchedule": ["owner", "cohost"],
   "event.changeModerationMode": ["owner", "cohost"],
+  // Publishing guests' approved photos beyond the membership boundary is an
+  // owner decision, not an operational co-host control.
+  "event.managePublicGallery": ["owner"],
   // …but `changeState` is live/paused, and `archive` — ending the party — is
   // not a co-host's call. `events.setState` demands both for `archived`.
   "event.changeState": ["globalAdmin", "owner", "cohost"],
@@ -220,6 +223,12 @@ describe("can() — event gates", () => {
     expect(can("owner", "event.update", liveEvent("draft"))).toBe(true);
     expect(can("owner", "event.update", liveEvent("archived"))).toBe(false);
     expect(can("owner", "event.update", liveEvent("deletionScheduled"))).toBe(false);
+  });
+
+  it("lets the owner close a public gallery after archiving", () => {
+    expect(can("owner", "event.managePublicGallery", liveEvent("archived"))).toBe(true);
+    expect(can("owner", "event.managePublicGallery", liveEvent("deletionScheduled"))).toBe(false);
+    expect(can("cohost", "event.managePublicGallery", liveEvent("archived"))).toBe(false);
   });
 
   it("refuses invite rotation on a dead event", () => {

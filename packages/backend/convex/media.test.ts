@@ -10,6 +10,7 @@ import {
   internal,
   makeTest,
   seedEvent,
+  seedInviteVersion,
   seedMedia,
   seedMembership,
   runScheduled,
@@ -22,6 +23,7 @@ import {
 const CHECKSUM = "a".repeat(64);
 const CAPTURE = "capture-00000001";
 const FILE_KEY = "ut_file_key_0001";
+const HOUR = 60 * 60 * 1000;
 
 interface Fixture {
   t: T;
@@ -87,6 +89,63 @@ async function preflight(f: Fixture, secret: string, subject = "guest") {
 beforeEach(() => {
   setCallbackSecret(CALLBACK_SECRET);
   useFakeStorage();
+});
+
+describe("media.publicEventMedia", () => {
+  const TOKEN = "ABCDEFGHJKMNPQRSTVWXYZ0123456789";
+
+  it("pages only approved, attribution-free media for a public past event", async () => {
+    const now = Date.now();
+    const f = await fixture({
+      state: "archived",
+      endsAt: now - HOUR,
+      publicGalleryEnabled: true,
+    });
+    await seedInviteVersion(f.t, f.eventId, f.ownerId, { token: TOKEN });
+    const approved = await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+      createdAt: now - 1_000,
+    });
+    await seedMedia(f.t, f.eventId, f.guestId, { state: "pending" });
+    await seedMedia(f.t, f.eventId, f.guestId, { state: "declined" });
+
+    const page = await f.t.query(api.media.publicEventMedia, {
+      token: TOKEN,
+      paginationOpts: { cursor: null, numItems: 24 },
+    });
+
+    expect(page.page).toHaveLength(1);
+    expect(page.page[0]).toMatchObject({ id: approved, mediaType: "photo" });
+    expect(page.page[0]?.url).toMatch(/^https:\/\//);
+    expect(page.page[0]).not.toHaveProperty("uploaderUserId");
+    expect(page.page[0]).not.toHaveProperty("uploaderDisplayName");
+    expect(page.page[0]).not.toHaveProperty("captureId");
+  });
+
+  it("returns an empty page when access is private, current, or revoked", async () => {
+    const now = Date.now();
+    const f = await fixture({ state: "live", endsAt: now + HOUR });
+    const invite = await seedInviteVersion(f.t, f.eventId, f.ownerId, { token: TOKEN });
+    await seedMedia(f.t, f.eventId, f.guestId, {
+      state: "approved",
+      sourceMetadataStripped: true,
+    });
+
+    const read = async () =>
+      await f.t.query(api.media.publicEventMedia, {
+        token: TOKEN,
+        paginationOpts: { cursor: null, numItems: 24 },
+      });
+
+    expect((await read()).page).toEqual([]);
+    await f.t.run(async (ctx) =>
+      ctx.db.patch(f.eventId, { endsAt: now - HOUR, publicGalleryEnabled: true }),
+    );
+    expect((await read()).page).toHaveLength(1);
+    await f.t.run(async (ctx) => ctx.db.patch(invite.inviteVersionId, { status: "revoked" }));
+    expect((await read()).page).toEqual([]);
+  });
 });
 
 afterEach(() => {

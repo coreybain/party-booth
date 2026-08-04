@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { EventSettingsSheet } from "@/components/events/event-settings-sheet";
-import { MoreVerticalIcon, SettingsIcon } from "@/components/icons";
+import { CalendarIcon, MediaIcon, MoreVerticalIcon, SettingsIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import {
@@ -26,16 +26,16 @@ import {
 import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type EventSummary } from "@/lib/convex-api";
 import { isEditableEventState, type HostSettableEventState } from "@/lib/contracts";
-import { allowedNextStates } from "@/lib/event-view";
+import { allowedNextStates, eventHasEnded } from "@/lib/event-view";
 
-type PendingAction = HostSettableEventState | "delete";
+type PendingAction = HostSettableEventState | "delete" | "publicGallery";
 type Confirmation = "archive" | "delete";
 
 /**
  * The compact lifecycle control shown beside the event title.
  *
- * The product language deliberately collapses the state machine into the two
- * answers a host needs in the moment: the event is either live, or it can be
+ * The product language deliberately collapses the state machine into the three
+ * answers a host needs in the moment: the event has ended, is live, or can be
  * published. The backend still owns the detailed states:
  *
  * - Publish moves any legal non-live state to `live`.
@@ -50,14 +50,17 @@ type Confirmation = "archive" | "delete";
 export function EventStateControl({
   event,
   isOwner,
+  nowMs,
 }: {
   readonly event: EventSummary;
   readonly isOwner: boolean;
+  readonly nowMs: number;
 }) {
   const { id: eventId, state } = event;
   const router = useRouter();
   const setState = useMutation(backendApi.events.setState);
   const requestDeletion = useMutation(backendApi.events.requestDeletion);
+  const setPublicGallery = useMutation(backendApi.events.setPublicGallery);
   const [pending, setPending] = useState<PendingAction | undefined>(undefined);
   const [confirming, setConfirming] = useState<Confirmation | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -93,8 +96,22 @@ export function EventStateControl({
     }
   }, [eventId, requestDeletion, router]);
 
+  const togglePublicGallery = useCallback(async () => {
+    const next = !event.publicGalleryEnabled;
+    setPending("publicGallery");
+    setError(undefined);
+    try {
+      await setPublicGallery({ eventId, enabled: next });
+    } catch (caught) {
+      setError(appErrorMessage(caught));
+    } finally {
+      setPending(undefined);
+    }
+  }, [event.publicGalleryEnabled, eventId, setPublicGallery]);
+
   const live = state === "live";
-  const canPublish = state !== "live" && state !== "deletionScheduled";
+  const past = eventHasEnded(event, nowMs);
+  const canPublish = !past && state !== "live" && state !== "deletionScheduled";
   const canEdit = isEditableEventState(state);
   const canArchive = isOwner && allowedNextStates(state).includes("archived");
   const canDelete = isOwner && state !== "deletionScheduled";
@@ -105,7 +122,33 @@ export function EventStateControl({
     <>
       <div className="flex flex-col items-end gap-2">
         <div className="flex items-center gap-2">
-          {live ? (
+          {past ? (
+            <>
+              <span
+                className="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-raised px-3 text-sm font-medium text-muted"
+                role="status"
+                aria-label="Event has ended"
+              >
+                <CalendarIcon size={16} />
+                Past event
+              </span>
+              {isOwner ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  aria-pressed={event.publicGalleryEnabled}
+                  loading={pending === "publicGallery"}
+                  disabled={pending !== undefined}
+                  onClick={() => {
+                    void togglePublicGallery();
+                  }}
+                >
+                  <MediaIcon size={16} />
+                  {event.publicGalleryEnabled ? "Photos public" : "Photos private"}
+                </Button>
+              ) : null}
+            </>
+          ) : live ? (
             <span
               className="inline-flex h-10 items-center gap-2 rounded-full border border-accent/35 bg-accent-soft px-3 text-sm font-medium text-accent"
               role="status"

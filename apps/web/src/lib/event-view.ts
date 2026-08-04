@@ -95,6 +95,11 @@ export interface EventStatusInput {
   readonly endsAt?: number | undefined;
 }
 
+/** The schedule has a definite end and that moment has passed. */
+export function eventHasEnded(event: Pick<EventStatusInput, "endsAt">, now: number): boolean {
+  return event.endsAt !== undefined && now > event.endsAt;
+}
+
 /**
  * The single sentence at the top of the event home.
  *
@@ -110,8 +115,8 @@ export function eventStatusLine(event: EventStatusInput, now: number): string {
       ? `Starts ${formatRelative(event.startsAt, now)} — guests can join now, uploads open when you go live.`
       : copy.description;
   }
-  if (event.state === "live" && event.endsAt !== undefined && now > event.endsAt) {
-    return "Past its end time and still live — archive it when the last guest has gone.";
+  if (event.state === "live" && eventHasEnded(event, now)) {
+    return "This event has ended — archive it when the last guest has gone.";
   }
   return copy.description;
 }

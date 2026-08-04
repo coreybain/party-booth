@@ -44,7 +44,10 @@ export default async function JoinByTokenPage({
   const normalised = normalizeInviteToken(token);
 
   return (
-    <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
+    <CentredPane
+      width="md"
+      footer={<SiteFooter note="Photos stay private unless the host opens a past-event gallery." />}
+    >
       <Card>
         {isValidInviteToken(normalised) ? (
           <JoinByToken token={normalised} />

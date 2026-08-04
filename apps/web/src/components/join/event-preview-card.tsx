@@ -24,7 +24,7 @@ export function EventPreviewCard({
   readonly className?: string;
 }) {
   const accent = preview.accentColor;
-  const uploadsOpen = guestsCanUpload(preview.state);
+  const uploadsOpen = preview.kind === "joinable" && guestsCanUpload(preview.state);
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -54,9 +54,11 @@ export function EventPreviewCard({
 
       {uploadsOpen ? null : (
         <p className="rounded-xl border border-line bg-raised px-3.5 py-2.5 text-sm text-muted">
-          {preview.state === "scheduled"
-            ? "Not started yet — join now and you'll be ready when the host opens it."
-            : EVENT_STATE_COPY[preview.state].description}
+          {preview.kind === "past"
+            ? "Past event — new guests and uploads are closed."
+            : preview.state === "scheduled"
+              ? "Not started yet — join now and you'll be ready when the host opens it."
+              : EVENT_STATE_COPY[preview.state].description}
         </p>
       )}
     </div>

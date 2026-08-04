@@ -410,6 +410,41 @@ export const mediaViewValidator = v.object({
 });
 
 /**
+ * The deliberately attribution-free shape used by a public past-event gallery.
+ * No uploader id, capture id, file facts or moderation metadata cross this
+ * boundary — only what a gallery tile needs to render approved media.
+ */
+export const publicMediaViewValidator = v.object({
+  id: v.id("media"),
+  mediaType,
+  durationSeconds: v.optional(v.number()),
+  width: v.optional(v.number()),
+  height: v.optional(v.number()),
+  createdAt: v.number(),
+  url: v.optional(v.string()),
+  urlExpiresAt: v.optional(v.number()),
+  previewUrl: v.optional(v.string()),
+  previewUrlExpiresAt: v.optional(v.number()),
+  posterUrl: v.optional(v.string()),
+  posterUrlExpiresAt: v.optional(v.number()),
+});
+
+export interface PublicMediaView {
+  id: Id<"media">;
+  mediaType: Doc<"media">["mediaType"];
+  durationSeconds?: number;
+  width?: number;
+  height?: number;
+  createdAt: number;
+  url?: string;
+  urlExpiresAt?: number;
+  previewUrl?: string;
+  previewUrlExpiresAt?: number;
+  posterUrl?: string;
+  posterUrlExpiresAt?: number;
+}
+
+/**
  * Mint a signed URL, or give up quietly.
  *
  * A read path must not take the whole gallery down because one object is
@@ -543,6 +578,46 @@ function uploaderNameFor(uploader: Doc<"users"> | null): string {
     return "Former guest";
   }
   return uploader.displayName;
+}
+
+/**
+ * Project an approved item for an anonymous QR holder.
+ *
+ * Anonymous always means "third party": it never receives the owner/host or
+ * submitter exceptions for metadata-bearing originals and derivatives. This is
+ * the same file-level privacy decision as the member gallery, with all account
+ * attribution stripped from the response.
+ */
+export async function projectPublicMedia(
+  media: Doc<"media">,
+  expiresInSeconds = SIGNED_READ_URL_TTL_SECONDS,
+): Promise<PublicMediaView> {
+  const viewer = { isOwn: false, role: "guest" as const };
+  const originalKey = mayServeOriginal(media, viewer) ? media.storageKey : undefined;
+  const previewKey = mayServeDerivative(media, "preview", viewer) ? media.previewKey : undefined;
+  const posterKey = mayServeDerivative(media, "poster", viewer) ? media.posterKey : undefined;
+
+  const [original, preview, poster] = await Promise.all([
+    safeUrl(media.storageRegion, originalKey, expiresInSeconds),
+    safeUrl(media.storageRegion, previewKey ?? posterKey, expiresInSeconds),
+    safeUrl(media.storageRegion, posterKey, expiresInSeconds),
+  ]);
+
+  return {
+    id: media._id,
+    mediaType: media.mediaType,
+    ...(media.durationSeconds === undefined ? {} : { durationSeconds: media.durationSeconds }),
+    ...(media.width === undefined ? {} : { width: media.width }),
+    ...(media.height === undefined ? {} : { height: media.height }),
+    createdAt: media.createdAt,
+    ...(original === undefined ? {} : { url: original.url, urlExpiresAt: original.expiresAt }),
+    ...(preview === undefined
+      ? {}
+      : { previewUrl: preview.url, previewUrlExpiresAt: preview.expiresAt }),
+    ...(poster === undefined
+      ? {}
+      : { posterUrl: poster.url, posterUrlExpiresAt: poster.expiresAt }),
+  };
 }
 
 export async function projectMedia(

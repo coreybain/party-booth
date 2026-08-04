@@ -17,6 +17,7 @@ import { toHex } from "@partybooth/contracts/capture";
 import type { FileRoute } from "uploadthing/types";
 
 import { credentialSafeUploadFetch } from "./credential-safe-fetch";
+import { toNativeUploadFile } from "./native-upload-file";
 import { UploadCompletionError } from "./transport";
 
 export interface PreparedAvatar {
@@ -134,11 +135,7 @@ export const expoAvatarUploadRuntime: AvatarUploadRuntime = {
 
   async upload({ siteUrl, file, ticket, authHeaders }) {
     const { genUploader } = await import("uploadthing/client");
-    const response = await fetch(file.uri);
-    const blob = await response.blob();
-    const nativeFile = Object.assign(new File([blob], file.name, { type: file.mimeType }), {
-      uri: file.uri,
-    });
+    const nativeFile = toNativeUploadFile(file);
     const { uploadFiles } = genUploader<AvatarRouter>({
       url: `${siteUrl.replace(/\/$/, "")}${AVATAR_UPLOAD_ROUTE_PATH}`,
       package: "@partybooth/mobile",

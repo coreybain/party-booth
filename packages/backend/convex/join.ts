@@ -487,6 +487,8 @@ const previewValidator = v.union(
     accentColor: v.optional(v.string()),
     coverKey: v.optional(v.string()),
     hostDisplayName: v.string(),
+    kind: v.union(v.literal("joinable"), v.literal("past")),
+    publicGalleryEnabled: v.boolean(),
     /** `true` when this account is already in — the UI says "open" not "join". */
     alreadyMember: v.boolean(),
   }),
@@ -502,6 +504,8 @@ interface PreviewPayload {
   accentColor?: string;
   coverKey?: string;
   hostDisplayName: string;
+  kind: "joinable" | "past";
+  publicGalleryEnabled: boolean;
   alreadyMember: boolean;
 }
 
@@ -512,7 +516,11 @@ interface PreviewPayload {
  * guest list, no media — a preview is a "yes, this is the right party" check,
  * not a window into it.
  */
-async function renderPreview(ctx: ReadCtx, accepted: CredentialAccepted): Promise<PreviewPayload> {
+async function renderPreview(
+  ctx: ReadCtx,
+  accepted: CredentialAccepted,
+  kind: PreviewPayload["kind"] = "joinable",
+): Promise<PreviewPayload> {
   const { event } = accepted.invite;
   const owner = await ctx.db.get(event.ownerUserId);
 
@@ -526,6 +534,8 @@ async function renderPreview(ctx: ReadCtx, accepted: CredentialAccepted): Promis
     ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
     ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
     hostDisplayName: owner?.displayName ?? "The host",
+    kind,
+    publicGalleryEnabled: event.publicGalleryEnabled ?? false,
     alreadyMember: accepted.membership?.status === "active",
   };
 }
@@ -553,8 +563,31 @@ export const previewByToken = query({
 
     const input = joinEventInputSchema.safeParse({ via: "token", token: args.token });
     if (!input.success) return null;
+    if (input.data.via !== "token") return null;
 
-    const verdict = await evaluateCredential(ctx, input.data, user, Date.now());
+    const now = Date.now();
+    const resolved = await resolveInviteByToken(ctx, input.data.token);
+
+    /*
+     * A QR token is 160 bits, so a current token may safely answer a question a
+     * six-digit code must not: "was this a real party that has ended?". This is
+     * evaluated before joinability so a live event just beyond its scheduled
+     * end, and an explicitly archived event, both render the same useful past
+     * state instead of the generic rejection page.
+     */
+    if (
+      resolved !== null &&
+      resolved.version.status === "active" &&
+      resolved.event.endsAt !== undefined &&
+      now > resolved.event.endsAt &&
+      resolved.event.state !== "draft" &&
+      resolved.event.state !== "deletionScheduled" &&
+      (await eventIsUsable(ctx, resolved.event))
+    ) {
+      return await renderPreview(ctx, { ok: true, invite: resolved, membership: null }, "past");
+    }
+
+    const verdict = await evaluateCredential(ctx, input.data, user, now);
     return verdict.ok ? await renderPreview(ctx, verdict) : null;
   },
 });

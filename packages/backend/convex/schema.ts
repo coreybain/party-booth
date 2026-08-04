@@ -288,6 +288,8 @@ export default defineSchema({
     accentColor: v.optional(v.string()),
     coverKey: v.optional(v.string()),
     allowLibraryImport: v.boolean(),
+    /** Anyone holding the current QR may view approved media after `endsAt`. */
+    publicGalleryEnabled: v.optional(v.boolean()),
 
     /** The invite version guests are currently admitted under. */
     activeInviteVersionId: v.optional(v.id("inviteVersions")),

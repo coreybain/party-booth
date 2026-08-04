@@ -1,5 +1,3 @@
-import { File as NodeFile } from "node:buffer";
-
 import { buildUploadTicket } from "@partybooth/contracts/upload";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,8 +34,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   sdk.uploadFiles.mockReset();
   sdk.genUploader.mockReset().mockReturnValue({ uploadFiles: sdk.uploadFiles });
-  vi.stubGlobal("File", NodeFile);
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new Blob(["test"]))));
+  vi.stubGlobal("fetch", vi.fn());
 });
 
 function send(transport: ReturnType<typeof createUploadThingTransport>) {
@@ -53,6 +50,31 @@ function send(transport: ReturnType<typeof createUploadThingTransport>) {
 }
 
 describe("UploadThing native transport", () => {
+  it("hands React Native a URI descriptor without reading the file through Blob", async () => {
+    sdk.uploadFiles.mockResolvedValue([
+      { serverData: { outcome: "registered", state: "pending" } },
+    ]);
+    const transport = createUploadThingTransport({ siteUrl: "https://partybooth.test" });
+
+    await send(transport);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sdk.uploadFiles).toHaveBeenCalledWith(
+      "partyMedia",
+      expect.objectContaining({
+        files: [
+          {
+            uri: "file:///documents/photo.jpg",
+            name: "photo.jpg",
+            type: "image/jpeg",
+            size: 4,
+            lastModified: 0,
+          },
+        ],
+      }),
+    );
+  });
+
   it("resolves the current Better Auth Cookie header for each attempt", async () => {
     const authHeaders = vi.fn(() => ({ cookie: "better-auth.session_token=private" }));
     sdk.uploadFiles.mockResolvedValue([

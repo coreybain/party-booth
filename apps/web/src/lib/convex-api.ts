@@ -41,6 +41,7 @@ export {
   type MediaItem,
   type MembershipId,
   type ModerationResult,
+  type PublicGalleryItem,
   type RecentSubmission,
   type RefreshRolesResult,
   type ReportId,

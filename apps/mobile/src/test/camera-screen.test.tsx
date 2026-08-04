@@ -162,6 +162,7 @@ function anEvent(overrides: Partial<EventSummary> = {}): EventSummary {
     startsAt: NOW,
     timeZone: "Europe/London",
     allowLibraryImport: false,
+    publicGalleryEnabled: false,
     storageRegion: "pdx1",
     role: "guest",
     counts: { pending: 0, approved: 0, declined: 0, total: 0 },

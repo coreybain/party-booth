@@ -62,6 +62,7 @@ describe("events.create", () => {
     expect(event?.state).toBe("scheduled");
     expect(event?.moderationMode).toBe("automatic");
     expect(event?.allowLibraryImport).toBe(false);
+    expect(event?.publicGalleryEnabled).toBe(false);
     expect(event?.activeInviteVersionId).toBe(created.inviteVersionId);
 
     const membership = await t.run(async (ctx) =>
@@ -134,6 +135,50 @@ describe("events.create", () => {
     await expect(
       as.mutation(api.events.create, { name: "Party", schedule: scheduleFrom(Date.now()) }),
     ).rejects.toThrow(/suspended/i);
+  });
+});
+
+describe("events.setPublicGallery", () => {
+  it("lets the owner publish and close an archived gallery, with an audit trail", async () => {
+    const t = makeTest();
+    const ownerId = await seedUser(t, {
+      authId: "owner",
+      email: "owner@partybooth.test",
+    });
+    const eventId = await seedEvent(t, ownerId, { state: "archived" });
+    const asOwner = t.withIdentity({ subject: "owner" });
+
+    await expect(
+      asOwner.mutation(api.events.setPublicGallery, { eventId, enabled: true }),
+    ).resolves.toEqual({ enabled: true });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.publicGalleryEnabled).toBe(true);
+
+    await asOwner.mutation(api.events.setPublicGallery, { eventId, enabled: false });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.publicGalleryEnabled).toBe(false);
+
+    const updates = (await auditRows(t)).filter((row) => row.action === AUDIT_ACTIONS.eventUpdated);
+    expect(updates).toHaveLength(2);
+    expect(updates[0]?.metadata).toEqual({ fields: ["publicGalleryEnabled"] });
+  });
+
+  it("keeps the public decision with the owner", async () => {
+    const t = makeTest();
+    const ownerId = await seedUser(t, {
+      authId: "owner",
+      email: "owner@partybooth.test",
+    });
+    const cohostId = await seedUser(t, {
+      authId: "cohost",
+      email: "cohost@partybooth.test",
+    });
+    const eventId = await seedEvent(t, ownerId, { state: "archived" });
+    await seedMembership(t, eventId, cohostId, "cohost");
+
+    await expect(
+      t
+        .withIdentity({ subject: "cohost" })
+        .mutation(api.events.setPublicGallery, { eventId, enabled: true }),
+    ).rejects.toThrow(/permission/i);
   });
 });
 

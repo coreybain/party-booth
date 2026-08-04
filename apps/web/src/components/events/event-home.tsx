@@ -74,7 +74,9 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         title={event.name}
         description={eventStatusLine(event, nowMs)}
         actions={
-          isHost ? <EventStateControl event={event} isOwner={event.role === "owner"} /> : undefined
+          isHost ? (
+            <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={nowMs} />
+          ) : undefined
         }
       />
 

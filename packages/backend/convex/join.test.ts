@@ -427,7 +427,26 @@ describe("join previews", () => {
 
   it("previews from a QR token without signing in — the token is unguessable", async () => {
     const preview = await t.query(api.join.previewByToken, { token: TOKEN });
-    expect(preview).toMatchObject({ name: "Summer party", hostDisplayName: "Corey" });
+    expect(preview).toMatchObject({
+      name: "Summer party",
+      hostDisplayName: "Corey",
+      kind: "joinable",
+    });
+  });
+
+  it("recognises a current QR for a party whose end time has passed", async () => {
+    await t.run(async (ctx) =>
+      ctx.db.patch(eventId, {
+        endsAt: Date.now() - HOUR,
+        publicGalleryEnabled: true,
+      }),
+    );
+
+    expect(await t.query(api.join.previewByToken, { token: TOKEN })).toMatchObject({
+      eventId,
+      kind: "past",
+      publicGalleryEnabled: true,
+    });
   });
 
   it("says nothing beyond what the poster already says", async () => {
@@ -437,7 +456,9 @@ describe("join previews", () => {
         "alreadyMember",
         "eventId",
         "hostDisplayName",
+        "kind",
         "name",
+        "publicGalleryEnabled",
         "startsAt",
         "state",
         "timeZone",

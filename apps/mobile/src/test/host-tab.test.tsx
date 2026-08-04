@@ -112,6 +112,7 @@ function anEvent(overrides: Partial<EventSummary> = {}): EventSummary {
     endsAt: Date.UTC(2026, 7, 6, 1, 0, 0),
     timeZone: "Europe/London",
     allowLibraryImport: true,
+    publicGalleryEnabled: false,
     storageRegion: "pdx1",
     role: "owner",
     counts: { pending: 2, approved: 8, declined: 1, total: 11 },

@@ -68,6 +68,7 @@ const eventSummaryFields = {
   accentColor: v.optional(v.string()),
   coverKey: v.optional(v.string()),
   allowLibraryImport: v.boolean(),
+  publicGalleryEnabled: v.boolean(),
   storageRegion,
   /** The caller's role for this event, so a client can pick its shell. */
   role: v.union(v.literal("owner"), v.literal("cohost"), v.literal("guest")),
@@ -92,6 +93,7 @@ type EventSummary = {
   accentColor?: string;
   coverKey?: string;
   allowLibraryImport: boolean;
+  publicGalleryEnabled: boolean;
   storageRegion: Doc<"events">["storageRegion"];
   role: "owner" | "cohost" | "guest";
   counts: Doc<"events">["counts"];
@@ -109,6 +111,7 @@ function toSummary(event: Doc<"events">, role: "owner" | "cohost" | "guest"): Ev
     ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
     ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
     allowLibraryImport: event.allowLibraryImport,
+    publicGalleryEnabled: event.publicGalleryEnabled ?? false,
     storageRegion: event.storageRegion,
     role,
     counts: event.counts,
@@ -190,6 +193,7 @@ export const create = mutation({
       ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
       ...(input.coverKey === undefined ? {} : { coverKey: input.coverKey }),
       allowLibraryImport: input.allowLibraryImport,
+      publicGalleryEnabled: false,
       counts: { pending: 0, approved: 0, declined: 0, total: 0 },
       createdAt: now,
       updatedAt: now,
@@ -329,6 +333,40 @@ export const update = mutation({
     });
 
     return null;
+  },
+});
+
+/**
+ * Publish or close the post-event gallery reached from the current QR.
+ *
+ * This is deliberately separate from `update`: ordinary event settings freeze
+ * when an event is archived, while the owner must be able to turn public photo
+ * access off after the party. The setting never makes pending or declined
+ * submissions public; the read path is hard-filtered to `approved` media.
+ */
+export const setPublicGallery = mutation({
+  args: { eventId: v.id("events"), enabled: v.boolean() },
+  returns: v.object({ enabled: v.boolean() }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.managePublicGallery", {
+      kind: "event",
+      state: actor.event.state,
+    });
+
+    const enabled = args.enabled;
+    if ((actor.event.publicGalleryEnabled ?? false) === enabled) return { enabled };
+
+    const now = Date.now();
+    await ctx.db.patch(actor.event._id, { publicGalleryEnabled: enabled, updatedAt: now });
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventUpdated,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      metadata: { fields: ["publicGalleryEnabled"] },
+      now,
+    });
+    return { enabled };
   },
 });
 

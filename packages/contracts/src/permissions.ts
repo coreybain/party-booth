@@ -37,6 +37,7 @@ export const ACTIONS = [
   "event.update",
   "event.updateSchedule",
   "event.changeModerationMode",
+  "event.managePublicGallery",
   "event.changeState",
   "event.archive",
   "event.delete",
@@ -142,6 +143,7 @@ export const ACTION_RESOURCE_KIND = {
   "event.update": "event",
   "event.updateSchedule": "event",
   "event.changeModerationMode": "event",
+  "event.managePublicGallery": "event",
   "event.changeState": "event",
   "event.archive": "event",
   "event.delete": "event",
@@ -244,6 +246,7 @@ const CAPABILITIES = {
     "event.update",
     "event.updateSchedule",
     "event.changeModerationMode",
+    "event.managePublicGallery",
     "event.changeState",
     "event.archive",
     "event.delete",
@@ -370,6 +373,11 @@ function eventGate(action: Action, state: EventState): boolean {
     case "event.rotateInvite":
     case "event.viewInviteCode":
       return isEditableEventState(state);
+
+    case "event.managePublicGallery":
+      // A finished party's gallery is exactly when this control matters. Keep
+      // it mutable after archiving, but never while deletion is in progress.
+      return state !== "deletionScheduled";
 
     case "event.presentSlideshow":
       return isViewableEventState(state);

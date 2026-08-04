@@ -7,10 +7,12 @@ import { type FormEvent, useState } from "react";
 import { CohostPanel } from "@/components/events/cohost-panel";
 import { RotationPanel } from "@/components/events/rotation-panel";
 import { StateBadge } from "@/components/events/state-badge";
+import { MediaIcon } from "@/components/icons";
 import { SectionHeading } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { ChoiceGroup } from "@/components/ui/choice-group";
+import { ToggleField } from "@/components/ui/toggle-field";
 import {
   Sheet,
   SheetContent,
@@ -110,6 +112,20 @@ function EventSettingsBody({
 
       <section className="rounded-2xl border border-line bg-canvas/35 p-4">
         <SectionHeading
+          title="Past event gallery"
+          description="Choose whether the event QR opens the approved photos after the party."
+          action={<MediaIcon size={18} className="text-faint" />}
+        />
+        <PublicGallerySetting
+          key={`${event.id}:${String(event.publicGalleryEnabled)}`}
+          eventId={event.id}
+          initialEnabled={event.publicGalleryEnabled}
+          disabled={event.role !== "owner"}
+        />
+      </section>
+
+      <section className="rounded-2xl border border-line bg-canvas/35 p-4">
+        <SectionHeading
           title="Co-hosts"
           description="Invite someone to help moderate and run the slideshow."
         />
@@ -137,6 +153,63 @@ function EventSettingsBody({
           canRotate={editable}
         />
       </section>
+    </div>
+  );
+}
+
+function PublicGallerySetting({
+  eventId,
+  initialEnabled,
+  disabled,
+}: {
+  readonly eventId: EventSummary["id"];
+  readonly initialEnabled: boolean;
+  readonly disabled: boolean;
+}) {
+  const setPublicGallery = useMutation(backendApi.events.setPublicGallery);
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  async function change(next: boolean) {
+    if (disabled || pending) return;
+    setEnabled(next);
+    setPending(true);
+    setError(undefined);
+    try {
+      await setPublicGallery({ eventId, enabled: next });
+    } catch (caught) {
+      setEnabled(!next);
+      setError(appErrorMessage(caught));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 space-y-3 border-t border-line pt-4">
+      <ToggleField
+        label="Let people revisit the photos"
+        description="After the end time, anyone with the current QR link can view approved photos and video. Pending and declined submissions stay private."
+        checked={enabled}
+        onChange={(next) => {
+          void change(next);
+        }}
+        disabled={disabled || pending}
+      />
+      {disabled ? (
+        <p className="text-sm text-muted">Only the event owner can make photos public.</p>
+      ) : null}
+      {error === undefined ? null : (
+        <Callout tone="danger" live="assertive">
+          {error}
+        </Callout>
+      )}
+      {pending ? (
+        <p className="text-sm text-muted" role="status">
+          Saving gallery access…
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -64,7 +64,12 @@ import type { EventRole } from "@partybooth/contracts/roles";
 import type { AdminRotationMode, PushPlatform } from "@partybooth/contracts/schemas";
 import type { StorageRegion } from "@partybooth/contracts/storage";
 import type { GrantResult, UploadCompletionOutcome } from "@partybooth/contracts/upload";
-import type { DefaultFunctionArgs, FunctionReference } from "convex/server";
+import type {
+  DefaultFunctionArgs,
+  FunctionReference,
+  PaginationOptions,
+  PaginationResult,
+} from "convex/server";
 
 import type {
   CohostInvitationStatus,
@@ -220,6 +225,7 @@ export interface EventSummary {
   readonly accentColor?: string;
   readonly coverKey?: string;
   readonly allowLibraryImport: boolean;
+  readonly publicGalleryEnabled: boolean;
   readonly storageRegion: StorageRegion;
   readonly role: EventRole;
   readonly counts: EventCounts;
@@ -260,8 +266,28 @@ export interface JoinPreview {
   readonly accentColor?: string;
   readonly coverKey?: string;
   readonly hostDisplayName: string;
+  /** Past QR scans show the finished event instead of offering a new membership. */
+  readonly kind: "joinable" | "past";
+  /** Only meaningful for `kind: "past"`; included uniformly to keep the wire shape stable. */
+  readonly publicGalleryEnabled: boolean;
   /** `true` when this account is already in — the button says "Open", not "Join". */
   readonly alreadyMember: boolean;
+}
+
+/** An approved item exposed through a past event's current QR token. */
+export interface PublicGalleryItem {
+  readonly id: MediaId;
+  readonly mediaType: MediaType;
+  readonly durationSeconds?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly createdAt: number;
+  readonly url?: string;
+  readonly urlExpiresAt?: number;
+  readonly previewUrl?: string;
+  readonly previewUrlExpiresAt?: number;
+  readonly posterUrl?: string;
+  readonly posterUrlExpiresAt?: number;
 }
 
 /** The two ways a guest arrives, exactly as `joinInputSchema` discriminates them. */
@@ -889,6 +915,10 @@ export interface BackendApi {
       },
       null
     >;
+    readonly setPublicGallery: Mutation<
+      { eventId: EventId; enabled: boolean },
+      { enabled: boolean }
+    >;
     readonly setState: Mutation<
       { eventId: EventId; state: HostSettableEventState; reason?: string },
       SetEventStateResult
@@ -977,6 +1007,10 @@ export interface BackendApi {
         urlRefreshKey?: number;
       },
       MediaItem[]
+    >;
+    readonly publicEventMedia: Query<
+      { token: string; urlRefreshKey?: number; paginationOpts: PaginationOptions },
+      PaginationResult<PublicGalleryItem>
     >;
     readonly storageStatus: Query<{ eventId: EventId }, StorageStatus>;
     /** Host-only. Withdrawn rows whose objects a purge never removed. */
