@@ -122,6 +122,8 @@ export const AUDIT_ACTIONS = {
   membershipCreated: "membership.created",
   membershipRevoked: "membership.revoked",
   membershipLeft: "membership.left",
+  /** A host changed whether one guest's future uploads skip the pending queue. */
+  membershipAutoApproveChanged: "membership.auto_approve_changed",
   /**
    * An attempt that was **accepted**, written for every admitted join —
    * including a repeat scan by somebody who was already a member.

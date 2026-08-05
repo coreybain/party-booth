@@ -376,9 +376,22 @@ export default defineSchema({
 
     joinedAt: v.number(),
     lastActiveAt: v.optional(v.number()),
+    /**
+     * Future uploads from this guest skip the pending queue.
+     *
+     * Per-membership rather than per-account: trusting somebody at one wedding
+     * must not silently trust them at every other event they attend.
+     */
+    autoApproveMedia: v.optional(v.boolean()),
     revokedAt: v.optional(v.number()),
     revokedByUserId: v.optional(v.id("users")),
     revokeReason: v.optional(v.string()),
+    /**
+     * A removed guest may scan the current QR and come back; a banned guest may
+     * not. Absent preserves the historical meaning of a deliberate revocation:
+     * banned unless a rotation sweep explicitly says otherwise.
+     */
+    rejoinAllowed: v.optional(v.boolean()),
     /**
      * Whether this membership was swept away by an invite **rotation** rather
      * than removed by a host.

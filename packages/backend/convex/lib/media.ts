@@ -188,7 +188,19 @@ export async function settleAfterProcessing(
   event: Doc<"events">,
   now: number,
 ): Promise<MediaState> {
-  const next = mediaStateAfterProcessing(event.moderationMode);
+  const memberships = await ctx.db
+    .query("memberships")
+    .withIndex("by_event_and_user", (q) =>
+      q.eq("eventId", media.eventId).eq("userId", media.uploaderUserId),
+    )
+    .collect();
+  const autoApproveForGuest = memberships.some(
+    (membership) =>
+      membership.status === "active" &&
+      membership.role === "guest" &&
+      membership.autoApproveMedia === true,
+  );
+  const next = mediaStateAfterProcessing(autoApproveForGuest ? "automatic" : event.moderationMode);
   if (media.state === next) return next;
 
   // Throws `InvalidTransitionError` on an illegal move rather than writing one.

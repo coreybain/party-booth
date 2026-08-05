@@ -34,6 +34,7 @@ export {
   type EventOverview,
   type EventSummary,
   type FlaggedItem,
+  type GuestMember,
   type InviteVersionId,
   type JoinInvite,
   type JoinPreview,

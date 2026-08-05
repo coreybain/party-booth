@@ -206,7 +206,11 @@ async function evaluateCredential(
    * rotation is by definition the new one, so "holding the new code" is already
    * proven by getting this far.
    */
-  if (membership?.status === "revoked" && membership.revokedByRotation !== true) {
+  if (
+    membership?.status === "revoked" &&
+    membership.revokedByRotation !== true &&
+    membership.rejoinAllowed !== true
+  ) {
     return { ok: false, reason: "membershipRevoked", eventId: invite.event._id };
   }
 
@@ -406,6 +410,8 @@ async function admit(
         revokedByUserId: undefined,
         revokeReason: undefined,
         revokedByRotation: undefined,
+        rejoinAllowed: undefined,
+        autoApproveMedia: undefined,
       });
     } else if (existing.inviteVersionId !== invite.version._id) {
       // Re-scanning after a rotation that kept memberships: move them onto the

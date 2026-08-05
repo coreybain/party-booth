@@ -727,6 +727,17 @@ export interface CohostList {
   readonly canInvite: boolean;
 }
 
+/** One active guest in the organiser's live roster. */
+export interface GuestMember {
+  readonly membershipId: MembershipId;
+  readonly userId: UserId;
+  readonly displayName: string;
+  readonly joinedAt: number;
+  readonly autoApproveMedia: boolean;
+  readonly submissionCount: number;
+  readonly approvedCount: number;
+}
+
 /* ---- The admin console ---------------------------------------------------- */
 
 /** `admin.accounts → accountRowValidator`. */
@@ -1214,6 +1225,23 @@ export interface BackendApi {
      * the note on `admin` below.
      */
     readonly list: Query<{ eventId: EventId }, CohostList>;
+  };
+  /** Host-only guest roster and per-guest moderation controls. */
+  readonly memberships: {
+    readonly guests: Query<{ eventId: EventId }, GuestMember[]>;
+    readonly setAutoApprove: Mutation<
+      { eventId: EventId; userId: UserId; enabled: boolean },
+      { enabled: boolean }
+    >;
+    readonly removeGuest: Mutation<
+      {
+        eventId: EventId;
+        userId: UserId;
+        action: "remove" | "ban";
+        reason: string;
+      },
+      { revoked: boolean; rejoinAllowed: boolean; expiredGrants: number }
+    >;
   };
   /**
    * The `/admin` console.

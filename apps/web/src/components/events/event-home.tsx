@@ -8,6 +8,7 @@ import { BackendNotConfigured } from "@/components/backend-not-configured";
 import { EventStateControl } from "@/components/events/event-state-control";
 import { EventStats } from "@/components/events/event-stats";
 import { GuestEventMenu } from "@/components/events/guest-event-menu";
+import { GuestManagerSheet } from "@/components/events/guest-manager-sheet";
 import { InvitePanel } from "@/components/events/invite-panel";
 import { StateBadge } from "@/components/events/state-badge";
 import { GuestCapture } from "@/components/guest/guest-event-view";
@@ -102,10 +103,14 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
             ({timeZoneAbbreviation(event.startsAt, event.timeZone)})
           </span>
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <UsersIcon size={16} className="text-faint" />
-          {formatGuestCount(memberCount)}
-        </span>
+        {isHost ? (
+          <GuestManagerSheet eventId={event.id} memberCount={memberCount} />
+        ) : (
+          <span className="inline-flex items-center gap-1.5">
+            <UsersIcon size={16} className="text-faint" />
+            {formatGuestCount(memberCount)}
+          </span>
+        )}
       </div>
 
       <div className="space-y-8">

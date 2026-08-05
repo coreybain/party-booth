@@ -194,6 +194,8 @@ async function matchCohostInvitations(
         revokedByUserId: undefined,
         revokeReason: undefined,
         revokedByRotation: undefined,
+        rejoinAllowed: undefined,
+        autoApproveMedia: undefined,
       });
     } else {
       const membershipId = await ctx.db.insert("memberships", {

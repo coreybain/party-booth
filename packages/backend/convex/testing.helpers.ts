@@ -31,6 +31,7 @@ import type * as events from "./events";
 import type * as invites from "./invites";
 import type * as join from "./join";
 import type * as media from "./media";
+import type * as memberships from "./memberships";
 import type * as moderation from "./moderation";
 import type * as otp from "./otp";
 import type * as push from "./push";
@@ -95,6 +96,7 @@ type FullApi = ApiFromModules<{
   invites: typeof invites;
   join: typeof join;
   media: typeof media;
+  memberships: typeof memberships;
   moderation: typeof moderation;
   otp: typeof otp;
   push: typeof push;

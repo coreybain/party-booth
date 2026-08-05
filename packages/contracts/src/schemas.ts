@@ -649,6 +649,32 @@ export const adminReasonSchema = z
   .min(3, { error: "Give a reason — it goes in the audit log." })
   .max(280, { error: "Reasons are limited to 280 characters." });
 
+export const GUEST_MEMBERSHIP_ACTIONS = ["remove", "ban"] as const;
+export const guestMembershipActionSchema = z.enum(GUEST_MEMBERSHIP_ACTIONS);
+export type GuestMembershipAction = (typeof GUEST_MEMBERSHIP_ACTIONS)[number];
+
+/**
+ * Eject one guest from an event.
+ *
+ * Removal permits a fresh scan of the current credential; banning does not.
+ * Both require an audit reason because the distinction must survive the UI.
+ */
+export const guestMembershipActionInputSchema = z.object({
+  eventId: idSchema,
+  userId: idSchema,
+  action: guestMembershipActionSchema,
+  reason: adminReasonSchema,
+});
+export type GuestMembershipActionInput = z.infer<typeof guestMembershipActionInputSchema>;
+
+/** Whether this guest's future uploads bypass manual moderation. */
+export const guestAutoApproveInputSchema = z.object({
+  eventId: idSchema,
+  userId: idSchema,
+  enabled: z.boolean(),
+});
+export type GuestAutoApproveInput = z.infer<typeof guestAutoApproveInputSchema>;
+
 export const inviteOrganiserInputSchema = z.object({
   email: emailSchema,
   note: z.string().trim().max(280).optional(),

@@ -63,6 +63,7 @@ import type * as lib_upload_throttle from "../lib/upload_throttle.js";
 import type * as lib_user_mirror from "../lib/user_mirror.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as media from "../media.js";
+import type * as memberships from "../memberships.js";
 import type * as moderation from "../moderation.js";
 import type * as organiser_invitations from "../organiser_invitations.js";
 import type * as otp from "../otp.js";
@@ -133,6 +134,7 @@ declare const fullApi: ApiFromModules<{
   "lib/user_mirror": typeof lib_user_mirror;
   "lib/validators": typeof lib_validators;
   media: typeof media;
+  memberships: typeof memberships;
   moderation: typeof moderation;
   organiser_invitations: typeof organiser_invitations;
   otp: typeof otp;
