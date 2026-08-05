@@ -8,6 +8,7 @@ import {
   eventScheduleSchema,
   hexColorSchema,
   joinEventInputSchema,
+  setEventNowInputSchema,
   timeZoneSchema,
   uploadGrantRequestSchema,
 } from "./schemas";
@@ -50,6 +51,20 @@ describe("eventScheduleSchema", () => {
     expect(
       eventScheduleSchema.safeParse({ startsAt: 1000, timeZone: "Europe/London" }).success,
     ).toBe(true);
+  });
+});
+
+describe("setEventNowInputSchema", () => {
+  it("only accepts explicit start and end actions", () => {
+    expect(setEventNowInputSchema.safeParse({ eventId: "event_1", action: "start" }).success).toBe(
+      true,
+    );
+    expect(setEventNowInputSchema.safeParse({ eventId: "event_1", action: "end" }).success).toBe(
+      true,
+    );
+    expect(
+      setEventNowInputSchema.safeParse({ eventId: "event_1", action: "publish" }).success,
+    ).toBe(false);
   });
 });
 

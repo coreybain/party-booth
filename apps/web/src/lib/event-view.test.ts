@@ -7,12 +7,16 @@ import {
   EVENT_STATE_COPY,
   eventHasEnded,
   eventHasNotStarted,
+  eventNowAction,
   eventStatusLine,
   formatGuestCount,
   galleryIsVisible,
   groupJoinCode,
   guestsCanJoin,
   guestsCanUpload,
+  LIVE_ENDING_IMMINENT_MS,
+  LIVE_ENDING_SOON_MS,
+  liveEventTiming,
   STATE_ACTION_LABELS,
   tickEndEventConfirmation,
 } from "./event-view";
@@ -127,6 +131,61 @@ describe("eventHasNotStarted", () => {
     expect(eventHasNotStarted({ startsAt: now + 1 }, now)).toBe(true);
     expect(eventHasNotStarted({ startsAt: now }, now)).toBe(false);
     expect(eventHasNotStarted({ startsAt: now - 1 }, now)).toBe(false);
+  });
+});
+
+describe("eventNowAction", () => {
+  const now = Date.UTC(2026, 7, 5, 12, 0);
+
+  it("keeps Start now available for a live event scheduled in the future", () => {
+    expect(eventNowAction({ state: "live", startsAt: now + 1 }, now)).toBe("start");
+  });
+
+  it("offers End now only after a live event has reached its start", () => {
+    expect(eventNowAction({ state: "live", startsAt: now }, now)).toBe("end");
+    expect(eventNowAction({ state: "live", startsAt: now - 1 }, now)).toBe("end");
+  });
+
+  it("does not offer an immediate schedule action for a closed event", () => {
+    expect(eventNowAction({ state: "archived", startsAt: now - 1 }, now)).toBeUndefined();
+  });
+});
+
+describe("liveEventTiming", () => {
+  const now = Date.UTC(2026, 7, 5, 12, 0);
+
+  it("keeps future-live events distinct from end-time warnings", () => {
+    expect(
+      liveEventTiming(
+        { state: "live", startsAt: now + 1, endsAt: now + LIVE_ENDING_IMMINENT_MS },
+        now,
+      ),
+    ).toBe("future");
+  });
+
+  it("uses the normal live treatment until the final two hours", () => {
+    expect(
+      liveEventTiming(
+        { state: "live", startsAt: now - 1, endsAt: now + LIVE_ENDING_SOON_MS + 1 },
+        now,
+      ),
+    ).toBe("normal");
+    expect(liveEventTiming({ state: "live", startsAt: now - 1 }, now)).toBe("normal");
+  });
+
+  it("warns during the final two hours and escalates during the final 30 minutes", () => {
+    expect(
+      liveEventTiming(
+        { state: "live", startsAt: now - 1, endsAt: now + LIVE_ENDING_SOON_MS },
+        now,
+      ),
+    ).toBe("soon");
+    expect(
+      liveEventTiming(
+        { state: "live", startsAt: now - 1, endsAt: now + LIVE_ENDING_IMMINENT_MS },
+        now,
+      ),
+    ).toBe("imminent");
   });
 });
 

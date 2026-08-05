@@ -923,6 +923,8 @@ export interface BackendApi {
       { eventId: EventId; state: HostSettableEventState; reason?: string },
       SetEventStateResult
     >;
+    /** Atomically stamp the current schedule boundary and open or pause the party. */
+    readonly setNow: Mutation<{ eventId: EventId; action: "start" | "end" }, SetEventStateResult>;
     readonly requestDeletion: Mutation<
       { eventId: EventId },
       { state: EventState; scheduledAt: number }

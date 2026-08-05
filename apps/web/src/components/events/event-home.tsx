@@ -7,14 +7,21 @@ import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { BackendNotConfigured } from "@/components/backend-not-configured";
 import { EventStateControl } from "@/components/events/event-state-control";
 import { EventStats } from "@/components/events/event-stats";
+import { GuestEventMenu } from "@/components/events/guest-event-menu";
 import { InvitePanel } from "@/components/events/invite-panel";
 import { StateBadge } from "@/components/events/state-badge";
+import { GuestCapture } from "@/components/guest/guest-event-view";
 import { UsersIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Card, SectionHeading } from "@/components/layout/card";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
-import { eventStatusLine, formatGuestCount } from "@/lib/event-view";
+import {
+  eventStatusLine,
+  formatGuestCount,
+  galleryIsVisible,
+  guestsCanUpload,
+} from "@/lib/event-view";
 
 /**
  * The event home: the screen a host has open on their phone all night.
@@ -66,6 +73,9 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
   if (home === undefined) return <EventHomeSkeleton />;
 
   const { event, invite, isHost, memberCount } = home;
+  // Global admins can receive a code for support work but intentionally have
+  // no media access. A real guest has neither host powers nor invite details.
+  const isGuest = !isHost && invite === undefined;
 
   return (
     <>
@@ -75,6 +85,8 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         actions={
           isHost ? (
             <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={nowMs} />
+          ) : isGuest ? (
+            <GuestEventMenu showGallery={galleryIsVisible(event.state)} />
           ) : undefined
         }
       />
@@ -93,7 +105,7 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         </span>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-8">
         {isHost && invite !== undefined ? (
           <Card>
             <SectionHeading
@@ -110,6 +122,10 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
               />
             </div>
           </Card>
+        ) : null}
+
+        {isGuest ? (
+          <GuestCapture event={event} uploadsOpen={guestsCanUpload(event.state)} layout="console" />
         ) : null}
 
         {/*

@@ -77,14 +77,19 @@ export function CapturePanel({
 
   if (!uploadsOpen) {
     return (
-      <Callout tone="info" live="polite">
-        {closedReason}
-      </Callout>
+      <section id="add-media" aria-labelledby="capture-heading" className="scroll-mt-28 space-y-4">
+        <h2 id="capture-heading" className="text-base font-semibold text-ink">
+          Add a photo or video
+        </h2>
+        <Callout tone="info" live="polite">
+          {closedReason}
+        </Callout>
+      </section>
     );
   }
 
   return (
-    <section aria-labelledby="capture-heading" className="space-y-4">
+    <section id="add-media" aria-labelledby="capture-heading" className="scroll-mt-28 space-y-4">
       <h2 id="capture-heading" className="text-base font-semibold text-ink">
         Add a photo or video
       </h2>

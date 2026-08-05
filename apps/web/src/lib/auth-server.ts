@@ -166,9 +166,9 @@ export async function getAppUser(): Promise<AppUser | null> {
  *    checked first, and `/account/locked` is a real destination.
  * 2. A **co-host** was refused outright. Accepting a co-host invitation grants a
  *    membership and deliberately does *not* set `isOrganiser` — that flag gates
- *    creating events and the beta is invitation-only — but a co-host who cannot
- *    open `/media` cannot moderate, which is the whole of RC5. Hosting something
- *    is now its own way in.
+ *    creating events for ordinary accounts and the beta is invitation-only —
+ *    but a co-host who cannot open `/media` cannot moderate, which is the whole
+ *    of RC5. Hosting something is now its own way in.
  *
  * The decision itself is the pure `organiserAccess` in `src/lib/lock-view.ts`,
  * where it is unit tested; this only gathers the facts. The second query runs

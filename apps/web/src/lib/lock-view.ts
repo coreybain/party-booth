@@ -37,10 +37,10 @@ export interface OrganiserAccessInput {
    * Whether this account owns or co-hosts at least one party.
    *
    * A co-host is **not** an organiser: accepting a co-host invitation does not
-   * set `isOrganiser`, and it must not — that flag gates *creating* events and
-   * the private beta is invitation-only. But a co-host who cannot open
-   * `/media` cannot moderate, which is the entire point of RC5, so hosting
-   * something is its own way in. This is the fix for it.
+   * set `isOrganiser`, and it must not — that flag gates *creating* events for
+   * ordinary accounts and the private beta is invitation-only. But a co-host
+   * who cannot open `/media` cannot moderate, which is the entire point of RC5,
+   * so hosting something is its own way in. This is the fix for it.
    */
   readonly hostsAnEvent: boolean;
 }

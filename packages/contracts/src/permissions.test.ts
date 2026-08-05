@@ -30,7 +30,7 @@ import { ROLES, type Role } from "./roles";
  */
 const EXPECTED_CAPABILITIES: Record<Action, readonly Role[]> = {
   // -- Platform ------------------------------------------------------------
-  "platform.createEvent": ["owner", "cohost", "guest"],
+  "platform.createEvent": ["globalAdmin", "owner", "cohost", "guest"],
   "platform.inviteOrganiser": ["globalAdmin"],
   "platform.viewAdminConsole": ["globalAdmin"],
   "platform.viewAccounts": ["globalAdmin"],
@@ -448,10 +448,10 @@ describe("can() — platform gate", () => {
     );
   });
 
-  it("does not give a global admin event creation", () => {
+  it("lets a global admin create an event without an organiser invitation", () => {
     expect(
-      can("globalAdmin", "platform.createEvent", { kind: "platform", isOrganiser: true }),
-    ).toBe(false);
+      can("globalAdmin", "platform.createEvent", { kind: "platform", isOrganiser: false }),
+    ).toBe(true);
   });
 });
 

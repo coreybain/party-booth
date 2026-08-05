@@ -92,7 +92,7 @@ export interface PlatformResource {
   kind: "platform";
   /**
    * Whether the acting account has been invited as an organiser. Private beta
-   * is invitation-only, so this — not the role — is what gates event creation.
+   * is invitation-only for ordinary accounts; global admins are exempt.
    */
   isOrganiser: boolean;
 }
@@ -220,6 +220,7 @@ export type ResourceFor<TAction extends Action> = Extract<
  */
 const CAPABILITIES = {
   globalAdmin: [
+    "platform.createEvent",
     "platform.inviteOrganiser",
     "platform.viewAdminConsole",
     "platform.viewAccounts",
@@ -344,9 +345,11 @@ export function capabilitiesOf(role: Role): readonly Action[] {
 function gate(role: Role, action: Action, resource: Resource): boolean {
   switch (resource.kind) {
     case "platform":
-      // Private beta: only invited organisers create events. Everything else an
-      // admin does is unconditional.
-      return action === "platform.createEvent" ? resource.isOrganiser : true;
+      // Private beta: ordinary accounts need an organiser invitation, while a
+      // global admin may create an event for their own account.
+      return action === "platform.createEvent"
+        ? role === "globalAdmin" || resource.isOrganiser
+        : true;
 
     case "event":
       return eventGate(action, resource.state);

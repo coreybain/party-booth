@@ -75,9 +75,13 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
 
   if (media === undefined && entries.length === 0) {
     return (
-      <section aria-labelledby="my-media-heading" className="space-y-3">
+      <section
+        id="your-uploads"
+        aria-labelledby="my-media-heading"
+        className="scroll-mt-28 space-y-3"
+      >
         <h2 id="my-media-heading" className="text-base font-semibold text-ink">
-          Your photos
+          Your uploads
         </h2>
         <p className="text-sm text-muted" role="status">
           Loading…
@@ -87,9 +91,13 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
   }
 
   return (
-    <section aria-labelledby="my-media-heading" className="space-y-3">
+    <section
+      id="your-uploads"
+      aria-labelledby="my-media-heading"
+      className="scroll-mt-28 space-y-3"
+    >
       <h2 id="my-media-heading" className="text-base font-semibold text-ink">
-        Your photos
+        Your uploads
       </h2>
 
       {error !== undefined ? (

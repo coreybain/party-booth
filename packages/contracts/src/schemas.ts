@@ -160,6 +160,13 @@ export const setEventStateInputSchema = z.object({
 });
 export type SetEventStateInput = z.infer<typeof setEventStateInputSchema>;
 
+/** Start or end the party at the server's current time. */
+export const setEventNowInputSchema = z.object({
+  eventId: idSchema,
+  action: z.enum(["start", "end"]),
+});
+export type SetEventNowInput = z.infer<typeof setEventNowInputSchema>;
+
 /**
  * Which event the app's Camera and Host tabs are pointed at. `null` clears the
  * selection — a guest who has left every event is not "in" one.

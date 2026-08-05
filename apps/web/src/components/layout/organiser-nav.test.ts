@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { isNavItemActive, ORGANISER_NAV } from "./organiser-nav";
+import {
+  eventIdFromOrganiserPath,
+  isNavItemActive,
+  ORGANISER_NAV,
+  visibleOrganiserNavItems,
+} from "./organiser-nav";
 
 /**
  * Exactly one tab lights up on every route the console serves. Zero looks
@@ -41,5 +46,26 @@ describe("isNavItemActive", () => {
   it("does not match on a shared prefix that is a different route", () => {
     // `/mediation` is not `/media`.
     expect(isNavItemActive(item("/media"), "/mediation")).toBe(false);
+  });
+});
+
+describe("event-aware organiser navigation", () => {
+  it("finds an event id on event detail routes only", () => {
+    expect(eventIdFromOrganiserPath("/events/evt_1")).toBe("evt_1");
+    expect(eventIdFromOrganiserPath("/events/evt_1/edit")).toBe("evt_1");
+    expect(eventIdFromOrganiserPath("/events")).toBeUndefined();
+    expect(eventIdFromOrganiserPath("/events/new")).toBeUndefined();
+    expect(eventIdFromOrganiserPath("/dashboard")).toBeUndefined();
+  });
+
+  it("hides slideshow and moderation without host powers for the current event", () => {
+    expect(visibleOrganiserNavItems(false).map((item) => item.href)).toEqual([
+      "/dashboard",
+      "/settings",
+    ]);
+  });
+
+  it("keeps all destinations for an owner or co-host", () => {
+    expect(visibleOrganiserNavItems(true)).toEqual(ORGANISER_NAV);
   });
 });

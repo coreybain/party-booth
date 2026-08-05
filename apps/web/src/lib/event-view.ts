@@ -10,6 +10,7 @@ import {
   acceptsUploads,
   eventStateMachine,
   HOST_SETTABLE_EVENT_STATES,
+  isEditableEventState,
   isJoinableEventState,
   isViewableEventState,
   type EventState,
@@ -96,6 +97,10 @@ export interface EventStatusInput {
 }
 
 export const END_EVENT_CONFIRMATION_SECONDS = 5;
+export const LIVE_ENDING_SOON_MS = 2 * 60 * 60 * 1_000;
+export const LIVE_ENDING_IMMINENT_MS = 30 * 60 * 1_000;
+
+export type LiveEventTiming = "future" | "normal" | "soon" | "imminent";
 
 /** One countdown tick; `undefined` disarms the end-event confirmation. */
 export function tickEndEventConfirmation(remaining: number | undefined): number | undefined {
@@ -109,6 +114,43 @@ export function eventHasNotStarted(
   now: number,
 ): boolean {
   return now < event.startsAt;
+}
+
+export type EventNowAction = "start" | "end";
+
+/**
+ * The immediate schedule action a host can take.
+ *
+ * A published event can still be scheduled for the future. In that case it is
+ * live for guest access, but "Start now" remains the useful action because it
+ * moves the scheduled start boundary to this moment.
+ */
+export function eventNowAction(
+  event: Pick<EventStatusInput, "state" | "startsAt">,
+  now: number,
+): EventNowAction | undefined {
+  if (!isEditableEventState(event.state)) return undefined;
+  if (event.state === "live" && !eventHasNotStarted(event, now)) return "end";
+  return "start";
+}
+
+/**
+ * The live badge's time pressure, with a future start taking precedence over
+ * its end time. An already-ended event is rendered by the separate past-event
+ * treatment in the caller.
+ */
+export function liveEventTiming(
+  event: Pick<EventStatusInput, "state" | "startsAt" | "endsAt">,
+  now: number,
+): LiveEventTiming | undefined {
+  if (event.state !== "live") return undefined;
+  if (eventHasNotStarted(event, now)) return "future";
+  if (event.endsAt === undefined) return "normal";
+
+  const remaining = event.endsAt - now;
+  if (remaining <= LIVE_ENDING_IMMINENT_MS) return "imminent";
+  if (remaining <= LIVE_ENDING_SOON_MS) return "soon";
+  return "normal";
 }
 
 /** The schedule has a definite end and that moment has passed. */

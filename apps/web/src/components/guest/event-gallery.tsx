@@ -39,7 +39,11 @@ export function EventGallery({ eventId }: { readonly eventId: string }) {
   });
 
   return (
-    <section aria-labelledby="gallery-heading" className="space-y-3">
+    <section
+      id="party-gallery"
+      aria-labelledby="gallery-heading"
+      className="scroll-mt-28 space-y-3"
+    >
       <h2 id="gallery-heading" className="text-base font-semibold text-ink">
         The party so far
       </h2>

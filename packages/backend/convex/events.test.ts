@@ -1,5 +1,5 @@
 import { AUDIT_ACTIONS } from "@partybooth/contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Id } from "./_generated/dataModel";
 import {
@@ -24,6 +24,7 @@ function scheduleFrom(now: number) {
 
 afterEach(() => {
   setAllowlist(undefined);
+  vi.restoreAllMocks();
 });
 
 describe("events.create", () => {
@@ -39,6 +40,34 @@ describe("events.create", () => {
     await expect(
       as.mutation(api.events.create, { name: "Party", schedule: scheduleFrom(Date.now()) }),
     ).rejects.toThrow(/invitation-only/i);
+  });
+
+  it("lets a global admin create an event without an organiser invitation", async () => {
+    setAllowlist(ADMIN_EMAIL);
+    const adminId = await seedUser(t, {
+      authId: "admin",
+      email: ADMIN_EMAIL,
+      isOrganiser: false,
+      isGlobalAdmin: false,
+    });
+
+    const created = await t.withIdentity({ subject: "admin" }).mutation(api.events.create, {
+      name: "Admin party",
+      schedule: scheduleFrom(Date.now()),
+    });
+
+    const event = await t.run(async (ctx) => ctx.db.get(created.eventId));
+    expect(event?.ownerUserId).toBe(adminId);
+
+    const membership = await t.run(async (ctx) =>
+      ctx.db
+        .query("memberships")
+        .withIndex("by_event_and_user", (q) =>
+          q.eq("eventId", created.eventId).eq("userId", adminId),
+        )
+        .unique(),
+    );
+    expect(membership?.role).toBe("owner");
   });
 
   it("creates an event, its owner membership and its first invite version", async () => {
@@ -418,6 +447,152 @@ describe("events.setState", () => {
       // @ts-expect-error — the argument validator excludes it, which is the point.
       as.mutation(api.events.setState, { eventId, state: "deletionScheduled" }),
     ).rejects.toThrow();
+  });
+});
+
+describe("events.setNow", () => {
+  let t: T;
+  let ownerId: Id<"users">;
+  let eventId: Id<"events">;
+
+  beforeEach(async () => {
+    t = makeTest();
+    ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    eventId = await seedEvent(t, ownerId, { state: "scheduled" });
+  });
+
+  it("starts now by stamping the server time and activating the event", async () => {
+    const now = Date.now() + HOUR;
+    const plannedEnd = now + 4 * HOUR;
+    await t.run(async (ctx) => ctx.db.patch(eventId, { startsAt: now + HOUR, endsAt: plannedEnd }));
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    await expect(
+      t.withIdentity({ subject: "owner" }).mutation(api.events.setNow, {
+        eventId,
+        action: "start",
+      }),
+    ).resolves.toEqual({ state: "live" });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event).toMatchObject({ state: "live", startsAt: now, endsAt: plannedEnd });
+
+    const rows = await auditRows(t);
+    expect(rows.find((row) => row.action === AUDIT_ACTIONS.eventUpdated)?.metadata).toEqual({
+      fields: ["schedule"],
+    });
+    expect(
+      rows.find((row) => row.action === AUDIT_ACTIONS.eventStateChanged)?.metadata,
+    ).toMatchObject({ from: "scheduled", to: "live" });
+  });
+
+  it("starts a future-published live event now by moving its start boundary", async () => {
+    const now = Date.now() + HOUR;
+    const plannedEnd = now + 4 * HOUR;
+    await t.run(async (ctx) =>
+      ctx.db.patch(eventId, {
+        state: "live",
+        startsAt: now + HOUR,
+        endsAt: plannedEnd,
+      }),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    await expect(
+      t.withIdentity({ subject: "owner" }).mutation(api.events.setNow, {
+        eventId,
+        action: "start",
+      }),
+    ).resolves.toEqual({ state: "live" });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event).toMatchObject({ state: "live", startsAt: now, endsAt: plannedEnd });
+
+    const rows = await auditRows(t);
+    expect(rows.find((row) => row.action === AUDIT_ACTIONS.eventUpdated)?.metadata).toEqual({
+      fields: ["schedule"],
+    });
+    expect(rows.some((row) => row.action === AUDIT_ACTIONS.eventStateChanged)).toBe(false);
+  });
+
+  it("clears an expired end time when restarting a paused event", async () => {
+    const now = Date.now() + HOUR;
+    await t.run(async (ctx) =>
+      ctx.db.patch(eventId, {
+        state: "paused",
+        startsAt: now - 2 * HOUR,
+        endsAt: now - HOUR,
+      }),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    await t.withIdentity({ subject: "owner" }).mutation(api.events.setNow, {
+      eventId,
+      action: "start",
+    });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event?.state).toBe("live");
+    expect(event?.startsAt).toBe(now);
+    expect(event?.endsAt).toBeUndefined();
+  });
+
+  it("ends now by stamping the server time and deactivating the event", async () => {
+    const now = Date.now() + HOUR;
+    const originalStart = now - 2 * HOUR;
+    await t.run(async (ctx) =>
+      ctx.db.patch(eventId, {
+        state: "live",
+        startsAt: originalStart,
+        endsAt: now + HOUR,
+      }),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    await expect(
+      t.withIdentity({ subject: "owner" }).mutation(api.events.setNow, {
+        eventId,
+        action: "end",
+      }),
+    ).resolves.toEqual({ state: "paused" });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event).toMatchObject({ state: "paused", startsAt: originalStart, endsAt: now });
+  });
+
+  it("keeps the schedule valid when ending a future-published event", async () => {
+    const now = Date.now() + HOUR;
+    await t.run(async (ctx) =>
+      ctx.db.patch(eventId, {
+        state: "live",
+        startsAt: now + HOUR,
+        endsAt: now + 2 * HOUR,
+      }),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    await t.withIdentity({ subject: "owner" }).mutation(api.events.setNow, {
+      eventId,
+      action: "end",
+    });
+
+    const event = await t.run(async (ctx) => ctx.db.get(eventId));
+    expect(event).toMatchObject({ state: "paused", startsAt: now - 1, endsAt: now });
+  });
+
+  it("lets a co-host start and end the event now", async () => {
+    const cohostId = await seedUser(t, {
+      authId: "cohost",
+      email: "cohost@partybooth.test",
+    });
+    await seedMembership(t, eventId, cohostId, "cohost");
+    const asCohost = t.withIdentity({ subject: "cohost" });
+
+    await asCohost.mutation(api.events.setNow, { eventId, action: "start" });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.state).toBe("live");
+
+    await asCohost.mutation(api.events.setNow, { eventId, action: "end" });
+    expect((await t.run(async (ctx) => ctx.db.get(eventId)))?.state).toBe("paused");
   });
 });
 

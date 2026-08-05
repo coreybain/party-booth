@@ -14,10 +14,10 @@ import { backendApi } from "@/lib/convex-api";
  *
  * Sprint 5 opened the organiser shell to co-hosts, which it had to — a co-host
  * who cannot reach `/media` cannot moderate, and that is the whole of RC5. But
- * `platform.createEvent` is gated on `users.isOrganiser`, and accepting a
- * co-host invitation deliberately does not set it: PLAN.md makes the private
- * beta invitation-only, and a host being able to mint organisers by adding
- * co-hosts would be a way around that.
+ * `platform.createEvent` is gated on `users.isOrganiser` for ordinary accounts
+ * (global admins are exempt), and accepting a co-host invitation deliberately
+ * does not set it: PLAN.md makes the private beta invitation-only, and a host
+ * being able to mint organisers by adding co-hosts would be a way around that.
  *
  * So the two now come apart, and the console has to stop offering a control the
  * backend refuses. This wrapper is that check, in the two places it matters —

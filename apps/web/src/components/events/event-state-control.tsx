@@ -30,12 +30,43 @@ import {
   allowedNextStates,
   END_EVENT_CONFIRMATION_SECONDS,
   eventHasEnded,
-  eventHasNotStarted,
+  eventNowAction,
+  liveEventTiming,
+  type LiveEventTiming,
   tickEndEventConfirmation,
 } from "@/lib/event-view";
 
-type PendingAction = HostSettableEventState | "delete" | "publicGallery";
+type PendingAction = HostSettableEventState | "startNow" | "endNow" | "delete" | "publicGallery";
 type Confirmation = "archive" | "delete";
+
+const LIVE_BADGE_STYLES: Readonly<
+  Record<LiveEventTiming, { className: string; dotClassName: string; label: string; ariaLabel: string }>
+> = {
+  future: {
+    className: "border-info/40 bg-info-soft text-info",
+    dotClassName: "bg-info",
+    label: "Live future event",
+    ariaLabel: "Event is live and starts in the future",
+  },
+  normal: {
+    className: "border-positive/40 bg-positive/10 text-positive",
+    dotClassName: "bg-positive",
+    label: "Live event",
+    ariaLabel: "Event is live",
+  },
+  soon: {
+    className: "border-warning/40 bg-warning/10 text-warning",
+    dotClassName: "bg-warning",
+    label: "Ends within 2h",
+    ariaLabel: "Event is live and ends within two hours",
+  },
+  imminent: {
+    className: "border-danger/40 bg-danger/10 text-danger",
+    dotClassName: "bg-danger",
+    label: "Ends within 30m",
+    ariaLabel: "Event is live and ends within thirty minutes",
+  },
+};
 
 /**
  * The compact lifecycle control shown beside the event title.
@@ -44,9 +75,10 @@ type Confirmation = "archive" | "delete";
  * answers a host needs in the moment: the event has ended, is live, or can be
  * published. The backend still owns the detailed states:
  *
- * - Publish moves any legal non-live state to `live`.
- * - End event arms a short inline confirmation before moving `live` to
- *   `archived`; doing nothing disarms it automatically.
+ * - Publish moves any legal non-live state to `live` without rewriting dates.
+ * - Start now rewrites the start time and moves the event to `live` atomically.
+ * - End now arms a short inline confirmation, then rewrites the end time and
+ *   moves `live` to `paused`; doing nothing disarms it automatically.
  * - Unpublish moves `live` to `paused`, keeping the gallery and memberships.
  * - Archive remains the explicit end-of-event transition.
  * - Delete enters the scheduled-deletion lifecycle rather than silently
@@ -67,6 +99,7 @@ export function EventStateControl({
   const { id: eventId, state } = event;
   const router = useRouter();
   const setState = useMutation(backendApi.events.setState);
+  const setNow = useMutation(backendApi.events.setNow);
   const requestDeletion = useMutation(backendApi.events.requestDeletion);
   const setPublicGallery = useMutation(backendApi.events.setPublicGallery);
   const [pending, setPending] = useState<PendingAction | undefined>(undefined);
@@ -75,6 +108,17 @@ export function EventStateControl({
   const [reissuedCode, setReissuedCode] = useState<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endConfirmation, setEndConfirmation] = useState<number | undefined>(undefined);
+  const [clockMs, setClockMs] = useState(nowMs);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setClockMs(Date.now());
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (endConfirmation === undefined) return;
@@ -106,6 +150,28 @@ export function EventStateControl({
     [eventId, setState],
   );
 
+  const applyNow = useCallback(
+    async (action: "start" | "end") => {
+      setPending(action === "start" ? "startNow" : "endNow");
+      setError(undefined);
+      try {
+        const result = await setNow({ eventId, action });
+        setReissuedCode(result.reissuedCode);
+        setEndConfirmation(undefined);
+        setClockMs(Date.now());
+        // The page's clock is server-rendered to avoid hydration drift. Refresh
+        // it with the freshly-stamped schedule so "Past event"/"Live" updates
+        // immediately instead of waiting for the next navigation.
+        router.refresh();
+      } catch (caught) {
+        setError(appErrorMessage(caught));
+      } finally {
+        setPending(undefined);
+      }
+    },
+    [eventId, router, setNow],
+  );
+
   const deleteEvent = useCallback(async () => {
     setPending("delete");
     setError(undefined);
@@ -132,64 +198,33 @@ export function EventStateControl({
   }, [event.publicGalleryEnabled, eventId, setPublicGallery]);
 
   const live = state === "live";
-  const past = eventHasEnded(event, nowMs);
-  const futureLive = live && eventHasNotStarted(event, nowMs);
+  const past = eventHasEnded(event, clockMs);
   const canPublish = !past && state !== "live" && state !== "deletionScheduled";
   const canEdit = isEditableEventState(state);
+  const immediateAction = eventNowAction(event, clockMs);
+  const canStartNow = immediateAction === "start";
+  const canEndNow = immediateAction === "end";
   const canArchive = isOwner && allowedNextStates(state).includes("archived");
   const canDelete = isOwner && state !== "deletionScheduled";
   const canOpenSettings = state !== "deletionScheduled";
-  const hasMenu = canOpenSettings || live || canEdit || canArchive || canDelete;
-  const endEventButton = canArchive ? (
-    <Button
-      variant={endConfirmation === undefined ? "secondary" : "danger"}
-      size="sm"
-      loading={pending === "archived"}
-      disabled={pending !== undefined}
-      aria-live="polite"
-      aria-label={
-        endConfirmation === undefined
-          ? "End event"
-          : `Confirm end event, ${String(endConfirmation)} seconds remaining`
-      }
-      onClick={() => {
-        if (endConfirmation === undefined) {
-          setError(undefined);
-          setEndConfirmation(END_EVENT_CONFIRMATION_SECONDS);
-          return;
-        }
-        setEndConfirmation(undefined);
-        void applyState("archived");
-      }}
-    >
-      {endConfirmation === undefined ? (
-        "End event"
-      ) : (
-        <>
-          Confirm end · <span className="tabular-nums">{endConfirmation}s</span>
-        </>
-      )}
-    </Button>
-  ) : null;
+  const hasImmediateAction = canStartNow || canEndNow;
+  const hasMenu =
+    hasImmediateAction || canOpenSettings || live || canEdit || canArchive || canDelete;
+  const liveTiming = liveEventTiming(event, clockMs) ?? "normal";
+  const liveBadge = LIVE_BADGE_STYLES[liveTiming];
   const liveStatus = (
     <span
-      className={
-        futureLive
-          ? "inline-flex h-10 items-center gap-2 rounded-full border border-info/40 bg-info-soft px-3 text-sm font-medium text-info"
-          : "inline-flex h-10 items-center gap-2 rounded-full border border-accent/35 bg-accent-soft px-3 text-sm font-medium text-accent"
-      }
+      className={`inline-flex h-10 items-center gap-2 rounded-full border px-3 text-sm font-medium ${liveBadge.className}`}
       role="status"
-      aria-label={futureLive ? "Event is live and starts in the future" : "Event is live"}
+      aria-label={liveBadge.ariaLabel}
     >
       <span className="relative flex size-2.5" aria-hidden="true">
         <span
-          className={`absolute inline-flex size-full animate-ping rounded-full opacity-60 ${futureLive ? "bg-info" : "bg-accent"}`}
+          className={`absolute inline-flex size-full animate-ping rounded-full opacity-60 ${liveBadge.dotClassName}`}
         />
-        <span
-          className={`relative inline-flex size-2.5 rounded-full ${futureLive ? "bg-info" : "bg-accent"}`}
-        />
+        <span className={`relative inline-flex size-2.5 rounded-full ${liveBadge.dotClassName}`} />
       </span>
-      {futureLive ? "Live future event" : "Live event"}
+      {liveBadge.label}
     </span>
   );
 
@@ -207,7 +242,6 @@ export function EventStateControl({
                 <CalendarIcon size={16} />
                 Past event
               </span>
-              {endEventButton}
               {isOwner ? (
                 <Button
                   variant="secondary"
@@ -225,10 +259,7 @@ export function EventStateControl({
               ) : null}
             </>
           ) : live ? (
-            <>
-              {liveStatus}
-              {endEventButton}
-            </>
+            liveStatus
           ) : canPublish ? (
             <Button
               size="sm"
@@ -238,7 +269,7 @@ export function EventStateControl({
                 void applyState("live");
               }}
             >
-              Start now
+              Publish
             </Button>
           ) : null}
 
@@ -257,6 +288,47 @@ export function EventStateControl({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {canStartNow ? (
+                  <DropdownMenuItem
+                    disabled={pending !== undefined}
+                    onSelect={() => {
+                      void applyNow("start");
+                    }}
+                  >
+                    Start now
+                  </DropdownMenuItem>
+                ) : null}
+                {canEndNow ? (
+                  <DropdownMenuItem
+                    tone={endConfirmation === undefined ? "default" : "danger"}
+                    disabled={pending !== undefined}
+                    aria-label={
+                      endConfirmation === undefined
+                        ? "End now"
+                        : `Confirm end now, ${String(endConfirmation)} seconds remaining`
+                    }
+                    onSelect={(selectEvent) => {
+                      if (endConfirmation === undefined) {
+                        selectEvent.preventDefault();
+                        setError(undefined);
+                        setEndConfirmation(END_EVENT_CONFIRMATION_SECONDS);
+                        return;
+                      }
+
+                      setEndConfirmation(undefined);
+                      void applyNow("end");
+                    }}
+                  >
+                    {endConfirmation === undefined ? (
+                      "End now"
+                    ) : (
+                      <span aria-live="polite">
+                        Confirm end now · <span className="tabular-nums">{endConfirmation}s</span>
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                ) : null}
+                {hasImmediateAction ? <DropdownMenuSeparator /> : null}
                 {canOpenSettings ? (
                   <DropdownMenuItem
                     onSelect={() => {

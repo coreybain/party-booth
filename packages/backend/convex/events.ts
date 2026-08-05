@@ -8,6 +8,7 @@ import {
   isHostSettableEventState,
   isJoinableEventState,
   setActiveEventInputSchema,
+  setEventNowInputSchema,
   setEventStateInputSchema,
   updateEventInputSchema,
   type EventState,
@@ -17,9 +18,10 @@ import { serverEnv } from "@partybooth/env/server";
 import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
 import { writeAuditEvent, writeEventAudit } from "./lib/audit";
 import { ACCOUNT_DELETION_GRACE_MS } from "./lib/account_deletion";
+import { isAdminEmail } from "./lib/config";
 import { forbidden, invalidState, notFound } from "./lib/errors";
 import { ensureCodeIsFree, getActiveInviteVersion, mintInviteVersion } from "./lib/events";
 import {
@@ -29,6 +31,7 @@ import {
   requirePermission,
   requireUser,
   toPermissionActor,
+  type EventActor,
 } from "./lib/guards";
 import { parseInput } from "./lib/input";
 import { eventIsUsable } from "./lib/lock";
@@ -121,13 +124,13 @@ function toSummary(event: Doc<"events">, role: "owner" | "cohost" | "guest"): Ev
 /**
  * The role to use for a permission check that has no event in it.
  *
- * `platform.createEvent` is granted to `owner`, `cohost` and `guest` and gated
- * on `isOrganiser` — every signed-in human, in other words — and deliberately
- * **not** to `globalAdmin`, whose powers are a separate axis. So the platform
- * role of a user outside any event is `guest`, including for an admin who also
- * happens to have an organiser invitation.
+ * Event creation has no event membership from which to derive a role. Ordinary
+ * accounts use `guest` and must have an organiser invitation; an email on the
+ * global-admin allowlist uses `globalAdmin` and is exempt from that beta gate.
  */
-const PLATFORM_ROLE: Role = "guest";
+function platformRoleFor(user: Pick<Doc<"users">, "email">): Role {
+  return isAdminEmail(user.email) ? "globalAdmin" : "guest";
+}
 
 /* -------------------------------------------------------------------------- */
 /* Create                                                                     */
@@ -157,18 +160,22 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
 
-    // Private beta is invitation-only: the gate is the organiser flag, not the
-    // role. `isOrganiser` is set by verified-email matching against an accepted
-    // organiser invitation, and nothing else may set it.
+    // Private beta is invitation-only for ordinary accounts. `isOrganiser` is
+    // set by verified-email matching against an accepted organiser invitation;
+    // the configured global-admin allowlist is the only exception.
     //
     // `explainCan` rather than `requirePermission` for one reason: the contract
     // is still the only thing deciding, but "not available right now" is the
     // wrong sentence for "you have not been invited to the beta", and that is
     // the single most likely refusal an early user will see.
-    const decision = explainCan(toPermissionActor(user, PLATFORM_ROLE), "platform.createEvent", {
-      kind: "platform",
-      isOrganiser: user.isOrganiser,
-    });
+    const decision = explainCan(
+      toPermissionActor(user, platformRoleFor(user)),
+      "platform.createEvent",
+      {
+        kind: "platform",
+        isOrganiser: user.isOrganiser,
+      },
+    );
     if (!decision.allowed) {
       throw forbidden(
         decision.reason === "resourceState"
@@ -374,6 +381,142 @@ export const setPublicGallery = mutation({
 /* State machine                                                              */
 /* -------------------------------------------------------------------------- */
 
+interface StateTransitionOptions {
+  readonly actor: EventActor;
+  readonly to: EventState;
+  readonly now: number;
+  readonly reason?: string;
+  readonly schedulePatch?: {
+    readonly startsAt?: number;
+    readonly endsAt?: number | undefined;
+  };
+}
+
+async function transitionEventState(
+  ctx: MutationCtx,
+  { actor, to, now, reason, schedulePatch }: StateTransitionOptions,
+): Promise<{ state: EventState; reissuedCode?: string }> {
+  // A host on their way out of the product must not keep opening and closing
+  // parties. `requireEventActor` resolves through `requireUser`, deliberately,
+  // so this is checked here or not at all — the same shape as `moderate`.
+  if (actor.user.accountState !== "active") {
+    throw forbidden("This account cannot change the event right now.");
+  }
+
+  requirePermission(toPermissionActor(actor.user, actor.role), "event.changeState", {
+    kind: "event",
+    state: actor.event.state,
+  });
+
+  /*
+   * Archiving is a second, narrower capability.
+   *
+   * `event.changeState` moves an event between `live` and `paused`, which is a
+   * co-host's job during a party — PLAN.md's pressure valve. Ending the party
+   * is not: `event.archive` is owner and admin only.
+   */
+  if (to === "archived") {
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.archive", {
+      kind: "event",
+      state: actor.event.state,
+    });
+  }
+
+  // Belt and braces: the mutation validators already exclude it, and the
+  // contract's `HOST_SETTABLE_EVENT_STATES` is the reason why. Reaching
+  // `deletionScheduled` has to go through the deletion flow.
+  if (!isHostSettableEventState(to)) {
+    throw forbidden("Deleting an event is done from the deletion flow, not the state switch.");
+  }
+
+  const from = actor.event.state;
+  if (from === to && schedulePatch === undefined) return { state: to };
+
+  if (from !== to) {
+    try {
+      eventStateMachine.assertTransition(from, to);
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) throw invalidState(error.message);
+      throw error;
+    }
+  }
+
+  await ctx.db.patch(actor.event._id, {
+    state: to,
+    ...schedulePatch,
+    ...(to === "archived" ? { archivedAt: now } : {}),
+    updatedAt: now,
+  });
+
+  if (schedulePatch !== undefined) {
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventUpdated,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      metadata: { fields: ["schedule"] },
+      now,
+    });
+  }
+
+  // Codes are unique among *joinable* events, so archiving frees one
+  // implicitly. Coming back the other way is therefore the one transition
+  // that can find its own code already taken — and the fix is a *new* invite
+  // version, not an edit to the old row, which memberships point at.
+  let reissuedCode: string | undefined;
+  let reissuedVersion: number | undefined;
+  if (!isJoinableEventState(from) && isJoinableEventState(to)) {
+    const fresh = await ctx.db.get(actor.event._id);
+    const reissued = fresh
+      ? await ensureCodeIsFree(ctx, fresh, {
+          now,
+          actorUserId: actor.user._id,
+          ...(reason === undefined ? {} : { reason }),
+        })
+      : undefined;
+    reissuedCode = reissued?.reissuedCode;
+    reissuedVersion = reissued?.version;
+  }
+
+  if (from !== to) {
+    await writeEventAudit(ctx, {
+      action: AUDIT_ACTIONS.eventStateChanged,
+      event: actor.event,
+      actor: { user: actor.user, role: actor.role },
+      reason,
+      metadata: {
+        from,
+        to,
+        ...(reissuedCode === undefined
+          ? {}
+          : { codeReissued: true, inviteVersion: reissuedVersion }),
+      },
+      now,
+    });
+  }
+
+  /*
+   * "Event opened / closed" — PLAN.md's second push trigger. Deriving it from
+   * the transition pair stops draft → scheduled from notifying guests and
+   * makes paused → live an opening. Notification failure cannot fail the state
+   * change; see `lib/notifications.ts`.
+   */
+  const opened = to === "live" && from !== "live";
+  const closed = from === "live" && to !== "live";
+  if (opened || closed) {
+    const fresh = await ctx.db.get(actor.event._id);
+    if (fresh) {
+      await notifyEventLifecycle(ctx, {
+        event: fresh,
+        transition: opened ? "opened" : "closed",
+        actorUserId: actor.user._id,
+        now,
+      });
+    }
+  }
+
+  return { state: to, ...(reissuedCode === undefined ? {} : { reissuedCode }) };
+}
+
 export const setState = mutation({
   args: {
     eventId: v.id("events"),
@@ -394,126 +537,77 @@ export const setState = mutation({
   handler: async (ctx, args) => {
     const actor = await requireEventActor(ctx, args.eventId);
     const input = parseInput(setEventStateInputSchema, args);
+    return await transitionEventState(ctx, {
+      actor,
+      to: input.state,
+      now: Date.now(),
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    });
+  },
+});
 
-    // A host on their way out of the product must not keep opening and closing
-    // parties. `requireEventActor` resolves through `requireUser`, deliberately,
-    // so this is checked here or not at all — the same shape as `moderate`.
-    if (actor.user.accountState !== "active") {
-      throw forbidden("This account cannot change the event right now.");
-    }
+/**
+ * Stamp a schedule boundary and change the live state in one transaction.
+ *
+ * This is intentionally different from Publish/Unpublish: those state-only
+ * controls respect the schedule the host configured, while these actions mean
+ * "the party starts/ends at this exact server time".
+ */
+export const setNow = mutation({
+  args: {
+    eventId: v.id("events"),
+    action: v.union(v.literal("start"), v.literal("end")),
+  },
+  returns: v.object({
+    state: eventState,
+    reissuedCode: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const actor = await requireEventActor(ctx, args.eventId);
+    const input = parseInput(setEventNowInputSchema, args);
 
-    requirePermission(toPermissionActor(actor.user, actor.role), "event.changeState", {
+    requirePermission(toPermissionActor(actor.user, actor.role), "event.updateSchedule", {
       kind: "event",
       state: actor.event.state,
     });
 
-    /*
-     * Archiving is a second, narrower capability.
-     *
-     * `event.changeState` moves an event between `live` and `paused`, which is a
-     * co-host's job during a party — PLAN.md's pressure valve. Ending the party
-     * is not: `event.archive` is owner and admin only, and this is the line that
-     * makes the distinction real. Before Sprint 5, `event.archive` existed in the
-     * matrix and was checked by nothing, so `setState` accepted `archived` from
-     * anybody who could reach `changeState` at all.
-     */
-    if (input.state === "archived") {
-      requirePermission(toPermissionActor(actor.user, actor.role), "event.archive", {
-        kind: "event",
-        state: actor.event.state,
+    const now = Date.now();
+    if (input.action === "start") {
+      // A live event can still be published ahead of its scheduled start. In
+      // that case Start now has real work to do: stamp the boundary without a
+      // redundant state transition. Once the start has passed it is a no-op.
+      if (actor.event.state === "live" && actor.event.startsAt <= now) {
+        return { state: actor.event.state };
+      }
+
+      return await transitionEventState(ctx, {
+        actor,
+        to: "live",
+        now,
+        schedulePatch: {
+          startsAt: now,
+          // A previously-ended event needs an open-ended schedule when it is
+          // restarted; a future end remains the host's intended boundary.
+          ...(actor.event.endsAt !== undefined && actor.event.endsAt <= now
+            ? { endsAt: undefined }
+            : {}),
+        },
       });
     }
 
-    // Belt and braces: the argument validator already excludes it, and the
-    // contract's `HOST_SETTABLE_EVENT_STATES` is the reason why. Reaching
-    // `deletionScheduled` has to go through the deletion path so a
-    // `deletionJobs` row and its restore window come with it.
-    if (!isHostSettableEventState(input.state)) {
-      throw forbidden("Deleting an event is done from the deletion flow, not the state switch.");
-    }
+    if (actor.event.state === "paused") return { state: actor.event.state };
 
-    const from = actor.event.state;
-    const to = input.state;
-
-    if (from === to) return { state: to };
-
-    try {
-      eventStateMachine.assertTransition(from, to);
-    } catch (error) {
-      if (error instanceof InvalidTransitionError) throw invalidState(error.message);
-      throw error;
-    }
-
-    const now = Date.now();
-    await ctx.db.patch(actor.event._id, {
-      state: to,
-      ...(to === "archived" ? { archivedAt: now } : {}),
-      updatedAt: now,
-    });
-
-    // Codes are unique among *joinable* events, so archiving frees one
-    // implicitly. Coming back the other way is therefore the one transition
-    // that can find its own code already taken — and the fix is a *new* invite
-    // version, not an edit to the old row, which memberships point at.
-    let reissuedCode: string | undefined;
-    let reissuedVersion: number | undefined;
-    if (!isJoinableEventState(from) && isJoinableEventState(to)) {
-      const fresh = await ctx.db.get(actor.event._id);
-      const reissued = fresh
-        ? await ensureCodeIsFree(ctx, fresh, {
-            now,
-            actorUserId: actor.user._id,
-            ...(input.reason === undefined ? {} : { reason: input.reason }),
-          })
-        : undefined;
-      reissuedCode = reissued?.reissuedCode;
-      reissuedVersion = reissued?.version;
-    }
-
-    await writeEventAudit(ctx, {
-      action: AUDIT_ACTIONS.eventStateChanged,
-      event: actor.event,
-      actor: { user: actor.user, role: actor.role },
-      reason: input.reason,
-      metadata: {
-        from,
-        to,
-        ...(reissuedCode === undefined
-          ? {}
-          : { codeReissued: true, inviteVersion: reissuedVersion }),
-      },
+    return await transitionEventState(ctx, {
+      actor,
+      to: "paused",
       now,
+      schedulePatch: {
+        // A live state can be published ahead of its schedule. Keep the strict
+        // endsAt > startsAt invariant when ending that unusual event now.
+        ...(actor.event.startsAt >= now ? { startsAt: now - 1 } : {}),
+        endsAt: now,
+      },
     });
-
-    /*
-     * "Event opened / closed" — PLAN.md's second push trigger.
-     *
-     * Opening is the transition **into** `live`, and closing is the transition
-     * out of it into anything that is not `live`. Deriving it from the pair
-     * rather than from the destination alone is what stops `draft → scheduled`
-     * (an organiser setting up a party nobody has been told about yet) buzzing
-     * forty phones, and what makes `paused → live` an opening even though the
-     * party has been "open" since Tuesday.
-     *
-     * Never the actor's own phone, and debounced per member, so a host who
-     * fumbles pause/resume does not send two pings. It cannot fail the state
-     * change — see `lib/notifications.ts`.
-     */
-    const opened = to === "live" && from !== "live";
-    const closed = from === "live" && to !== "live";
-    if (opened || closed) {
-      const fresh = await ctx.db.get(actor.event._id);
-      if (fresh) {
-        await notifyEventLifecycle(ctx, {
-          event: fresh,
-          transition: opened ? "opened" : "closed",
-          actorUserId: actor.user._id,
-          now,
-        });
-      }
-    }
-
-    return { state: to, ...(reissuedCode === undefined ? {} : { reissuedCode }) };
   },
 });
 

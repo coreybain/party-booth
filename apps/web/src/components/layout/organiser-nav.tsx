@@ -1,16 +1,21 @@
 "use client";
 
+import { useConvexAuth, useQuery } from "convex/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ComponentType, SVGProps } from "react";
 
 import { HomeIcon, MediaIcon, SettingsIcon, SlideshowIcon } from "@/components/icons";
+import { isBackendConfigured } from "@/lib/backend";
 import { cn } from "@/lib/cn";
+import { backendApi } from "@/lib/convex-api";
 
 interface NavItem {
   readonly href: string;
   readonly label: string;
   readonly Icon: ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
+  /** Only useful when the current event grants owner or co-host powers. */
+  readonly hostOnly?: boolean;
   /** Extra path prefixes this tab owns, beyond `href` itself. */
   readonly owns?: readonly string[];
 }
@@ -25,10 +30,20 @@ interface NavItem {
  */
 export const ORGANISER_NAV: readonly NavItem[] = [
   { href: "/dashboard", label: "Home", Icon: HomeIcon, owns: ["/events"] },
-  { href: "/slideshow", label: "Slideshow", Icon: SlideshowIcon },
-  { href: "/media", label: "Moderate", Icon: MediaIcon },
+  { href: "/slideshow", label: "Slideshow", Icon: SlideshowIcon, hostOnly: true },
+  { href: "/media", label: "Moderate", Icon: MediaIcon, hostOnly: true },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
+
+/** The event id owned by this route, excluding collection and creation pages. */
+export function eventIdFromOrganiserPath(pathname: string): string | undefined {
+  const [, section, eventId] = pathname.split("/");
+  return section === "events" && eventId !== undefined && eventId !== "new" ? eventId : undefined;
+}
+
+export function visibleOrganiserNavItems(showHostOnly: boolean): readonly NavItem[] {
+  return showHostOnly ? ORGANISER_NAV : ORGANISER_NAV.filter((item) => item.hostOnly !== true);
+}
 
 /** Does this tab own the current path? */
 export function isNavItemActive(item: NavItem, pathname: string): boolean {
@@ -48,10 +63,53 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
 export function OrganiserNav({ className }: { readonly className?: string }) {
   const pathname = usePathname();
 
+  if (!isBackendConfigured) {
+    return <OrganiserNavView pathname={pathname} className={className} showHostOnly />;
+  }
+
+  return <OrganiserNavLive pathname={pathname} className={className} />;
+}
+
+function OrganiserNavLive({
+  pathname,
+  className,
+}: {
+  readonly pathname: string;
+  readonly className?: string;
+}) {
+  const eventId = eventIdFromOrganiserPath(pathname);
+  const convexAuth = useConvexAuth();
+  const currentUser = useQuery(backendApi.users.currentUser, {});
+  const home = useQuery(
+    backendApi.events.home,
+    eventId !== undefined && convexAuth.isAuthenticated && currentUser != null
+      ? { eventId }
+      : "skip",
+  );
+
+  // On a specific event, host tools stay hidden until the backend positively
+  // confirms owner/co-host access. Everywhere else they remain account-level
+  // destinations for organisers who may host another party.
+  const showHostOnly = eventId === undefined || home?.isHost === true;
+
+  return <OrganiserNavView pathname={pathname} className={className} showHostOnly={showHostOnly} />;
+}
+
+function OrganiserNavView({
+  pathname,
+  className,
+  showHostOnly,
+}: {
+  readonly pathname: string;
+  readonly className?: string;
+  readonly showHostOnly: boolean;
+}) {
+  const items = visibleOrganiserNavItems(showHostOnly);
+
   return (
     <nav aria-label="Organiser sections" className={cn("flex justify-center", className)}>
       <ul className="flex items-center gap-1 rounded-full border border-line bg-surface p-1">
-        {ORGANISER_NAV.map((item) => {
+        {items.map((item) => {
           const { href, label, Icon } = item;
           const active = isNavItemActive(item, pathname);
           return (

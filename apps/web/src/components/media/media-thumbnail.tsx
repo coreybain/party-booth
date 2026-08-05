@@ -13,6 +13,21 @@ export interface MediaThumbnailProps {
 }
 
 /**
+ * Keep width ownership in one place.
+ *
+ * `cn` intentionally does not merge conflicting Tailwind utilities. Baking
+ * `w-full` into the base styles made a caller's compact `w-20` lose to CSS
+ * stylesheet order, so the thumbnail filled the row and crushed its metadata.
+ */
+export function thumbnailBoxClassName(className: string | undefined): string {
+  return cn(
+    "relative aspect-square shrink-0 overflow-hidden rounded-xl",
+    "border border-line bg-raised",
+    className ?? "w-20",
+  );
+}
+
+/**
  * A square thumbnail for one media item.
  *
  * ## Why a plain `<img>` and not `next/image`
@@ -39,13 +54,7 @@ export function MediaThumbnail({ url, alt, className, placeholder = "…" }: Med
   const usable = url !== undefined && !broken;
 
   return (
-    <div
-      className={cn(
-        "relative aspect-square w-full shrink-0 overflow-hidden rounded-xl",
-        "border border-line bg-raised",
-        className,
-      )}
-    >
+    <div className={thumbnailBoxClassName(className)}>
       {usable ? (
         // eslint-disable-next-line @next/next/no-img-element -- signed private URLs must not be proxied or cached by the image optimizer; see the note above.
         <img
