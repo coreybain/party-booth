@@ -1,7 +1,10 @@
+"use client";
+
 import { CalendarIcon } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
-import { EVENT_STATE_COPY, guestsCanUpload } from "@/lib/event-view";
+import { EVENT_STATE_COPY, guestsCanUpload, uploadAvailabilityDescription } from "@/lib/event-view";
+import { useNow } from "@/lib/use-now";
 import type { JoinPreview } from "@/lib/convex-api";
 
 /**
@@ -23,8 +26,9 @@ export function EventPreviewCard({
   readonly preview: JoinPreview;
   readonly className?: string;
 }) {
+  const now = useNow();
   const accent = preview.accentColor;
-  const uploadsOpen = preview.kind === "joinable" && guestsCanUpload(preview.state);
+  const uploadsOpen = preview.kind === "joinable" && guestsCanUpload(preview, now);
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -57,7 +61,7 @@ export function EventPreviewCard({
           {preview.kind === "past"
             ? "Past event — new guests and uploads are closed."
             : preview.state === "scheduled"
-              ? "Not started yet — join now and you'll be ready when the host opens it."
+              ? uploadAvailabilityDescription(preview, now)
               : EVENT_STATE_COPY[preview.state].description}
         </p>
       )}

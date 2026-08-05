@@ -324,6 +324,23 @@ describe("can() — media gates", () => {
     }
   });
 
+  it("honours a schedule-aware upload result supplied by the grant policy", () => {
+    expect(
+      can(
+        "guest",
+        "media.upload",
+        media({ state: "processing", event: { state: "scheduled", uploadsOpen: true } }),
+      ),
+    ).toBe(true);
+    expect(
+      can(
+        "guest",
+        "media.upload",
+        media({ state: "processing", event: { state: "live", uploadsOpen: false } }),
+      ),
+    ).toBe(false);
+  });
+
   it("treats deleted media as non-existent for every action", () => {
     for (const role of ROLES) {
       for (const action of [

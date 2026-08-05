@@ -112,7 +112,12 @@ export function useCapture(event: EventSummary | null): CaptureController {
       // What this call is actually for is the event state and the host's library
       // switch, both of which can refuse before a single pixel is decoded.
       const upfront = checkGrantEligibility({
-        event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
+        event: {
+          state: event.state,
+          allowLibraryImport: event.allowLibraryImport,
+          ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+        },
+        now: Date.now(),
         mediaSource,
         file: { mediaType: "photo", byteSize: 1 },
       });
@@ -131,7 +136,12 @@ export function useCapture(event: EventSummary | null): CaptureController {
         });
 
         const sized = checkGrantEligibility({
-          event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
+          event: {
+            state: event.state,
+            allowLibraryImport: event.allowLibraryImport,
+            ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+          },
+          now: Date.now(),
           mediaSource,
           file: {
             mediaType: draft.mediaType,
@@ -174,7 +184,12 @@ export function useCapture(event: EventSummary | null): CaptureController {
       // Before the file is moved and hashed — a paused party is worth saying at
       // once, and a 200 MB SHA-256 is not free.
       const upfront = checkGrantEligibility({
-        event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
+        event: {
+          state: event.state,
+          allowLibraryImport: event.allowLibraryImport,
+          ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+        },
+        now: Date.now(),
         mediaSource: "capture",
         file: {
           mediaType: "video",
@@ -215,7 +230,12 @@ export function useCapture(event: EventSummary | null): CaptureController {
        * gigabyte of it on party wifi.
        */
       const sized = checkGrantEligibility({
-        event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
+        event: {
+          state: event.state,
+          allowLibraryImport: event.allowLibraryImport,
+          ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+        },
+        now: Date.now(),
         mediaSource: "capture",
         file: {
           mediaType: "video",

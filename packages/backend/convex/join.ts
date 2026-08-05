@@ -483,6 +483,7 @@ const previewValidator = v.union(
     state: eventState,
     startsAt: v.number(),
     endsAt: v.optional(v.number()),
+    uploadStartsAt: v.optional(v.number()),
     timeZone: v.string(),
     accentColor: v.optional(v.string()),
     coverKey: v.optional(v.string()),
@@ -500,6 +501,7 @@ interface PreviewPayload {
   state: Doc<"events">["state"];
   startsAt: number;
   endsAt?: number;
+  uploadStartsAt?: number;
   timeZone: string;
   accentColor?: string;
   coverKey?: string;
@@ -530,6 +532,7 @@ async function renderPreview(
     state: event.state,
     startsAt: event.startsAt,
     ...(event.endsAt === undefined ? {} : { endsAt: event.endsAt }),
+    ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
     timeZone: event.timeZone,
     ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
     ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),

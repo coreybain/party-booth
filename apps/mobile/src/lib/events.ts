@@ -12,6 +12,7 @@
 
 import {
   acceptsUploads,
+  eventAcceptsUploads,
   isJoinableEventState,
   isViewableEventState,
   joinWindowStatus,
@@ -89,6 +90,8 @@ export function describeEventState(state: EventState): EventStateDescription {
 export interface EventPresentationInput {
   readonly state: EventState;
   readonly endsAt?: number | undefined;
+  readonly uploadStartsAt?: number | undefined;
+  readonly timeZone?: string | undefined;
 }
 
 /** The schedule has a definite end and that moment has passed. */
@@ -113,6 +116,27 @@ export function describeEvent(event: EventPresentationInput, now: number): Event
       tone: "closed",
       acceptsUploads: false,
       viewable: true,
+    };
+  }
+  if (event.state === "scheduled" && event.uploadStartsAt !== undefined) {
+    if (eventAcceptsUploads(event, now)) {
+      return {
+        label: "Photos open",
+        detail: "Pre-event uploads are open — photos and video go straight to the host.",
+        tone: "live",
+        acceptsUploads: true,
+        viewable: false,
+      };
+    }
+    const opening = formatEventDateTime(event.uploadStartsAt, event.timeZone ?? "UTC");
+    return {
+      label: "Not open yet",
+      detail: `You're in. The camera unlocks ${opening.text}${
+        opening.inEventTimeZone ? "" : " (your time)"
+      }.`,
+      tone: "waiting",
+      acceptsUploads: false,
+      viewable: false,
     };
   }
   return describeEventState(event.state);

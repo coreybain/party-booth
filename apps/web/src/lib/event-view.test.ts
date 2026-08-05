@@ -82,6 +82,13 @@ describe("capability helpers", () => {
     expect(uploadable).toEqual(["live"]);
   });
 
+  it("opens a scheduled event at its configured pre-event upload time", () => {
+    const now = Date.UTC(2026, 7, 5, 12, 0);
+    const event = { state: "scheduled" as const, uploadStartsAt: now };
+    expect(guestsCanUpload(event, now - 1)).toBe(false);
+    expect(guestsCanUpload(event, now)).toBe(true);
+  });
+
   it("keeps the gallery visible after the party", () => {
     const viewable = EVENT_STATES.filter((state: EventState) => galleryIsVisible(state));
     expect(viewable).toEqual(["live", "paused", "archived"]);
@@ -94,6 +101,16 @@ describe("eventStatusLine", () => {
   it("tells a scheduled host that the code already works", () => {
     const line = eventStatusLine({ state: "scheduled", startsAt: now + 3 * 86_400_000 }, now);
     expect(line).toContain("guests can join now");
+  });
+
+  it("tells the host when pre-event uploads open and when they are open", () => {
+    const event = {
+      state: "scheduled" as const,
+      startsAt: now + 3 * 3_600_000,
+      uploadStartsAt: now + 3_600_000,
+    };
+    expect(eventStatusLine(event, now)).toContain("uploads open in 1 hour");
+    expect(eventStatusLine(event, now + 3_600_000)).toContain("Pre-event uploads are open");
   });
 
   it("warns when a live event has run past its end time", () => {
@@ -175,10 +192,7 @@ describe("liveEventTiming", () => {
 
   it("warns during the final two hours and escalates during the final 30 minutes", () => {
     expect(
-      liveEventTiming(
-        { state: "live", startsAt: now - 1, endsAt: now + LIVE_ENDING_SOON_MS },
-        now,
-      ),
+      liveEventTiming({ state: "live", startsAt: now - 1, endsAt: now + LIVE_ENDING_SOON_MS }, now),
     ).toBe("soon");
     expect(
       liveEventTiming(

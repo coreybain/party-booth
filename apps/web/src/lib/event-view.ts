@@ -8,6 +8,7 @@
 
 import {
   acceptsUploads,
+  eventAcceptsUploads,
   eventStateMachine,
   HOST_SETTABLE_EVENT_STATES,
   isEditableEventState,
@@ -94,6 +95,7 @@ export interface EventStatusInput {
   readonly state: EventState;
   readonly startsAt: number;
   readonly endsAt?: number | undefined;
+  readonly uploadStartsAt?: number | undefined;
 }
 
 export const END_EVENT_CONFIRMATION_SECONDS = 5;
@@ -162,15 +164,22 @@ export function eventHasEnded(event: Pick<EventStatusInput, "endsAt">, now: numb
  * The single sentence at the top of the event home.
  *
  * The distinction that matters to a host on the night is between "guests can
- * get in" and "guests can upload" — `scheduled` is the first without the
- * second, and it is the state a well-organised host is in when the doors open.
+ * get in" and "guests can upload" — scheduled events normally offer only the
+ * first, unless the host configured a pre-event upload opening.
  */
 export function eventStatusLine(event: EventStatusInput, now: number): string {
   const copy = EVENT_STATE_COPY[event.state];
 
   if (event.state === "scheduled") {
+    if (eventAcceptsUploads(event, now)) {
+      return "Pre-event uploads are open — guests can add photos and video now.";
+    }
     return now < event.startsAt
-      ? `Starts ${formatRelative(event.startsAt, now)} — guests can join now, uploads open when you go live.`
+      ? `Starts ${formatRelative(event.startsAt, now)} — guests can join now, ${
+          event.uploadStartsAt === undefined
+            ? "uploads open when you go live"
+            : `uploads open ${formatRelative(event.uploadStartsAt, now)}`
+        }.`
       : copy.description;
   }
   if (event.state === "live" && eventHasEnded(event, now)) {
@@ -184,8 +193,26 @@ export function guestsCanJoin(state: EventState): boolean {
   return isJoinableEventState(state);
 }
 
-export function guestsCanUpload(state: EventState): boolean {
-  return acceptsUploads(state);
+export function guestsCanUpload(
+  event: EventState | Pick<EventStatusInput, "state" | "uploadStartsAt">,
+  now = 0,
+): boolean {
+  if (typeof event === "string") return acceptsUploads(event);
+  return eventAcceptsUploads(event, now);
+}
+
+/** One schedule-aware sentence for a closed guest capture panel. */
+export function uploadAvailabilityDescription(
+  event: Pick<EventStatusInput, "state" | "uploadStartsAt">,
+  now: number,
+): string {
+  if (event.state === "scheduled" && event.uploadStartsAt !== undefined) {
+    if (eventAcceptsUploads(event, now)) {
+      return "Pre-event uploads are open — you can add photos and video now.";
+    }
+    return `You're in. Uploads open ${formatRelative(event.uploadStartsAt, now)}.`;
+  }
+  return EVENT_STATE_COPY[event.state].description;
 }
 
 export function galleryIsVisible(state: EventState): boolean {

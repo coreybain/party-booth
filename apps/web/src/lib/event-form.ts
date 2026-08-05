@@ -28,8 +28,12 @@ export interface EventFormValues {
   /** `#rrggbb`, or empty for the app's own accent. */
   readonly accentColor: string;
   readonly allowLibraryImport: boolean;
-  /** Create only. `scheduled` makes the code and QR work immediately. */
-  readonly initialState: "draft" | "scheduled";
+  /** Create only. Both scheduled modes make the code and QR work immediately. */
+  readonly initialState: "draft" | "scheduled" | "scheduledUploads";
+  /** Create only. Preset or custom opening for the pre-event upload mode. */
+  readonly preUploadTiming: "oneHour" | "fourHours" | "sixHours" | "custom";
+  /** `datetime-local` value used when `preUploadTiming` is `custom`. */
+  readonly uploadStartsAtLocal: string;
 }
 
 export type EventFormField = keyof EventFormValues;
@@ -48,12 +52,13 @@ export interface CreateEventInput {
   accentColor?: string;
   allowLibraryImport: boolean;
   initialState: "draft" | "scheduled";
+  uploadStartsAt?: number;
 }
 
 /** Only the fields that actually changed, so a co-host's schedule-only edit is not refused for the settings it did not send. */
 export type UpdateEventInput = {
   eventId: string;
-} & Partial<Omit<CreateEventInput, "initialState">>;
+} & Partial<Omit<CreateEventInput, "initialState" | "uploadStartsAt">>;
 
 /* -------------------------------------------------------------------------- */
 /* Defaults                                                                   */
@@ -84,6 +89,8 @@ export function defaultEventFormValues(now: number, timeZone: string): EventForm
     accentColor: "",
     allowLibraryImport: true,
     initialState: "scheduled",
+    preUploadTiming: "oneHour",
+    uploadStartsAtLocal: timestampToZonedInput(startsAt - 60 * 60 * 1000, timeZone),
   };
 }
 
@@ -101,7 +108,17 @@ export function eventToFormValues(event: EventSummary): EventFormValues {
     moderationMode: event.moderationMode === "automatic" ? "automatic" : "manual",
     accentColor: event.accentColor ?? "",
     allowLibraryImport: event.allowLibraryImport,
-    initialState: event.state === "draft" ? "draft" : "scheduled",
+    initialState:
+      event.state === "draft"
+        ? "draft"
+        : event.uploadStartsAt === undefined
+          ? "scheduled"
+          : "scheduledUploads",
+    preUploadTiming: "custom",
+    uploadStartsAtLocal: timestampToZonedInput(
+      event.uploadStartsAt ?? event.startsAt - 60 * 60 * 1000,
+      event.timeZone,
+    ),
   };
 }
 
@@ -130,6 +147,8 @@ function fieldFor(path: readonly PropertyKey[]): EventFormField {
       return "allowLibraryImport";
     case "initialState":
       return "initialState";
+    case "uploadStartsAt":
+      return "uploadStartsAtLocal";
     default:
       return "name";
   }
@@ -176,9 +195,38 @@ function collect(issues: readonly { path: readonly PropertyKey[]; message: strin
   return errors;
 }
 
+const PRE_UPLOAD_OFFSETS = {
+  oneHour: 60 * 60 * 1000,
+  fourHours: 4 * 60 * 60 * 1000,
+  sixHours: 6 * 60 * 60 * 1000,
+} as const;
+
+/** Resolve the create-only pre-event selector against the event schedule. */
+export function eventFormUploadStartsAt(values: EventFormValues): number | undefined {
+  if (values.initialState !== "scheduledUploads") return undefined;
+  if (values.preUploadTiming === "custom") {
+    return zonedInputToTimestamp(values.uploadStartsAtLocal, values.timeZone);
+  }
+  const startsAt = zonedInputToTimestamp(values.startsAtLocal, values.timeZone);
+  if (startsAt === undefined) return undefined;
+  return startsAt - PRE_UPLOAD_OFFSETS[values.preUploadTiming];
+}
+
 export function buildCreateEventInput(values: EventFormValues): FormResult<CreateEventInput> {
   const schedule = buildSchedule(values);
   if (!schedule.ok) return schedule;
+
+  const uploadStartsAt = eventFormUploadStartsAt(values);
+  if (
+    values.initialState === "scheduledUploads" &&
+    values.preUploadTiming === "custom" &&
+    uploadStartsAt === undefined
+  ) {
+    return {
+      ok: false,
+      errors: { uploadStartsAtLocal: "Pick when guests can start uploading." },
+    };
+  }
 
   const parsed = createEventInputSchema.safeParse({
     name: values.name,
@@ -186,7 +234,8 @@ export function buildCreateEventInput(values: EventFormValues): FormResult<Creat
     moderationMode: values.moderationMode,
     ...(values.accentColor === "" ? {} : { accentColor: values.accentColor }),
     allowLibraryImport: values.allowLibraryImport,
-    initialState: values.initialState,
+    initialState: values.initialState === "draft" ? "draft" : "scheduled",
+    ...(uploadStartsAt === undefined ? {} : { uploadStartsAt }),
   });
   if (!parsed.success) return { ok: false, errors: collect(parsed.error.issues) };
 
@@ -200,6 +249,7 @@ export function buildCreateEventInput(values: EventFormValues): FormResult<Creat
       ...(data.accentColor === undefined ? {} : { accentColor: data.accentColor }),
       allowLibraryImport: data.allowLibraryImport,
       initialState: data.initialState,
+      ...(data.uploadStartsAt === undefined ? {} : { uploadStartsAt: data.uploadStartsAt }),
     },
   };
 }

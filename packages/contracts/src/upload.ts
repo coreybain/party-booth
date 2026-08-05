@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { acceptsUploads, type EventState } from "./events";
+import { eventAcceptsUploads, type EventState } from "./events";
 import {
   isDerivativeRole,
   maxBytesForRole,
@@ -333,7 +333,7 @@ export function describesSameFile(a: CaptureFileFacts, b: CaptureFileFacts): boo
  * video is too long" beats telling them "no".
  */
 export const UPLOAD_REJECTION_REASONS = [
-  /** The event is not `live` — draft, scheduled, paused, archived or on its way out. */
+  /** The event is neither live nor inside an enabled scheduled pre-upload window. */
   "eventNotAcceptingUploads",
   /** `events.allowLibraryImport` is off and this came from the photo roll. */
   "libraryImportDisabled",
@@ -466,7 +466,13 @@ export function isPermanentRejection(reason: UploadRejectionReason): boolean {
 }
 
 export interface GrantEligibilityInput {
-  event: { state: EventState; allowLibraryImport: boolean };
+  event: {
+    state: EventState;
+    allowLibraryImport: boolean;
+    uploadStartsAt?: number | undefined;
+  };
+  /** Explicit for schedule-aware callers; omitted preserves the live-only legacy check. */
+  now?: number;
   mediaSource: MediaSource;
   file: MediaFileCandidate;
   /**
@@ -502,7 +508,7 @@ export type GrantEligibility =
  * ships is a media type that gets its validation written twice.
  */
 export function checkGrantEligibility(input: GrantEligibilityInput): GrantEligibility {
-  if (!acceptsUploads(input.event.state)) {
+  if (!eventAcceptsUploads(input.event, input.now ?? 0)) {
     return {
       ok: false,
       reason: "eventNotAcceptingUploads",

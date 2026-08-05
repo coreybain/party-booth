@@ -229,6 +229,23 @@ describe("media.requestUploadGrant", () => {
     },
   );
 
+  it("opens scheduled uploads at the configured pre-event time", async () => {
+    const open = await fixture({ state: "scheduled", uploadStartsAt: Date.now() - HOUR });
+    const granted = await open.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, grantArgs(open.eventId));
+    expect(granted.outcome).toBe("granted");
+
+    const waiting = await fixture({ state: "scheduled", uploadStartsAt: Date.now() + HOUR });
+    const rejected = await waiting.t
+      .withIdentity({ subject: "guest" })
+      .mutation(api.media.requestUploadGrant, grantArgs(waiting.eventId));
+    expect(rejected).toMatchObject({
+      outcome: "rejected",
+      reason: "eventNotAcceptingUploads",
+    });
+  });
+
   /* ---- size caps ---- */
 
   it("rejects a photo over the 20 MB cap and accepts one exactly on it", async () => {

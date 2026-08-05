@@ -22,6 +22,7 @@ import {
   galleryIsVisible,
   guestsCanUpload,
 } from "@/lib/event-view";
+import { useNow } from "@/lib/use-now";
 
 /**
  * The event home: the screen a host has open on their phone all night.
@@ -56,6 +57,8 @@ export function EventHome({
 }
 
 function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly nowMs: number }) {
+  const tickingNow = useNow();
+  const now = tickingNow === 0 ? nowMs : tickingNow;
   const home = useQuery(backendApi.events.home, { eventId });
   const setActiveEvent = useMutation(backendApi.events.setActiveEvent);
 
@@ -81,10 +84,10 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
     <>
       <PageHeader
         title={event.name}
-        description={eventStatusLine(event, nowMs)}
+        description={eventStatusLine(event, now)}
         actions={
           isHost ? (
-            <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={nowMs} />
+            <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={now} />
           ) : isGuest ? (
             <GuestEventMenu showGallery={galleryIsVisible(event.state)} />
           ) : undefined
@@ -125,7 +128,12 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         ) : null}
 
         {isGuest ? (
-          <GuestCapture event={event} uploadsOpen={guestsCanUpload(event.state)} layout="console" />
+          <GuestCapture
+            event={event}
+            uploadsOpen={guestsCanUpload(event, now)}
+            now={now}
+            layout="console"
+          />
         ) : null}
 
         {/*

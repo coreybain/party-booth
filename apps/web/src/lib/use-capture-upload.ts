@@ -94,6 +94,7 @@ export interface CaptureEventContext {
   readonly eventId: string;
   readonly state: EventState;
   readonly allowLibraryImport: boolean;
+  readonly uploadStartsAt?: number;
 }
 
 export interface CaptureController {
@@ -167,7 +168,12 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
           : await preparePhoto(file, captureId, source);
 
         const eligibility = checkGrantEligibility({
-          event: { state: event.state, allowLibraryImport: event.allowLibraryImport },
+          event: {
+            state: event.state,
+            allowLibraryImport: event.allowLibraryImport,
+            ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+          },
+          now: Date.now(),
           mediaSource: source,
           file: {
             mediaType: capture.mediaType,
@@ -198,7 +204,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         setPreparing(false);
       }
     },
-    [event.allowLibraryImport, event.state],
+    [event.allowLibraryImport, event.state, event.uploadStartsAt],
   );
 
   /* ---------------------------------------------------------------------- */

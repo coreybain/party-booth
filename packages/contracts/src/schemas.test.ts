@@ -97,6 +97,22 @@ describe("createEventInputSchema", () => {
   it("refuses a blank name", () => {
     expect(createEventInputSchema.safeParse({ ...base, name: "   " }).success).toBe(false);
   });
+
+  it("accepts a scheduled pre-event upload time only before the event", () => {
+    expect(
+      createEventInputSchema.safeParse({ ...base, uploadStartsAt: 1_799_996_400_000 }).success,
+    ).toBe(true);
+    expect(
+      createEventInputSchema.safeParse({ ...base, uploadStartsAt: 1_800_000_000_000 }).success,
+    ).toBe(false);
+    expect(
+      createEventInputSchema.safeParse({
+        ...base,
+        initialState: "draft",
+        uploadStartsAt: 1_799_996_400_000,
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("joinEventInputSchema", () => {

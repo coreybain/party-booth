@@ -111,6 +111,18 @@ describe("EAS project linkage", () => {
 });
 
 describe("managed iOS scene lifecycle configuration", () => {
+  it("targets iPhone as the only supported native platform", () => {
+    const config = resolveExpoConfig({
+      projectRoot: "/tmp/partybooth",
+      staticConfigPath: null,
+      packageJsonPath: "/tmp/partybooth/package.json",
+      config: { name: "PartyBooth", slug: "partybooth" },
+    }) as ExportedConfig;
+
+    expect(config.platforms).toEqual(["ios"]);
+    expect(config.ios?.supportsTablet).toBe(false);
+  });
+
   it("moves React Native startup out of Expo's SDK 57 AppDelegate block", () => {
     const generatedAppDelegate = `class AppDelegate {
 #if os(iOS) || os(tvOS)

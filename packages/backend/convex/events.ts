@@ -67,6 +67,7 @@ const eventSummaryFields = {
   moderationMode,
   startsAt: v.number(),
   endsAt: v.optional(v.number()),
+  uploadStartsAt: v.optional(v.number()),
   timeZone: v.string(),
   accentColor: v.optional(v.string()),
   coverKey: v.optional(v.string()),
@@ -92,6 +93,7 @@ type EventSummary = {
   moderationMode: Doc<"events">["moderationMode"];
   startsAt: number;
   endsAt?: number;
+  uploadStartsAt?: number;
   timeZone: string;
   accentColor?: string;
   coverKey?: string;
@@ -110,6 +112,7 @@ function toSummary(event: Doc<"events">, role: "owner" | "cohost" | "guest"): Ev
     moderationMode: event.moderationMode,
     startsAt: event.startsAt,
     ...(event.endsAt === undefined ? {} : { endsAt: event.endsAt }),
+    ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
     timeZone: event.timeZone,
     ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
     ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
@@ -150,6 +153,7 @@ export const create = mutation({
     storageRegion: v.optional(storageRegion),
     allowLibraryImport: v.optional(v.boolean()),
     initialState: v.optional(v.union(v.literal("draft"), v.literal("scheduled"))),
+    uploadStartsAt: v.optional(v.number()),
   },
   returns: v.object({
     eventId: v.id("events"),
@@ -196,6 +200,7 @@ export const create = mutation({
       storageRegion: input.storageRegion ?? serverEnv.STORAGE_DEFAULT_REGION,
       startsAt: input.schedule.startsAt,
       ...(input.schedule.endsAt === undefined ? {} : { endsAt: input.schedule.endsAt }),
+      ...(input.uploadStartsAt === undefined ? {} : { uploadStartsAt: input.uploadStartsAt }),
       timeZone: input.schedule.timeZone,
       ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
       ...(input.coverKey === undefined ? {} : { coverKey: input.coverKey }),
@@ -236,7 +241,11 @@ export const create = mutation({
       action: AUDIT_ACTIONS.eventCreated,
       event,
       actor: { user, role: "owner" },
-      metadata: { state: input.initialState, moderationMode: input.moderationMode },
+      metadata: {
+        state: input.initialState,
+        moderationMode: input.moderationMode,
+        preEventUploads: input.uploadStartsAt !== undefined,
+      },
       now,
     });
 

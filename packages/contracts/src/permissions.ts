@@ -116,7 +116,11 @@ export interface MediaResource {
   state: MediaState;
   /** Whether the acting user submitted this media. */
   isOwn: boolean;
-  event: { state: EventState };
+  event: {
+    state: EventState;
+    /** Schedule-aware result supplied by upload-grant callers when available. */
+    uploadsOpen?: boolean;
+  };
 }
 
 export interface AccountResource {
@@ -441,7 +445,7 @@ function mediaGate(action: Action, resource: MediaResource): boolean {
 
   switch (action) {
     case "media.upload":
-      return acceptsUploads(resource.event.state);
+      return resource.event.uploadsOpen ?? acceptsUploads(resource.event.state);
 
     case "media.viewOwn":
     case "media.withdrawOwn":

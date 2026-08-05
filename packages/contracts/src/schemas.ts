@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { eventCodeSchema } from "./codes";
-import { hostSettableEventStateSchema, launchModerationModeSchema } from "./events";
+import { hostSettableEventStateSchema, JOIN_WINDOW, launchModerationModeSchema } from "./events";
 import { joinInputSchema } from "./join";
 import {
   fromLibraryOf,
@@ -112,30 +112,57 @@ export const eventScheduleSchema = z
   });
 export type EventSchedule = z.infer<typeof eventScheduleSchema>;
 
-export const createEventInputSchema = z.object({
-  name: eventNameSchema,
-  schedule: eventScheduleSchema,
-  moderationMode: launchModerationModeSchema.default("manual"),
-  accentColor: hexColorSchema.optional(),
-  /** UploadThing key of the cover image. */
-  coverKey: z.string().min(1).optional(),
-  /**
-   * Immutable once the first upload lands. Omitted means
-   * `STORAGE_DEFAULT_REGION`; there is no picker UI at launch.
-   */
-  storageRegion: storageRegionSchema.optional(),
-  /** Whether guests may pick existing photos from their library. */
-  allowLibraryImport: z.boolean().default(true),
-  /**
-   * `scheduled` by default, not `draft`.
-   *
-   * A schedule is mandatory at creation, so the event *is* scheduled the moment
-   * it exists, and `scheduled` is joinable — which is what makes printed
-   * signage work before the doors open. `draft` stays available for a host who
-   * wants to set up without the code going live yet.
-   */
-  initialState: z.enum(["draft", "scheduled"]).default("scheduled"),
-});
+export const createEventInputSchema = z
+  .object({
+    name: eventNameSchema,
+    schedule: eventScheduleSchema,
+    moderationMode: launchModerationModeSchema.default("manual"),
+    accentColor: hexColorSchema.optional(),
+    /** UploadThing key of the cover image. */
+    coverKey: z.string().min(1).optional(),
+    /**
+     * Immutable once the first upload lands. Omitted means
+     * `STORAGE_DEFAULT_REGION`; there is no picker UI at launch.
+     */
+    storageRegion: storageRegionSchema.optional(),
+    /** Whether guests may pick existing photos from their library. */
+    allowLibraryImport: z.boolean().default(true),
+    /**
+     * `scheduled` by default, not `draft`.
+     *
+     * A schedule is mandatory at creation, so the event *is* scheduled the moment
+     * it exists, and `scheduled` is joinable — which is what makes printed
+     * signage work before the doors open. `draft` stays available for a host who
+     * wants to set up without the code going live yet.
+     */
+    initialState: z.enum(["draft", "scheduled"]).default("scheduled"),
+    /** When a scheduled event starts accepting pre-event photos and video. */
+    uploadStartsAt: timestampSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.uploadStartsAt === undefined) return;
+    if (value.initialState !== "scheduled") {
+      ctx.addIssue({
+        code: "custom",
+        message: "Pre-event uploads require a scheduled event.",
+        path: ["uploadStartsAt"],
+      });
+    }
+    if (value.uploadStartsAt >= value.schedule.startsAt) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Pre-event uploads must open before the event starts.",
+        path: ["uploadStartsAt"],
+      });
+    }
+    if (value.uploadStartsAt < value.schedule.startsAt - JOIN_WINDOW.opensBeforeStartMs) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Pre-event uploads cannot open more than 30 days before the event.",
+        path: ["uploadStartsAt"],
+      });
+    }
+  });
 export type CreateEventInput = z.infer<typeof createEventInputSchema>;
 
 export const updateEventInputSchema = z.object({

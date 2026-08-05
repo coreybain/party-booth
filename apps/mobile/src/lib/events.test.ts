@@ -60,6 +60,24 @@ describe("describeEventState", () => {
 });
 
 describe("schedule-aware event presentation", () => {
+  it("opens a scheduled camera at the pre-event upload boundary", () => {
+    const scheduled = event({
+      id: "pre-event",
+      state: "scheduled",
+      startsAt: NOW + DAY,
+      uploadStartsAt: NOW,
+    });
+
+    expect(describeEvent(scheduled, NOW - 1)).toMatchObject({
+      label: "Not open yet",
+      acceptsUploads: false,
+    });
+    expect(describeEvent(scheduled, NOW)).toMatchObject({
+      label: "Photos open",
+      acceptsUploads: true,
+    });
+  });
+
   it("calls a live event past once its scheduled end has passed", () => {
     const finished = event({ id: "past", startsAt: NOW - DAY, endsAt: NOW - 1 });
 

@@ -10,13 +10,19 @@ import { ChoiceGroup } from "@/components/ui/choice-group";
 import { SelectField } from "@/components/ui/select-field";
 import { TextField } from "@/components/ui/text-field";
 import { ToggleField } from "@/components/ui/toggle-field";
-import { formatTimeZoneLabel, timeZoneOptions } from "@/lib/datetime";
+import {
+  formatInZone,
+  formatTimeZoneLabel,
+  timeZoneAbbreviation,
+  timeZoneOptions,
+} from "@/lib/datetime";
 import { useBrowserTimeZone } from "@/lib/use-browser-time-zone";
 import { MODERATION_MODE_COPY } from "@/lib/event-view";
 import {
   buildCreateEventInput,
   buildUpdateEventInput,
   defaultEventFormValues,
+  eventFormUploadStartsAt,
   hasEventChanges,
   type CreateEventInput,
   type EventFormErrors,
@@ -140,6 +146,11 @@ export function EventForm({
   const zones = timeZoneOptions(values.timeZone);
   const nothingToSave =
     mode.kind === "edit" && !hasEventChanges(values, mode.initialValues) && !pending;
+  const uploadStartsAt = eventFormUploadStartsAt(values);
+  const uploadOpeningHint =
+    uploadStartsAt === undefined
+      ? undefined
+      : `Uploads open ${formatInZone(uploadStartsAt, values.timeZone)} (${timeZoneAbbreviation(uploadStartsAt, values.timeZone)}).`;
 
   return (
     <form
@@ -261,7 +272,7 @@ export function EventForm({
             title="Open the doors?"
             description="A scheduled event's code and QR already work, so you can print the sign before the day."
           />
-          <ChoiceGroup<"draft" | "scheduled">
+          <ChoiceGroup<EventFormValues["initialState"]>
             className="mt-4"
             legend="Starting state"
             value={values.initialState}
@@ -275,6 +286,12 @@ export function EventForm({
                 description: "The QR works now. Uploads open when you go live.",
               },
               {
+                value: "scheduledUploads",
+                label: "Scheduled — allow early uploads",
+                description:
+                  "The QR works now. Choose when guests can add pre-event photos and video.",
+              },
+              {
                 value: "draft",
                 label: "Draft — just me for now",
                 description: "Nobody can join until you schedule it.",
@@ -282,6 +299,43 @@ export function EventForm({
             ]}
             disabled={disabled || pending}
           />
+          {values.initialState === "scheduledUploads" ? (
+            <div className="mt-4 space-y-4 border-l-2 border-accent/40 pl-4">
+              <SelectField
+                label="Uploads open"
+                name="pre-upload-timing"
+                value={values.preUploadTiming}
+                onChange={(event) => {
+                  set("preUploadTiming", event.target.value as EventFormValues["preUploadTiming"]);
+                }}
+                options={[
+                  { value: "oneHour", label: "1 hour before the event" },
+                  { value: "fourHours", label: "4 hours before the event" },
+                  { value: "sixHours", label: "6 hours before the event" },
+                  { value: "custom", label: "Specific date and time" },
+                ]}
+                hint={uploadOpeningHint}
+                {...(values.preUploadTiming === "custom" || errors.uploadStartsAtLocal === undefined
+                  ? {}
+                  : { error: errors.uploadStartsAtLocal })}
+                disabled={disabled || pending}
+              />
+              {values.preUploadTiming === "custom" ? (
+                <TextField
+                  label="Specific opening time"
+                  name="upload-starts-at"
+                  type="datetime-local"
+                  value={values.uploadStartsAtLocal}
+                  onChange={(event) => {
+                    set("uploadStartsAtLocal", event.target.value);
+                  }}
+                  hint={uploadOpeningHint}
+                  error={errors.uploadStartsAtLocal}
+                  disabled={disabled || pending}
+                />
+              ) : null}
+            </div>
+          ) : null}
         </Card>
       ) : null}
 

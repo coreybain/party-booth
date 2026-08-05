@@ -183,6 +183,7 @@ export interface SeedEventOptions {
   moderationMode?: Doc<"events">["moderationMode"];
   startsAt?: number;
   endsAt?: number;
+  uploadStartsAt?: number;
   allowLibraryImport?: boolean;
   publicGalleryEnabled?: boolean;
 }
@@ -206,6 +207,7 @@ export async function seedEvent(
       storageRegion: "pdx1",
       startsAt: over.startsAt ?? now,
       ...(over.endsAt === undefined ? {} : { endsAt: over.endsAt }),
+      ...(over.uploadStartsAt === undefined ? {} : { uploadStartsAt: over.uploadStartsAt }),
       timeZone: "Europe/London",
       allowLibraryImport: over.allowLibraryImport ?? true,
       ...(over.publicGalleryEnabled === undefined

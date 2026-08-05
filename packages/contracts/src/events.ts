@@ -7,8 +7,9 @@ import { createStateMachine, type TransitionTable } from "./state-machine";
  *
  * - `draft` — being set up. Not joinable, invisible to guests.
  * - `scheduled` — set up and dated. **Joinable**, so printed QR signage works
- *   before the doors open, but uploads are refused until it goes live.
- * - `live` — the party. The only state that accepts uploads.
+ *   before the doors open. Uploads normally wait until it goes live, but an
+ *   event may carry an explicit pre-event upload opening time.
+ * - `live` — the party. Always accepts uploads.
  * - `paused` — the host hit pause. Guests keep their membership and the gallery,
  *   uploads are refused.
  * - `archived` — over. Read-only gallery, slideshow still presentable.
@@ -51,7 +52,7 @@ export const JOINABLE_EVENT_STATES = [
   "paused",
 ] as const satisfies readonly EventState[];
 
-/** The only state that accepts new uploads. */
+/** The states that accept uploads without consulting an event-specific schedule. */
 export const UPLOADABLE_EVENT_STATES = ["live"] as const satisfies readonly EventState[];
 
 /** States in which the approved gallery and slideshow render. */
@@ -75,6 +76,25 @@ export function isJoinableEventState(state: EventState): boolean {
 
 export function acceptsUploads(state: EventState): boolean {
   return (UPLOADABLE_EVENT_STATES as readonly EventState[]).includes(state);
+}
+
+export interface EventUploadWindow {
+  readonly state: EventState;
+  /** Optional opening time for pre-event uploads while still `scheduled`. */
+  readonly uploadStartsAt?: number | undefined;
+}
+
+/**
+ * Whether this event accepts a new upload at this instant.
+ *
+ * `live` remains an unconditional open door. A pre-event opening applies only
+ * while scheduled, so pausing or archiving the party always closes it again.
+ */
+export function eventAcceptsUploads(event: EventUploadWindow, now: number): boolean {
+  if (acceptsUploads(event.state)) return true;
+  return (
+    event.state === "scheduled" && event.uploadStartsAt !== undefined && now >= event.uploadStartsAt
+  );
 }
 
 export function isViewableEventState(state: EventState): boolean {

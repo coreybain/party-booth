@@ -134,6 +134,7 @@ export {
 export {
   acceptsUploads,
   EVENT_STATES,
+  eventAcceptsUploads,
   eventStateMachine,
   HOST_SETTABLE_EVENT_STATES,
   isEditableEventState,

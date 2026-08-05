@@ -221,6 +221,7 @@ export interface EventSummary {
   readonly moderationMode: ModerationMode;
   readonly startsAt: number;
   readonly endsAt?: number;
+  readonly uploadStartsAt?: number;
   readonly timeZone: string;
   readonly accentColor?: string;
   readonly coverKey?: string;
@@ -262,6 +263,7 @@ export interface JoinPreview {
   readonly state: EventState;
   readonly startsAt: number;
   readonly endsAt?: number;
+  readonly uploadStartsAt?: number;
   readonly timeZone: string;
   readonly accentColor?: string;
   readonly coverKey?: string;
@@ -901,6 +903,7 @@ export interface BackendApi {
         accentColor?: string;
         allowLibraryImport?: boolean;
         initialState?: "draft" | "scheduled";
+        uploadStartsAt?: number;
       },
       CreateEventResult
     >;

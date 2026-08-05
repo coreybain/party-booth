@@ -398,6 +398,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     slug: "partybooth",
     version: "0.1.0",
     scheme: SCHEME,
+    // Ship the native app on iPhone only for now. `supportsTablet: false` below
+    // keeps the generated Xcode target on device family 1; there is no Watch
+    // extension in the project.
+    platforms: ["ios"],
     // Both orientations are launch scope (PLAN.md → "Camera").
     orientation: "default",
     userInterfaceStyle: "dark",

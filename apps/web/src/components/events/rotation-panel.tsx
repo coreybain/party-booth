@@ -3,7 +3,7 @@
 import { useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import { CopyButton } from "@/components/events/copy-button";
+import { InviteCopyMenu } from "@/components/events/invite-copy-menu";
 import { Placeholder } from "@/components/layout/card";
 import { QrCode } from "@/components/qr-code";
 import { Button } from "@/components/ui/button";
@@ -324,6 +324,7 @@ function RotationResultPanel({
   readonly onClose: () => void;
 }) {
   const url = joinUrl(token);
+  const groupedCode = groupJoinCode(code);
 
   return (
     <div className="mt-4 rounded-2xl border border-positive/40 bg-positive/5 p-4 sm:p-5">
@@ -348,11 +349,8 @@ function RotationResultPanel({
         </div>
 
         <div className="space-y-3">
-          <p className="text-code text-3xl font-semibold text-ink">{groupJoinCode(code)}</p>
-          <div className="flex flex-wrap gap-2">
-            <CopyButton value={code} label="Copy code" />
-            {url === undefined ? null : <CopyButton value={url} label="Copy join link" />}
-          </div>
+          <p className="text-code text-3xl font-semibold text-ink">{groupedCode}</p>
+          <InviteCopyMenu eventName={eventName} code={code} groupedCode={groupedCode} url={url} />
           <p className="text-sm text-faint">
             Anything printed with the old number is now wrong. Reprint it before the next guest
             arrives.

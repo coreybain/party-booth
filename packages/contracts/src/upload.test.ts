@@ -76,6 +76,25 @@ describe("checkGrantEligibility", () => {
     },
   );
 
+  it("accepts scheduled pre-event uploads only after their opening time", () => {
+    const event = {
+      state: "scheduled" as const,
+      allowLibraryImport: true,
+      uploadStartsAt: NOW - 1,
+    };
+    expect(
+      checkGrantEligibility({ event, now: NOW, mediaSource: "capture", file: photo() }),
+    ).toEqual({ ok: true });
+    expect(
+      checkGrantEligibility({
+        event: { ...event, uploadStartsAt: NOW + 1 },
+        now: NOW,
+        mediaSource: "capture",
+        file: photo(),
+      }),
+    ).toMatchObject({ ok: false, reason: "eventNotAcceptingUploads" });
+  });
+
   it("refuses a library import when the host has turned imports off", () => {
     expect(
       checkGrantEligibility({

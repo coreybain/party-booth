@@ -282,6 +282,8 @@ export default defineSchema({
 
     startsAt: v.number(),
     endsAt: v.optional(v.number()),
+    /** Optional opening time for uploads while the event is still scheduled. */
+    uploadStartsAt: v.optional(v.number()),
     /** IANA name; the party runs on the host's clock, not the server's. */
     timeZone: v.string(),
 

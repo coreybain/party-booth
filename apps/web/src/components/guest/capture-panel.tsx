@@ -43,7 +43,7 @@ import type { CaptureController } from "@/lib/use-capture-upload";
 
 export interface CapturePanelProps {
   readonly controller: CaptureController;
-  /** `false` when the event is not live — the host has not opened it, or paused. */
+  /** `false` until the live or scheduled pre-event upload window is open. */
   readonly uploadsOpen: boolean;
   /** Whether the photo-roll button is offered at all. */
   readonly allowLibraryImport: boolean;

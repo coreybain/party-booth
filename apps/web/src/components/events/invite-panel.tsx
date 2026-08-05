@@ -1,6 +1,6 @@
 "use client";
 
-import { CopyButton } from "@/components/events/copy-button";
+import { InviteCopyMenu } from "@/components/events/invite-copy-menu";
 import { QrCode } from "@/components/qr-code";
 import { Callout } from "@/components/ui/callout";
 import { Code } from "@/components/ui/code";
@@ -43,6 +43,7 @@ export function InvitePanel({ code, token, version, state, eventName }: InvitePa
   const url = token === undefined ? undefined : joinUrl(token);
   const fallback = joinFallbackUrl();
   const joinable = guestsCanJoin(state);
+  const groupedCode = groupJoinCode(code);
 
   return (
     <div className="space-y-4">
@@ -73,16 +74,13 @@ export function InvitePanel({ code, token, version, state, eventName }: InvitePa
         <div className="space-y-4">
           <div>
             <p className="text-sm font-medium text-muted">Six-digit code</p>
-            <p className="text-code mt-1 text-3xl font-semibold text-ink">{groupJoinCode(code)}</p>
+            <p className="text-code mt-1 text-3xl font-semibold text-ink">{groupedCode}</p>
             <p className="mt-1 text-sm text-faint">
               Invite #{version} · changing it is one tap in Settings, and kills the old QR.
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <CopyButton value={code} label="Copy code" />
-            {url === undefined ? null : <CopyButton value={url} label="Copy join link" />}
-          </div>
+          <InviteCopyMenu eventName={eventName} code={code} groupedCode={groupedCode} url={url} />
 
           {fallback === undefined ? null : (
             <p className="text-sm text-muted">

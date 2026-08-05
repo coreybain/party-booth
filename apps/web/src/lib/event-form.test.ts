@@ -26,6 +26,8 @@ const VALUES: EventFormValues = {
   accentColor: "",
   allowLibraryImport: true,
   initialState: "scheduled",
+  preUploadTiming: "oneHour",
+  uploadStartsAtLocal: "2026-08-05T19:00",
 };
 
 describe("buildCreateEventInput", () => {
@@ -90,6 +92,38 @@ describe("buildCreateEventInput", () => {
       ok: true,
       input: { initialState: "draft" },
     });
+  });
+
+  it("turns the pre-event presets into an absolute opening time", () => {
+    const built = buildCreateEventInput({
+      ...VALUES,
+      initialState: "scheduledUploads",
+      preUploadTiming: "fourHours",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.input.initialState).toBe("scheduled");
+    expect(built.input.uploadStartsAt).toBe(Date.UTC(2026, 7, 5, 15, 0));
+  });
+
+  it("resolves and validates a specific pre-event opening in the event's zone", () => {
+    const built = buildCreateEventInput({
+      ...VALUES,
+      initialState: "scheduledUploads",
+      preUploadTiming: "custom",
+      uploadStartsAtLocal: "2026-08-05T17:30",
+    });
+    expect(built.ok && built.input.uploadStartsAt).toBe(Date.UTC(2026, 7, 5, 16, 30));
+
+    const late = buildCreateEventInput({
+      ...VALUES,
+      initialState: "scheduledUploads",
+      preUploadTiming: "custom",
+      uploadStartsAtLocal: "2026-08-05T20:30",
+    });
+    expect(late.ok).toBe(false);
+    if (late.ok) return;
+    expect(late.errors.uploadStartsAtLocal).toMatch(/before the event/i);
   });
 });
 

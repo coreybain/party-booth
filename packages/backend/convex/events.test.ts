@@ -118,6 +118,19 @@ describe("events.create", () => {
     expect(event?.state).toBe("draft");
   });
 
+  it("stores a scheduled pre-event upload opening time", async () => {
+    await seedUser(t, { authId: "a1", email: "owner@partybooth.test" });
+    const now = Date.now();
+    const created = await t.withIdentity({ subject: "a1" }).mutation(api.events.create, {
+      name: "Photos before doors",
+      schedule: scheduleFrom(now),
+      uploadStartsAt: now,
+    });
+    const event = await t.run(async (ctx) => ctx.db.get(created.eventId));
+    expect(event?.state).toBe("scheduled");
+    expect(event?.uploadStartsAt).toBe(now);
+  });
+
   it("applies the contract's validation, not the client's", async () => {
     await seedUser(t, { authId: "a1", email: "owner@partybooth.test" });
     const as = t.withIdentity({ subject: "a1" });

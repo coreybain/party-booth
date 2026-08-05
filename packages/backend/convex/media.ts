@@ -35,7 +35,7 @@ import {
   type UploadRejectionReason,
 } from "@partybooth/contracts/upload";
 import { inviteTokenSchema, normalizeInviteToken } from "@partybooth/contracts/codes";
-import { isViewableEventState } from "@partybooth/contracts/events";
+import { eventAcceptsUploads, isViewableEventState } from "@partybooth/contracts/events";
 import {
   completeUploadInputSchema,
   confirmUploadInputSchema,
@@ -358,7 +358,10 @@ export const requestUploadGrant = mutation({
       kind: "media",
       state: "processing",
       isOwn: true,
-      event: { state: actor.event.state },
+      event: {
+        state: actor.event.state,
+        uploadsOpen: eventAcceptsUploads(actor.event, now),
+      },
     });
     if (!decision.allowed && decision.reason !== "resourceState") {
       throw forbidden(DENIAL_MESSAGES[decision.reason]);
@@ -371,7 +374,11 @@ export const requestUploadGrant = mutation({
       event: {
         state: actor.event.state,
         allowLibraryImport: actor.event.allowLibraryImport,
+        ...(actor.event.uploadStartsAt === undefined
+          ? {}
+          : { uploadStartsAt: actor.event.uploadStartsAt }),
       },
+      now,
       mediaSource: input.mediaSource,
       file: {
         mediaType: input.mediaType,

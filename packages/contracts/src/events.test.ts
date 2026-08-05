@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  eventAcceptsUploads,
   EVENT_STATES,
   eventJoinability,
   eventStateMachine,
@@ -31,6 +32,20 @@ describe("host-settable states", () => {
 
   it.each(HOST_SETTABLE_EVENT_STATES)("accepts %s", (state) => {
     expect(isHostSettableEventState(state)).toBe(true);
+  });
+});
+
+describe("eventAcceptsUploads", () => {
+  it("opens a scheduled event at its pre-event upload boundary", () => {
+    const event = { state: "scheduled" as const, uploadStartsAt: T0 - HOUR };
+    expect(eventAcceptsUploads(event, T0 - HOUR - 1)).toBe(false);
+    expect(eventAcceptsUploads(event, T0 - HOUR)).toBe(true);
+  });
+
+  it("keeps live open and pause or archive closed regardless of the timestamp", () => {
+    expect(eventAcceptsUploads({ state: "live" }, T0)).toBe(true);
+    expect(eventAcceptsUploads({ state: "paused", uploadStartsAt: T0 - HOUR }, T0)).toBe(false);
+    expect(eventAcceptsUploads({ state: "archived", uploadStartsAt: T0 - HOUR }, T0)).toBe(false);
   });
 });
 

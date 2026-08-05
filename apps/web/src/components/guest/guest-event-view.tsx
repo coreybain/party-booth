@@ -20,8 +20,9 @@ import { cn } from "@/lib/cn";
 import type { EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
-import { EVENT_STATE_COPY, galleryIsVisible, guestsCanUpload } from "@/lib/event-view";
+import { galleryIsVisible, guestsCanUpload, uploadAvailabilityDescription } from "@/lib/event-view";
 import { useCaptureUpload } from "@/lib/use-capture-upload";
+import { useNow } from "@/lib/use-now";
 
 /**
  * Where a guest lands the moment they are in.
@@ -45,6 +46,7 @@ export function GuestEventView({ eventId }: { readonly eventId: string }) {
 }
 
 function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
+  const now = useNow();
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const home = useQuery(backendApi.events.home, isAuthenticated ? { eventId } : "skip");
 
@@ -71,7 +73,7 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
   if (home === undefined) return <JoinLoading />;
 
   const { event } = home;
-  const uploadsOpen = guestsCanUpload(event.state);
+  const uploadsOpen = guestsCanUpload(event, now);
 
   return (
     <div className="space-y-6">
@@ -98,13 +100,15 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
 
       <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
         {uploadsOpen
-          ? "The host has opened the event — you can start adding photos and video."
-          : EVENT_STATE_COPY[event.state].description}
+          ? event.state === "scheduled"
+            ? "Pre-event uploads are open — you can start adding photos and video."
+            : "The host has opened the event — you can start adding photos and video."
+          : uploadAvailabilityDescription(event, now)}
       </Callout>
 
       <hr className="border-line" />
 
-      <GuestCapture event={event} uploadsOpen={uploadsOpen} />
+      <GuestCapture event={event} uploadsOpen={uploadsOpen} now={now} />
 
       {home.isHost ? (
         <Link href={`/events/${event.id}`} className="block">
@@ -130,16 +134,19 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
 export function GuestCapture({
   event,
   uploadsOpen,
+  now,
   layout = "stack",
 }: {
   readonly event: EventSummary;
   readonly uploadsOpen: boolean;
+  readonly now: number;
   readonly layout?: "stack" | "console";
 }) {
   const controller = useCaptureUpload({
     eventId: event.id,
     state: event.state,
     allowLibraryImport: event.allowLibraryImport,
+    ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
   });
   const galleryVisible = galleryIsVisible(event.state);
   const [consolePanel, setConsolePanel] = useState<ConsoleMediaPanel>("uploads");
@@ -189,7 +196,7 @@ export function GuestCapture({
           controller={controller}
           uploadsOpen={uploadsOpen}
           allowLibraryImport={event.allowLibraryImport}
-          closedReason={EVENT_STATE_COPY[event.state].description}
+          closedReason={uploadAvailabilityDescription(event, now)}
         />
       </div>
 

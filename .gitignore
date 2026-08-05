@@ -101,3 +101,9 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 *.swp
+
+# ---------------------------------------------------------------------------
+# Store artwork source captures — live join QR codes are bearer credentials.
+# ---------------------------------------------------------------------------
+docs/store/screenshots/source/03-host.png
+docs/store/screenshots/source/04-invite.png
