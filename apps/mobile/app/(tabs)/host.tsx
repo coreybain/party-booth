@@ -43,10 +43,31 @@ import {
 } from "@partybooth/contracts/codes";
 import { REPORT_REASON_LABELS } from "@partybooth/contracts/copy";
 import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
+import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery } from "convex/react";
+import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
-import { useCallback, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import * as Sharing from "expo-sharing";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from "react-native";
+import { captureRef } from "react-native-view-shot";
 
 import { QrCode } from "@/components/qr-code";
 import {
@@ -75,7 +96,7 @@ import { captureHandledError } from "@/lib/sentry";
 import { useSession } from "@/providers/session";
 import { colors, radius, spacing, typography } from "@/theme";
 
-/** How far one tap on "Give it another hour" pushes the finish time. */
+/** How far one tap on "Add one hour" pushes the finish time. */
 const EXTEND_BY_MS = 60 * 60_000;
 
 /** Nobody reviews four hundred items on a phone. The web console is for that. */
@@ -161,6 +182,64 @@ function HostTools({ event }: { event: EventSummary }) {
 /* Status and schedule                                                        */
 /* -------------------------------------------------------------------------- */
 
+type HostActionTone = "operational" | "schedule" | "danger";
+type HostActionIcon = ComponentProps<typeof Ionicons>["name"];
+
+function HostActionButton({
+  label,
+  description,
+  icon,
+  tone,
+  busy = false,
+  accessibilityHint,
+  onPress,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly icon: HostActionIcon;
+  readonly tone: HostActionTone;
+  readonly busy?: boolean;
+  readonly accessibilityHint?: string;
+  readonly onPress: () => void;
+}) {
+  const tint =
+    tone === "operational" ? colors.accent : tone === "schedule" ? colors.warning : colors.danger;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={accessibilityHint ?? description}
+      accessibilityState={{ disabled: busy, busy }}
+      disabled={busy}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.hostAction,
+        tone === "operational" && styles.hostActionOperational,
+        tone === "schedule" && styles.hostActionSchedule,
+        tone === "danger" && styles.hostActionDanger,
+        pressed && styles.hostActionPressed,
+        busy && styles.hostActionDisabled,
+      ]}
+    >
+      <View style={[styles.hostActionIcon, { backgroundColor: tint }]}>
+        {busy ? (
+          <ActivityIndicator color={colors.bg} size="small" />
+        ) : (
+          <Ionicons name={icon} size={21} color={colors.bg} />
+        )}
+      </View>
+      <View style={styles.hostActionCopy}>
+        <Text style={[styles.hostActionLabel, tone === "danger" && styles.hostActionLabelDanger]}>
+          {label}
+        </Text>
+        <Text style={styles.hostActionDescription}>{description}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={tint} />
+    </Pressable>
+  );
+}
+
 /**
  * The party's state, and the four buttons that move it.
  *
@@ -237,47 +316,54 @@ function StatusSection({ event, abilities }: { event: EventSummary; abilities: H
           because the day it stops being true, a guest must not find a live
           Pause button here. */}
       {abilities.changeState ? (
-        <View style={styles.actions}>
+        <View style={styles.partyActions}>
           {event.state === "draft" || event.state === "scheduled" || event.state === "archived" ? (
-            <Button
+            <HostActionButton
               label={event.state === "archived" ? "Re-open the party" : "Open the party now"}
               icon="play-outline"
+              tone="operational"
+              description="Start guest uploads and make the party active."
               busy={busy === "open"}
               onPress={() => move("open", "live")}
             />
           ) : null}
           {event.state === "live" ? (
-            <Button
+            <HostActionButton
               label="Pause new photos"
-              variant="secondary"
               icon="pause-outline"
+              tone="operational"
+              description="Temporarily stop uploads. Guests stay joined."
               busy={busy === "pause"}
               onPress={() => move("pause", "paused")}
             />
           ) : null}
           {event.state === "paused" ? (
-            <Button
+            <HostActionButton
               label="Start taking photos again"
               icon="play-outline"
+              tone="operational"
+              description="Re-open uploads without changing the guest list."
               busy={busy === "resume"}
               onPress={() => move("resume", "live")}
             />
           ) : null}
           {abilities.updateSchedule && event.endsAt !== undefined ? (
-            <Button
-              label="Give it another hour"
-              variant="secondary"
+            <HostActionButton
+              label="Add one hour"
               icon="time-outline"
+              tone="schedule"
+              description="Move the scheduled finish back by one hour."
               busy={busy === "extend"}
               onPress={extend}
             />
           ) : null}
           {abilities.archive && !confirmingArchive ? (
-            <Button
+            <HostActionButton
               label="End the party"
-              variant="secondary"
               icon="stop-circle-outline"
-              accessibilityHint="Asks you to confirm first."
+              tone="danger"
+              description="Stop uploads and disable the join code."
+              accessibilityHint="Stop uploads and disable the join code. Asks you to confirm first."
               onPress={() => setConfirmingArchive(true)}
             />
           ) : null}
@@ -341,6 +427,11 @@ function roleLabel(role: EventSummary["role"]): string {
 function InviteSection({ event, abilities }: { event: EventSummary; abilities: HostAbilities }) {
   const invite = useQuery(api.invites.current, { eventId: event.id });
   const [rotating, setRotating] = useState(false);
+  const [actionMode, setActionMode] = useState<InviteActionMode | null>(null);
+  const [busyAction, setBusyAction] = useState<InviteAction | null>(null);
+  const [feedback, setFeedback] = useState<InviteFeedback | null>(null);
+  const qrRef = useRef<View>(null);
+  const invitePosterRef = useRef<View>(null);
 
   const joinUrl = useMemo(
     () =>
@@ -351,6 +442,95 @@ function InviteSection({ event, abilities }: { event: EventSummary; abilities: H
         ? buildJoinUrl(appConfig.siteUrl, invite.token)
         : null,
     [invite],
+  );
+
+  useEffect(() => {
+    if (feedback === null) return;
+    const timeout = setTimeout(() => setFeedback(null), 3_000);
+    return () => clearTimeout(timeout);
+  }, [feedback]);
+
+  const handleInviteAction = useCallback(
+    (action: InviteAction) => {
+      if (invite === undefined || invite === null || joinUrl === null) return;
+
+      void (async () => {
+        setBusyAction(action);
+        setFeedback(null);
+
+        const inviteText = `${event.name}\nJoin code: ${invite.code}\nJoin link: ${joinUrl}`;
+
+        try {
+          switch (action) {
+            case "copy-code":
+              await Clipboard.setStringAsync(invite.code);
+              setFeedback({ tone: "success", message: "Join code copied." });
+              break;
+            case "copy-link":
+              await Clipboard.setStringAsync(joinUrl);
+              setFeedback({ tone: "success", message: "Join link copied." });
+              break;
+            case "copy-qr": {
+              const base64 = await captureRef(qrRef, {
+                format: "png",
+                quality: 1,
+                result: "base64",
+              });
+              await Clipboard.setImageAsync(base64);
+              setFeedback({ tone: "success", message: "QR code image copied." });
+              break;
+            }
+            case "copy-all":
+              await Clipboard.setStringAsync(inviteText);
+              setFeedback({ tone: "success", message: "Invite details copied." });
+              break;
+            case "share-code":
+              await Share.share({
+                title: `Join ${event.name}`,
+                message: `Join ${event.name} on PartyBooth with code ${invite.code}.`,
+              });
+              break;
+            case "share-link":
+              await Share.share({
+                title: `Join ${event.name}`,
+                message: `Join ${event.name} on PartyBooth: ${joinUrl}`,
+                url: joinUrl,
+              });
+              break;
+            case "share-qr": {
+              const uri = await captureRef(qrRef, {
+                format: "png",
+                quality: 1,
+                result: "tmpfile",
+              });
+              await shareInviteImage(uri, `Share the QR code for ${event.name}`);
+              break;
+            }
+            case "share-all": {
+              const uri = await captureRef(invitePosterRef, {
+                format: "png",
+                quality: 1,
+                result: "tmpfile",
+              });
+              await shareInviteImage(uri, `Share the invite for ${event.name}`);
+              break;
+            }
+          }
+          setActionMode(null);
+        } catch (caught) {
+          captureHandledError(caught, { scope: "host.inviteAction", action });
+          setFeedback({
+            tone: "danger",
+            message: action.startsWith("copy-")
+              ? "That couldn't be copied. Please try again."
+              : "That couldn't be shared. Please try again.",
+          });
+        } finally {
+          setBusyAction(null);
+        }
+      })();
+    },
+    [event.name, invite, joinUrl],
   );
 
   return (
@@ -365,19 +545,51 @@ function InviteSection({ event, abilities }: { event: EventSummary; abilities: H
         </MutedText>
       ) : (
         <>
-          <View style={styles.qrWrap}>
-            {joinUrl === null ? null : (
-              <QrCode value={joinUrl} label={`QR code to join ${event.name}`} />
-            )}
+          <View ref={invitePosterRef} collapsable={false} style={styles.invitePoster}>
+            <Text style={styles.invitePosterTitle}>{event.name}</Text>
+            <View ref={qrRef} collapsable={false} style={styles.qrWrap}>
+              {joinUrl === null ? null : (
+                <QrCode value={joinUrl} label={`QR code to join ${event.name}`} />
+              )}
+            </View>
+            <Text style={styles.code} accessibilityLabel={`Join code ${spellOut(invite.code)}`}>
+              {formatCode(invite.code)}
+            </Text>
+            <MutedText>
+              {`Invite #${String(invite.version)}. Guests can scan this or type the six digits at ${
+                appConfig.status === "ready" ? hostOf(appConfig.siteUrl) : "the website"
+              }.`}
+            </MutedText>
           </View>
-          <Text style={styles.code} accessibilityLabel={`Join code ${spellOut(invite.code)}`}>
-            {formatCode(invite.code)}
-          </Text>
-          <MutedText>
-            {`Invite #${String(invite.version)}. Guests can scan this or type the six digits at ${
-              appConfig.status === "ready" ? hostOf(appConfig.siteUrl) : "the website"
-            }.`}
-          </MutedText>
+
+          {joinUrl === null ? null : (
+            <View style={styles.inviteQuickActions}>
+              <InviteQuickAction
+                icon="copy-outline"
+                label="Copy"
+                hint="Choose the code, link, QR image, or all invite details to copy"
+                onPress={() => setActionMode("copy")}
+              />
+              <InviteQuickAction
+                icon="share-outline"
+                label="Share"
+                hint="Choose the code, link, QR image, or complete invite to share"
+                onPress={() => setActionMode("share")}
+              />
+            </View>
+          )}
+
+          {feedback === null ? null : (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={[
+                styles.inviteFeedback,
+                feedback.tone === "danger" && styles.inviteFeedbackDanger,
+              ]}
+            >
+              {feedback.message}
+            </Text>
+          )}
 
           {abilities.rotateInvite ? (
             <Button
@@ -390,9 +602,217 @@ function InviteSection({ event, abilities }: { event: EventSummary; abilities: H
         </>
       )}
 
+      <InviteActionsModal
+        mode={actionMode}
+        busyAction={busyAction}
+        onSelect={handleInviteAction}
+        onClose={() => setActionMode(null)}
+      />
       <RotateModal visible={rotating} event={event} onClose={() => setRotating(false)} />
     </Card>
   );
+}
+
+type InviteActionMode = "copy" | "share";
+
+type InviteAction =
+  | "copy-code"
+  | "copy-link"
+  | "copy-qr"
+  | "copy-all"
+  | "share-code"
+  | "share-link"
+  | "share-qr"
+  | "share-all";
+
+interface InviteFeedback {
+  readonly tone: "success" | "danger";
+  readonly message: string;
+}
+
+interface InviteActionOption {
+  readonly action: InviteAction;
+  readonly icon: ComponentProps<typeof Ionicons>["name"];
+  readonly title: string;
+  readonly description: string;
+}
+
+const COPY_INVITE_ACTIONS: readonly InviteActionOption[] = [
+  {
+    action: "copy-code",
+    icon: "keypad-outline",
+    title: "Copy join code",
+    description: "Copy the six digits for a message or sign.",
+  },
+  {
+    action: "copy-link",
+    icon: "link-outline",
+    title: "Copy join link",
+    description: "Copy the direct link guests can open.",
+  },
+  {
+    action: "copy-qr",
+    icon: "qr-code-outline",
+    title: "Copy QR image",
+    description: "Paste the scannable QR into another app.",
+  },
+  {
+    action: "copy-all",
+    icon: "copy-outline",
+    title: "Copy all details",
+    description: "Copy the party name, code, and join link together.",
+  },
+];
+
+const SHARE_INVITE_ACTIONS: readonly InviteActionOption[] = [
+  {
+    action: "share-code",
+    icon: "keypad-outline",
+    title: "Share join code",
+    description: "Send the six-digit code as a message.",
+  },
+  {
+    action: "share-link",
+    icon: "link-outline",
+    title: "Share join link",
+    description: "Send a direct link to the party.",
+  },
+  {
+    action: "share-qr",
+    icon: "qr-code-outline",
+    title: "Share QR image",
+    description: "Send the scannable QR as an image.",
+  },
+  {
+    action: "share-all",
+    icon: "share-social-outline",
+    title: "Share complete invite",
+    description: "Send one image with the QR, code, and party details.",
+  },
+];
+
+function InviteQuickAction({
+  icon,
+  label,
+  hint,
+  onPress,
+}: {
+  readonly icon: ComponentProps<typeof Ionicons>["name"];
+  readonly label: string;
+  readonly hint: string;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={hint}
+      onPress={onPress}
+      style={({ pressed }) => [styles.inviteQuickAction, pressed && styles.hostActionPressed]}
+    >
+      <Ionicons name={icon} size={20} color={colors.text} />
+      <Text style={styles.inviteQuickActionLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function InviteActionsModal({
+  mode,
+  busyAction,
+  onSelect,
+  onClose,
+}: {
+  readonly mode: InviteActionMode | null;
+  readonly busyAction: InviteAction | null;
+  readonly onSelect: (action: InviteAction) => void;
+  readonly onClose: () => void;
+}) {
+  const options = mode === "copy" ? COPY_INVITE_ACTIONS : SHARE_INVITE_ACTIONS;
+  const title = mode === "copy" ? "Copy invite" : "Share invite";
+
+  return (
+    <Modal
+      animationType="fade"
+      transparent
+      visible={mode !== null}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalScrim}>
+        <View
+          accessibilityViewIsModal
+          accessibilityLabel={title}
+          style={styles.inviteActionModal}
+        >
+          <View style={styles.inviteActionModalHeader}>
+            <View style={styles.inviteActionModalHeading}>
+              <Text style={styles.modalTitle}>{title}</Text>
+              <MutedText>Choose exactly what you need.</MutedText>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Close ${title.toLowerCase()}`}
+              hitSlop={8}
+              onPress={onClose}
+              style={({ pressed }) => [
+                styles.inviteActionClose,
+                pressed && styles.hostActionPressed,
+              ]}
+            >
+              <Ionicons name="close" size={22} color={colors.text} />
+            </Pressable>
+          </View>
+
+          <View style={styles.inviteActionOptions}>
+            {options.map((option) => {
+              const busy = busyAction === option.action;
+              return (
+                <Pressable
+                  key={option.action}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.title}
+                  accessibilityHint={option.description}
+                  accessibilityState={{ busy, disabled: busyAction !== null }}
+                  disabled={busyAction !== null}
+                  onPress={() => onSelect(option.action)}
+                  style={({ pressed }) => [
+                    styles.inviteActionOption,
+                    pressed && styles.hostActionPressed,
+                    busyAction !== null && !busy && styles.hostActionDisabled,
+                  ]}
+                >
+                  <View style={styles.inviteActionOptionIcon}>
+                    {busy ? (
+                      <ActivityIndicator size="small" color={colors.accent} />
+                    ) : (
+                      <Ionicons name={option.icon} size={22} color={colors.accent} />
+                    )}
+                  </View>
+                  <View style={styles.inviteActionOptionCopy}>
+                    <Text style={styles.inviteActionOptionTitle}>{option.title}</Text>
+                    <Text style={styles.inviteActionOptionDescription}>{option.description}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+async function shareInviteImage(uri: string, dialogTitle: string): Promise<void> {
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(uri, {
+      dialogTitle,
+      mimeType: "image/png",
+      UTI: "public.png",
+    });
+    return;
+  }
+
+  await Share.share({ title: dialogTitle, url: uri });
 }
 
 /** `482913` → `482 913`. Easier to read out and easier to type back. */
@@ -924,7 +1344,43 @@ const styles = StyleSheet.create({
   when: { ...typography.heading, color: colors.text },
   sectionLabel: { ...typography.label, color: colors.textMuted, textTransform: "uppercase" },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  partyActions: { gap: spacing.sm, paddingTop: spacing.xs },
+  hostAction: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: colors.surfaceRaised,
+  },
+  hostActionOperational: { borderColor: colors.accentSoft },
+  hostActionSchedule: { borderColor: colors.warning },
+  hostActionDanger: { borderColor: colors.danger, backgroundColor: "#2A1428" },
+  hostActionPressed: { opacity: 0.76, transform: [{ scale: 0.99 }] },
+  hostActionDisabled: { opacity: 0.5 },
+  hostActionIcon: {
+    width: 42,
+    height: 42,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.md,
+  },
+  hostActionCopy: { flex: 1, gap: 3 },
+  hostActionLabel: { ...typography.heading, color: colors.text },
+  hostActionLabelDanger: { color: colors.danger },
+  hostActionDescription: { ...typography.caption, color: colors.textMuted, lineHeight: 16 },
 
+  invitePoster: {
+    gap: spacing.md,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+  },
+  invitePosterTitle: { ...typography.heading, color: colors.text, textAlign: "center" },
   qrWrap: { alignItems: "center", paddingVertical: spacing.sm },
   code: {
     ...typography.display,
@@ -933,6 +1389,73 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
     fontVariant: ["tabular-nums"],
   },
+  inviteQuickActions: { flexDirection: "row", gap: spacing.sm },
+  inviteQuickAction: {
+    minHeight: 52,
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.accentSoft,
+    backgroundColor: colors.surfaceRaised,
+  },
+  inviteQuickActionLabel: { ...typography.heading, color: colors.text },
+  inviteFeedback: {
+    ...typography.caption,
+    color: colors.success,
+    textAlign: "center",
+  },
+  inviteFeedbackDanger: { color: colors.danger },
+  inviteActionModal: {
+    maxHeight: "86%",
+    gap: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  inviteActionModalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.md,
+  },
+  inviteActionModalHeading: { flex: 1, gap: spacing.xs },
+  inviteActionClose: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceRaised,
+  },
+  inviteActionOptions: { gap: spacing.sm },
+  inviteActionOption: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+  },
+  inviteActionOptionIcon: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.md,
+    backgroundColor: "#351544",
+  },
+  inviteActionOptionCopy: { flex: 1, gap: 2 },
+  inviteActionOptionTitle: { ...typography.heading, color: colors.text },
+  inviteActionOptionDescription: { ...typography.caption, color: colors.textMuted, lineHeight: 16 },
 
   modalScrim: {
     flex: 1,

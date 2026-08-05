@@ -37,6 +37,10 @@ const fake = vi.hoisted(() => ({
   resolveReport: vi.fn(),
   queryCalls: [] as { readonly name: string; readonly args: unknown }[],
   session: {} as Record<string, unknown>,
+  copyText: vi.fn(),
+  copyImage: vi.fn(),
+  shareImage: vi.fn(),
+  captureView: vi.fn(),
 }));
 
 // Dispatched on the function reference, exactly as Convex does, so a screen that
@@ -89,6 +93,18 @@ vi.mock("@expo/vector-icons", () => ({
   Ionicons: (props: Record<string, unknown>) =>
     createElement("span", { "data-icon": String(props.name) }),
 }));
+
+vi.mock("expo-clipboard", () => ({
+  setStringAsync: fake.copyText,
+  setImageAsync: fake.copyImage,
+}));
+
+vi.mock("expo-sharing", () => ({
+  isAvailableAsync: vi.fn().mockResolvedValue(true),
+  shareAsync: fake.shareImage,
+}));
+
+vi.mock("react-native-view-shot", () => ({ captureRef: fake.captureView }));
 
 vi.mock("react-native-safe-area-context", () => ({
   SafeAreaView: (props: { children?: ReactNode }) =>
@@ -174,6 +190,13 @@ beforeEach(() => {
   fake.setState.mockResolvedValue({ state: "paused" });
   fake.update.mockResolvedValue(null);
   fake.resolveReport.mockResolvedValue({ status: "actioned", stillFlagged: false });
+  fake.copyText.mockResolvedValue(true);
+  fake.copyImage.mockResolvedValue(undefined);
+  fake.shareImage.mockResolvedValue(undefined);
+  fake.captureView.mockImplementation(
+    (_view: unknown, options: { result?: string }) =>
+      Promise.resolve(options.result === "base64" ? "QR_BASE64" : "file:///invite.png"),
+  );
   fake.queryCalls.length = 0;
 });
 
@@ -216,6 +239,9 @@ describe("who gets the host tools", () => {
   it("shows an owner the full set", async () => {
     await renderHost();
     expect(screen.getByText(/End the party/i)).toBeTruthy();
+    expect(screen.getByText(/Temporarily stop uploads/i)).toBeTruthy();
+    expect(screen.getByText(/Move the scheduled finish back/i)).toBeTruthy();
+    expect(screen.getByText(/disable the join code/i)).toBeTruthy();
   });
 
   it("suspends every control when the account is locked", async () => {
@@ -252,6 +278,51 @@ describe("the invite", () => {
     fake.invite = null;
     await renderHost();
     expect(screen.getByText(/no live invite/i)).toBeTruthy();
+  });
+
+  it("offers focused copy choices and copies the requested invite value", async () => {
+    await renderHost();
+
+    fireEvent.click(screen.getByLabelText("Copy"));
+    expect(screen.getByText("Copy join code")).toBeTruthy();
+    expect(screen.getByText("Copy join link")).toBeTruthy();
+    expect(screen.getByText("Copy QR image")).toBeTruthy();
+    expect(screen.getByText("Copy all details")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Copy join code"));
+    await waitFor(() => expect(fake.copyText).toHaveBeenCalledWith("482913"));
+    expect(screen.getByText("Join code copied.")).toBeTruthy();
+  });
+
+  it("copies the rendered QR as an image", async () => {
+    await renderHost();
+
+    fireEvent.click(screen.getByLabelText("Copy"));
+    fireEvent.click(screen.getByText("Copy QR image"));
+
+    await waitFor(() => expect(fake.copyImage).toHaveBeenCalledWith("QR_BASE64"));
+    expect(fake.captureView).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ format: "png", result: "base64" }),
+    );
+  });
+
+  it("offers the code, link, QR image, and complete invite for sharing", async () => {
+    await renderHost();
+
+    fireEvent.click(screen.getByLabelText("Share"));
+    expect(screen.getByText("Share join code")).toBeTruthy();
+    expect(screen.getByText("Share join link")).toBeTruthy();
+    expect(screen.getByText("Share QR image")).toBeTruthy();
+    expect(screen.getByText("Share complete invite")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Share complete invite"));
+    await waitFor(() =>
+      expect(fake.shareImage).toHaveBeenCalledWith(
+        "file:///invite.png",
+        expect.objectContaining({ mimeType: "image/png" }),
+      ),
+    );
   });
 });
 
@@ -527,7 +598,7 @@ describe("running the party", () => {
     const event = anEvent();
     await renderHost();
 
-    fireEvent.click(screen.getByText(/Give it another hour/i));
+    fireEvent.click(screen.getByText(/Add one hour/i));
     await waitFor(() => {
       expect(fake.update).toHaveBeenCalledWith({
         eventId: "event_1",
@@ -555,6 +626,6 @@ describe("running the party", () => {
   it("does not offer to extend a party with no finish time", async () => {
     fake.session = session({ eventRole: "owner" }, anEvent({ endsAt: undefined }));
     await renderHost();
-    expect(screen.queryByText(/Give it another hour/i)).toBeNull();
+    expect(screen.queryByText(/Add one hour/i)).toBeNull();
   });
 });
