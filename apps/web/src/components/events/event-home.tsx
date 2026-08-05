@@ -95,7 +95,7 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         }
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted">
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted">
         {event.state === "live" ? null : <StateBadge state={event.state} />}
         <span>
           {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}

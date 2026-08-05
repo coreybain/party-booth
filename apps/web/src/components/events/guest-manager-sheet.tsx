@@ -4,10 +4,17 @@ import { useMutation, useQuery } from "convex/react";
 import { useCallback, useMemo, useState } from "react";
 
 import { ConfirmAction } from "@/components/admin/confirm-action";
-import { UsersIcon } from "@/components/icons";
+import { MoreVerticalIcon, UsersIcon } from "@/components/icons";
 import { Placeholder } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sheet,
   SheetContent,
@@ -16,7 +23,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { ToggleField } from "@/components/ui/toggle-field";
 import type { AdminActionCopy } from "@/lib/admin/actions";
 import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type GuestMember } from "@/lib/convex-api";
@@ -70,7 +76,7 @@ export function GuestManagerSheet({
       <SheetTrigger asChild>
         <button
           type="button"
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-xl px-2 text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-muted transition-colors after:absolute after:-inset-y-1 after:inset-x-0 hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           aria-label={`Manage ${formatGuestCount(memberCount)}`}
         >
           <UsersIcon size={16} className="text-faint" />
@@ -106,7 +112,7 @@ function GuestManagerContents({
       <div className="border-b border-line px-5 pb-5 pt-6 sm:px-6">
         <SheetHeader>
           <SheetTitle>Guests</SheetTitle>
-          <SheetDescription>
+          <SheetDescription className="sr-only">
             See who is in this event and choose how their future uploads are handled.
           </SheetDescription>
         </SheetHeader>
@@ -118,12 +124,14 @@ function GuestManagerContents({
               {guests?.length ?? "—"}
             </dd>
           </div>
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-faint">Uploads</dt>
-            <dd className="mt-0.5 text-2xl font-semibold tabular-nums text-ink">
-              {guests === undefined ? "—" : totalUploads}
-            </dd>
-          </div>
+          {totalUploads > 0 ? (
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-faint">Uploads</dt>
+              <dd className="mt-0.5 text-2xl font-semibold tabular-nums text-ink">
+                {totalUploads}
+              </dd>
+            </div>
+          ) : null}
         </dl>
 
         <label className="mt-5 block">
@@ -208,31 +216,31 @@ function GuestRow({ eventId, guest }: { readonly eventId: string; readonly guest
         </span>
 
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate font-medium text-ink" title={guest.displayName}>
                 {guest.displayName}
               </p>
               <p className="mt-0.5 text-sm text-muted">{joined}</p>
             </div>
-            <p className="shrink-0 text-sm tabular-nums text-muted">
-              {guest.submissionCount} {guest.submissionCount === 1 ? "upload" : "uploads"}
+            <div className="flex shrink-0 items-center gap-2">
               {guest.submissionCount > 0 ? (
-                <span className="text-faint"> · {guest.approvedCount} approved</span>
+                <p className="text-sm tabular-nums text-muted">
+                  {guest.submissionCount} {guest.submissionCount === 1 ? "upload" : "uploads"}
+                  {guest.approvedCount > 0 ? (
+                    <span className="text-faint"> · {guest.approvedCount} approved</span>
+                  ) : null}
+                </p>
               ) : null}
-            </p>
-          </div>
-
-          <div className="mt-4 border-t border-line pt-4">
-            <ToggleField
-              label="Auto-approve future uploads"
-              description="New photos and videos from this guest skip the moderation queue."
-              checked={guest.autoApproveMedia}
-              disabled={pendingTrust}
-              onChange={(enabled) => {
-                void updateTrust(enabled);
-              }}
-            />
+              <GuestActionsMenu
+                guest={guest}
+                pending={pendingTrust}
+                onAutoApprove={(enabled) => {
+                  void updateTrust(enabled);
+                }}
+                onAction={setAction}
+              />
+            </div>
           </div>
 
           {error ? (
@@ -240,29 +248,6 @@ function GuestRow({ eventId, guest }: { readonly eventId: string; readonly guest
               {error}
             </Callout>
           ) : null}
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              size="md"
-              variant="secondary"
-              aria-expanded={action === "remove"}
-              onClick={() => {
-                setAction((current) => (current === "remove" ? undefined : "remove"));
-              }}
-            >
-              Remove
-            </Button>
-            <Button
-              size="md"
-              variant="danger"
-              aria-expanded={action === "ban"}
-              onClick={() => {
-                setAction((current) => (current === "ban" ? undefined : "ban"));
-              }}
-            >
-              Ban
-            </Button>
-          </div>
 
           {action ? (
             <ConfirmAction
@@ -278,6 +263,61 @@ function GuestRow({ eventId, guest }: { readonly eventId: string; readonly guest
         </div>
       </div>
     </li>
+  );
+}
+
+function GuestActionsMenu({
+  guest,
+  pending,
+  onAutoApprove,
+  onAction,
+}: {
+  readonly guest: GuestMember;
+  readonly pending: boolean;
+  readonly onAutoApprove: (enabled: boolean) => void;
+  readonly onAction: (action: GuestAction) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="md"
+          className="size-11 rounded-full px-0"
+          disabled={pending}
+          aria-label={`Actions for ${guest.displayName}`}
+          title={`Actions for ${guest.displayName}`}
+        >
+          <MoreVerticalIcon size={18} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-64">
+        <DropdownMenuItem
+          disabled={pending}
+          onSelect={() => {
+            onAutoApprove(!guest.autoApproveMedia);
+          }}
+        >
+          {guest.autoApproveMedia ? "Turn off auto-approval" : "Auto-approve future uploads"}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={() => {
+            onAction("remove");
+          }}
+        >
+          Remove from event
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          tone="danger"
+          onSelect={() => {
+            onAction("ban");
+          }}
+        >
+          Ban from event
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

@@ -121,14 +121,7 @@ function GuestActivityCard({ guests }: { readonly guests: readonly GuestMember[]
 
   return (
     <Card>
-      <SectionHeading
-        title="Guest activity"
-        description={
-          view === "recent"
-            ? "The latest people to enter this event."
-            : "Ranked by how many photos and videos they have uploaded."
-        }
-      />
+      <SectionHeading title="Guest activity" />
 
       <div
         className="mt-4 grid grid-cols-2 rounded-xl border border-line bg-raised p-1"
