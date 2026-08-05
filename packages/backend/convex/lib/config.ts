@@ -1,5 +1,6 @@
 import { constantTimeEqual } from "@partybooth/contracts";
 import { envIsSet, envOptional, serverEnv } from "@partybooth/env/server";
+import type { BetterAuthOptions } from "better-auth/minimal";
 
 /**
  * Deployment-level configuration, read lazily so that importing a module never
@@ -8,15 +9,37 @@ import { envIsSet, envOptional, serverEnv } from "@partybooth/env/server";
  */
 
 /**
- * Where Better Auth serves from.
+ * How Better Auth resolves the public origin for each request.
  *
- * Better Auth runs inside Convex HTTP actions, so this is the Convex **site**
- * URL (`https://<name>.convex.site`), not the Vercel site. `BETTER_AUTH_URL`
- * exists so the two can be set independently, but in practice it should equal
- * `CONVEX_SITE_URL` — if they disagree, OAuth callbacks land nowhere.
+ * Native clients call the Convex HTTP-actions origin directly, while the web
+ * client calls the first-party Next.js `/api/auth/*` proxy. A single static
+ * `.convex.site` base URL makes Google's callback bypass that proxy, which puts
+ * the session cookie on the Convex domain and sends the guest back to the web
+ * event signed out.
+ *
+ * Better Auth's dynamic base URL uses the request host for direct native calls
+ * and the allowlisted forwarded host restored by `convexBetterAuthNextJs` for
+ * web calls. The Convex site remains the fail-closed fallback for internal calls
+ * that carry no request headers.
  */
-export function authBaseUrl(): string {
-  return envOptional(serverEnv, "BETTER_AUTH_URL") ?? serverEnv.CONVEX_SITE_URL;
+export function authBaseUrl(): NonNullable<BetterAuthOptions["baseURL"]> {
+  const convexSiteUrl = serverEnv.CONVEX_SITE_URL;
+  const allowedHosts = new Set([new URL(convexSiteUrl).host]);
+
+  const site = envOptional(serverEnv, "SITE_URL");
+  if (site) allowedHosts.add(new URL(site).host);
+
+  // Retain explicitly configured legacy/custom auth origins during migration.
+  const authUrl = envOptional(serverEnv, "BETTER_AUTH_URL");
+  if (authUrl) allowedHosts.add(new URL(authUrl).host);
+
+  if (isExplicitDevelopmentDeployment()) allowedHosts.add("localhost:3000");
+
+  return {
+    allowedHosts: [...allowedHosts],
+    fallback: convexSiteUrl,
+    protocol: "auto",
+  };
 }
 
 /**

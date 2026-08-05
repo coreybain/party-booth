@@ -82,7 +82,7 @@ export const serverVars = {
   ),
   BETTER_AUTH_URL: envVar(
     httpUrl,
-    "Base URL Better Auth serves from — normally the same as CONVEX_SITE_URL.",
+    "Legacy/custom auth origin retained as an allowed host. PartyBooth normally resolves web requests to SITE_URL and native requests to CONVEX_SITE_URL dynamically.",
   ),
 
   /* --- Google OAuth ----------------------------------------------------- */

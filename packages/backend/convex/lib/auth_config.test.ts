@@ -155,20 +155,48 @@ describe("admin allowlist", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("URLs", () => {
-  it("prefers BETTER_AUTH_URL and falls back to the Convex site URL", () => {
+  it("allows both the first-party web proxy and direct Convex auth hosts", () => {
     setEnv({
+      SITE_URL: "https://www.partybooth.test",
       BETTER_AUTH_URL: "https://auth.partybooth.test",
       CONVEX_SITE_URL: "https://x.convex.site",
     });
-    expect(authBaseUrl()).toBe("https://auth.partybooth.test");
-
-    setEnv({ BETTER_AUTH_URL: undefined });
-    expect(authBaseUrl()).toBe("https://x.convex.site");
+    expect(authBaseUrl()).toEqual({
+      allowedHosts: ["x.convex.site", "www.partybooth.test", "auth.partybooth.test"],
+      fallback: "https://x.convex.site",
+      protocol: "auto",
+    });
   });
 
-  it("names the missing variable when neither is set", () => {
+  it("uses the Convex site as the fallback when the legacy auth URL is unset", () => {
+    setEnv({
+      SITE_URL: "https://www.partybooth.test",
+      CONVEX_SITE_URL: "https://x.convex.site",
+      BETTER_AUTH_URL: undefined,
+    });
+    expect(authBaseUrl()).toEqual({
+      allowedHosts: ["x.convex.site", "www.partybooth.test"],
+      fallback: "https://x.convex.site",
+      protocol: "auto",
+    });
+  });
+
+  it("names the missing Convex site URL", () => {
     clearEnv();
     expect(() => authBaseUrl()).toThrow(/CONVEX_SITE_URL/);
+  });
+
+  it("allows the fixed localhost proxy only on an explicit development deployment", () => {
+    setEnv({
+      SITE_URL: "http://192.168.1.20:3000",
+      CONVEX_SITE_URL: "https://x.convex.site",
+      DEPLOYMENT_ENVIRONMENT: "development",
+    });
+    expect(authBaseUrl()).toEqual({
+      allowedHosts: ["x.convex.site", "192.168.1.20:3000", "localhost:3000"],
+      fallback: "https://x.convex.site",
+      protocol: "auto",
+    });
   });
 
   it("names SITE_URL when it is missing", () => {

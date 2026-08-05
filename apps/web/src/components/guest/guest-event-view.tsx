@@ -2,7 +2,7 @@
 
 import { useConvexAuth, useQuery } from "convex/react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { BackendGate } from "@/components/backend-gate";
 import {
@@ -12,7 +12,7 @@ import {
 import { CapturePanel } from "@/components/guest/capture-panel";
 import { EventGallery } from "@/components/guest/event-gallery";
 import { MyMedia } from "@/components/guest/my-media";
-import { CheckIcon } from "@/components/icons";
+import { CheckIcon, LogoMark } from "@/components/icons";
 import { JoinLoading } from "@/components/join/join-states";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -20,7 +20,13 @@ import { cn } from "@/lib/cn";
 import type { EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
-import { galleryIsVisible, guestsCanUpload, uploadAvailabilityDescription } from "@/lib/event-view";
+import {
+  eventCountdown,
+  galleryIsVisible,
+  guestEventIsWaiting,
+  guestsCanUpload,
+  uploadAvailabilityDescription,
+} from "@/lib/event-view";
 import { useCaptureUpload } from "@/lib/use-capture-upload";
 import { useNow } from "@/lib/use-now";
 
@@ -46,9 +52,31 @@ export function GuestEventView({ eventId }: { readonly eventId: string }) {
 }
 
 function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
-  const now = useNow();
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const home = useQuery(backendApi.events.home, isAuthenticated ? { eventId } : "skip");
+  // A future scheduled event owns a seconds-accurate countdown. Every other
+  // event keeps the shared 30-second clock used by relative-time copy.
+  const now = useNow(home?.event.state === "scheduled" ? 1_000 : undefined);
+  const [celebrating, setCelebrating] = useState(false);
+  const previousUploadsOpen = useRef<boolean | undefined>(undefined);
+  const hasHome = home !== undefined;
+  const uploadsOpen = hasHome ? guestsCanUpload(home.event, now) : false;
+
+  useEffect(() => {
+    if (!hasHome) return;
+
+    const wasOpen = previousUploadsOpen.current;
+    previousUploadsOpen.current = uploadsOpen;
+    if (wasOpen !== false || !uploadsOpen) return;
+
+    setCelebrating(true);
+    const timer = window.setTimeout(() => {
+      setCelebrating(false);
+    }, 2_400);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [hasHome, uploadsOpen]);
 
   if (authLoading) return <JoinLoading />;
 
@@ -73,10 +101,12 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
   if (home === undefined) return <JoinLoading />;
 
   const { event } = home;
-  const uploadsOpen = guestsCanUpload(event, now);
+  const waitingForEvent = guestEventIsWaiting(event, now);
 
   return (
     <div className="space-y-6">
+      {celebrating ? <EventStartCelebration /> : null}
+
       <div className="flex items-start gap-3">
         <span
           className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-positive/15 text-positive"
@@ -98,17 +128,23 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
         </div>
       </div>
 
-      <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
-        {uploadsOpen
-          ? event.state === "scheduled"
-            ? "Pre-event uploads are open — you can start adding photos and video."
-            : "The host has opened the event — you can start adding photos and video."
-          : uploadAvailabilityDescription(event, now)}
-      </Callout>
+      {waitingForEvent ? (
+        <PreEventCountdown startsAt={event.startsAt} now={now} />
+      ) : (
+        <>
+          <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
+            {uploadsOpen
+              ? event.state === "scheduled"
+                ? "Pre-event uploads are open — you can start adding photos and video."
+                : "The event is live — you can start adding photos and video."
+              : uploadAvailabilityDescription(event, now)}
+          </Callout>
 
-      <hr className="border-line" />
+          <hr className="border-line" />
 
-      <GuestCapture event={event} uploadsOpen={uploadsOpen} now={now} />
+          <GuestCapture event={event} uploadsOpen={uploadsOpen} now={now} />
+        </>
+      )}
 
       {home.isHost ? (
         <Link href={`/events/${event.id}`} className="block">
@@ -117,6 +153,143 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
           </Button>
         </Link>
       ) : null}
+    </div>
+  );
+}
+
+const COUNTDOWN_PARTS = [
+  ["days", "days"],
+  ["hours", "hours"],
+  ["minutes", "mins"],
+  ["seconds", "secs"],
+] as const;
+
+/** One pre-event promise, rather than three inactive upload sections. */
+function PreEventCountdown({ startsAt, now }: { readonly startsAt: number; readonly now: number }) {
+  const countdown = eventCountdown(startsAt, now);
+
+  return (
+    <section
+      className="relative isolate overflow-hidden rounded-2xl border border-accent/25 bg-accent-soft/45 px-5 py-6 sm:px-7 sm:py-7"
+      aria-labelledby="event-countdown-heading"
+    >
+      <div
+        className="pointer-events-none absolute -right-12 -top-16 size-40 rounded-full border border-accent/20"
+        aria-hidden="true"
+      />
+      <div
+        className="pointer-events-none absolute -right-2 -top-7 size-20 rounded-full border border-info/20"
+        aria-hidden="true"
+      />
+
+      <div className="relative">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+          <LogoMark size={18} />
+          {countdown.started ? "Starting soon" : "Countdown to party time"}
+        </div>
+
+        <h2
+          id="event-countdown-heading"
+          className="mt-4 text-xl font-semibold tracking-tight text-ink"
+        >
+          {countdown.started ? "It’s party time" : "The event hasn’t started yet"}
+        </h2>
+        <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
+          {countdown.started
+            ? "Uploads will open here as soon as the host starts the event. You won’t need to refresh."
+            : "You’ll be able to take and upload photos and videos when the event starts. Keep this page open — it’ll switch over automatically."}
+        </p>
+
+        {countdown.started ? (
+          <div className="mt-6 flex items-center gap-3 text-sm font-medium text-ink" role="status">
+            <span className="relative flex size-3" aria-hidden="true">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
+              <span className="relative inline-flex size-3 rounded-full bg-accent" />
+            </span>
+            Waiting for the host to open uploads…
+          </div>
+        ) : (
+          <div
+            className="mt-6 grid grid-cols-4 gap-2 sm:gap-3"
+            role="timer"
+            aria-label={`${String(countdown.days)} days, ${String(countdown.hours)} hours, ${String(countdown.minutes)} minutes and ${String(countdown.seconds)} seconds until the event starts`}
+          >
+            {COUNTDOWN_PARTS.map(([key, label], index) => (
+              <div key={key} className="relative min-w-0 text-center">
+                {index > 0 ? (
+                  <span
+                    className="absolute -left-1 top-1 text-lg font-semibold text-faint sm:-left-2 sm:text-xl"
+                    aria-hidden="true"
+                  >
+                    :
+                  </span>
+                ) : null}
+                <span className="block tabular-nums text-[clamp(1.55rem,8vw,2.35rem)] font-semibold leading-none tracking-[-0.04em] text-ink">
+                  {String(countdown[key]).padStart(2, "0")}
+                </span>
+                <span className="mt-2 block text-[0.62rem] font-medium uppercase tracking-[0.16em] text-faint sm:text-xs">
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface ConfettiPiece {
+  readonly left: number;
+  readonly drift: number;
+  readonly rotation: number;
+  readonly delay: number;
+  readonly duration: number;
+  readonly color: string;
+  readonly round: boolean;
+}
+
+const CONFETTI: readonly ConfettiPiece[] = Array.from({ length: 28 }, (_, index) => ({
+  left: (index * 37 + 11) % 100,
+  drift: ((index * 29) % 42) - 21,
+  rotation: 240 + ((index * 47) % 420),
+  delay: (index % 7) * 55,
+  duration: 1_450 + ((index * 83) % 550),
+  color: ["#ff4d8d", "#34d399", "#60a5fa", "#fbbf24", "#f5f3f8"][index % 5] ?? "#ff4d8d",
+  round: index % 3 === 0,
+}));
+
+type ConfettiStyle = CSSProperties & {
+  "--confetti-drift": string;
+  "--confetti-rotation": string;
+};
+
+/** A single, non-blocking celebration when reactive event state opens uploads. */
+function EventStartCelebration() {
+  return (
+    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden" aria-hidden="true">
+      <div className="absolute left-1/2 top-[max(5rem,env(safe-area-inset-top))] -translate-x-1/2 animate-[party-banner_2200ms_cubic-bezier(0.16,1,0.3,1)_both] rounded-full border border-accent/30 bg-surface/95 px-5 py-3 text-sm font-semibold text-ink shadow-2xl shadow-accent/20 motion-reduce:hidden">
+        Party time — uploads are open
+      </div>
+      <div className="motion-reduce:hidden">
+        {CONFETTI.map((piece, index) => (
+          <span
+            key={`${String(piece.left)}-${String(index)}`}
+            className="absolute -top-4 block h-3 w-2 animate-[party-confetti_1800ms_cubic-bezier(0.22,1,0.36,1)_both]"
+            style={
+              {
+                left: `${String(piece.left)}%`,
+                backgroundColor: piece.color,
+                borderRadius: piece.round ? "999px" : "2px",
+                animationDelay: `${String(piece.delay)}ms`,
+                animationDuration: `${String(piece.duration)}ms`,
+                "--confetti-drift": `${String(piece.drift)}vw`,
+                "--confetti-rotation": `${String(piece.rotation)}deg`,
+              } as ConfettiStyle
+            }
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -206,9 +206,14 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
     secret: serverEnv.BETTER_AUTH_SECRET,
 
     advanced: {
-      // Better Auth sees its Convex HTTPS base URL even when Next.js proxies the
-      // request through HTTP localhost. Permit non-secure cookies only on an
-      // explicitly marked development deployment; every other state fails secure.
+      // Dynamic base URL resolution may trust forwarded headers only because
+      // `authBaseUrl().allowedHosts` rejects every host PartyBooth did not name.
+      // The Next.js proxy preserves the browser's original host in dedicated
+      // headers; direct Expo requests keep resolving to the Convex site.
+      trustedProxyHeaders: true,
+
+      // Permit non-secure cookies only on an explicitly marked development
+      // deployment; every other state fails secure.
       useSecureCookies: useSecureAuthCookies(),
     },
 

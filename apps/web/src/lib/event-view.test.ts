@@ -5,12 +5,14 @@ import {
   allowedNextStates,
   END_EVENT_CONFIRMATION_SECONDS,
   EVENT_STATE_COPY,
+  eventCountdown,
   eventHasEnded,
   eventHasNotStarted,
   eventNowAction,
   eventStatusLine,
   formatGuestCount,
   galleryIsVisible,
+  guestEventIsWaiting,
   groupJoinCode,
   guestsCanJoin,
   guestsCanUpload,
@@ -93,6 +95,17 @@ describe("capability helpers", () => {
     const viewable = EVENT_STATES.filter((state: EventState) => galleryIsVisible(state));
     expect(viewable).toEqual(["live", "paused", "archived"]);
   });
+
+  it("collapses the guest home only while a scheduled event is waiting for uploads", () => {
+    const opensAt = Date.UTC(2026, 7, 8, 16, 0);
+    const scheduled = { state: "scheduled" as const, uploadStartsAt: opensAt };
+
+    expect(guestEventIsWaiting("scheduled", opensAt - 1)).toBe(true);
+    expect(guestEventIsWaiting(scheduled, opensAt - 1)).toBe(true);
+    expect(guestEventIsWaiting(scheduled, opensAt)).toBe(false);
+    expect(guestEventIsWaiting("live", opensAt - 1)).toBe(false);
+    expect(guestEventIsWaiting("paused", opensAt - 1)).toBe(false);
+  });
 });
 
 describe("eventStatusLine", () => {
@@ -148,6 +161,46 @@ describe("eventHasNotStarted", () => {
     expect(eventHasNotStarted({ startsAt: now + 1 }, now)).toBe(true);
     expect(eventHasNotStarted({ startsAt: now }, now)).toBe(false);
     expect(eventHasNotStarted({ startsAt: now - 1 }, now)).toBe(false);
+  });
+});
+
+describe("eventCountdown", () => {
+  const startsAt = Date.UTC(2026, 7, 8, 17, 0);
+
+  it("splits the remaining time into stable day, hour, minute and second parts", () => {
+    expect(
+      eventCountdown(startsAt, startsAt - ((2 * 24 + 3) * 60 * 60 + 4 * 60 + 5) * 1_000),
+    ).toEqual({
+      started: false,
+      totalSeconds: 183_845,
+      days: 2,
+      hours: 3,
+      minutes: 4,
+      seconds: 5,
+    });
+  });
+
+  it("rounds a partial final second up instead of showing zero early", () => {
+    expect(eventCountdown(startsAt, startsAt - 1)).toMatchObject({
+      started: false,
+      totalSeconds: 1,
+      seconds: 1,
+    });
+  });
+
+  it("settles at zero once the scheduled start arrives", () => {
+    expect(eventCountdown(startsAt, startsAt)).toEqual({
+      started: true,
+      totalSeconds: 0,
+      days: 0,
+      hours: 0,
+      minutes: 0,
+      seconds: 0,
+    });
+    expect(eventCountdown(startsAt, startsAt + 60_000)).toMatchObject({
+      started: true,
+      totalSeconds: 0,
+    });
   });
 });
 

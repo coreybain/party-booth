@@ -283,9 +283,11 @@ and its keys are cleared.
 ## Auth
 
 Better Auth runs **inside Convex**, mounted on the Convex _site_ URL
-(`https://<name>.convex.site/api/auth/*`). `BETTER_AUTH_URL` should equal
-`CONVEX_SITE_URL`; `SITE_URL` is the Vercel app, and both are trusted origins
-along with the `partybooth://` app scheme.
+(`https://<name>.convex.site/api/auth/*`). Its public base URL is resolved per
+request: web traffic uses the first-party `SITE_URL` proxy so OAuth cookies stay
+on the website, while native traffic uses `CONVEX_SITE_URL` directly.
+`BETTER_AUTH_URL` is retained only for a legacy/custom allowed origin; the
+`partybooth://` app scheme remains trusted for the native return leg.
 
 Better Auth owns its own `user` / `session` / `account` / `verification` tables
 inside the component. Our `users` table is a mirror kept in step by the `user`

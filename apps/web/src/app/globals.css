@@ -193,6 +193,36 @@
   }
 }
 
+@keyframes party-confetti {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -4vh, 0) rotate(0deg);
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--confetti-drift), 104vh, 0) rotate(var(--confetti-rotation));
+  }
+}
+
+@keyframes party-banner {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, -0.75rem, 0) scale(0.96);
+  }
+  16%,
+  78% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-50%, -0.35rem, 0) scale(0.98);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -426,7 +426,7 @@ gap is closed and the demos are covered offline, but nobody has yet held two pho
 - [ ] `bunx convex dev` once from `packages/backend` — pushes the schema and replaces the generic `_generated` fallback with real types
 - [ ] Set env vars per `.env.example`. The ones with sharp edges:
   - `BETTER_AUTH_SECRET` — **identical** in Convex and Vercel, ≥32 chars
-  - `BETTER_AUTH_URL` = the **`.convex.site`** origin, *not* your Vercel domain
+  - `BETTER_AUTH_URL` is only a legacy/custom allowed origin; web auth resolves to `SITE_URL` through the Next.js proxy, while native auth resolves directly to `CONVEX_SITE_URL`
   - `APPLE_CLIENT_ID` = the **Services ID**; `APPLE_APP_BUNDLE_IDENTIFIER` = `com.partybooth.app` — do not swap
   - `UPLOADTHING_TOKEN` in **both** Vercel and Convex; `UPLOAD_CALLBACK_SECRET` **same value both sides**
   - `SITE_URL` / `NEXT_PUBLIC_SITE_URL` / `EXPO_PUBLIC_SITE_URL` = the canonical domain (the QR encodes it — a preview hostname loses the app hand-off)

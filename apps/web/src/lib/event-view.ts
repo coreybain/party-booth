@@ -219,6 +219,42 @@ export function galleryIsVisible(state: EventState): boolean {
   return isViewableEventState(state);
 }
 
+/** Whether the guest home should collapse to the single pre-event experience. */
+export function guestEventIsWaiting(
+  event: EventState | Pick<EventStatusInput, "state" | "uploadStartsAt">,
+  now: number,
+): boolean {
+  const state = typeof event === "string" ? event : event.state;
+  return state === "scheduled" && !guestsCanUpload(event, now);
+}
+
+export interface EventCountdown {
+  readonly started: boolean;
+  readonly totalSeconds: number;
+  readonly days: number;
+  readonly hours: number;
+  readonly minutes: number;
+  readonly seconds: number;
+}
+
+/** Stable clock parts for the guest pre-event countdown. */
+export function eventCountdown(startsAt: number, now: number): EventCountdown {
+  const totalSeconds = Math.max(0, Math.ceil((startsAt - now) / 1_000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return {
+    started: now >= startsAt,
+    totalSeconds,
+    days,
+    hours,
+    minutes,
+    seconds,
+  };
+}
+
 /** "12 guests" / "1 guest", counting the host's own membership out. */
 export function formatGuestCount(memberCount: number): string {
   const guests = Math.max(0, memberCount - 1);
