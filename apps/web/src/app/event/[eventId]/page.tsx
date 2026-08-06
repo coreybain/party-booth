@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 
 import { GuestEventView } from "@/components/guest/guest-event-view";
-import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
@@ -29,9 +28,7 @@ export default async function GuestEventPage({
 
   return (
     <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
-      <Card className="p-4 sm:p-6">
-        <GuestEventView eventId={eventId} />
-      </Card>
+      <GuestEventView eventId={eventId} />
     </CentredPane>
   );
 }

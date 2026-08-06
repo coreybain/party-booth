@@ -2,9 +2,17 @@
 
 import { useConvexAuth, useQuery } from "convex/react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import { BackendGate } from "@/components/backend-gate";
+import { BackendNotConfigured } from "@/components/backend-not-configured";
 import {
   consoleMediaPanelFromHash,
   type ConsoleMediaPanel,
@@ -24,6 +32,7 @@ import { CheckIcon, LogoMark } from "@/components/icons";
 import { JoinLoading } from "@/components/join/join-states";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import { Card } from "@/components/layout/card";
 import { cn } from "@/lib/cn";
 import type { EventHome, EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
@@ -53,10 +62,20 @@ import { useNow } from "@/lib/use-now";
  */
 export function GuestEventView({ eventId }: { readonly eventId: string }) {
   return (
-    <BackendGate>
+    <BackendGate
+      fallback={
+        <GuestEventCard>
+          <BackendNotConfigured />
+        </GuestEventCard>
+      }
+    >
       <GuestEventViewLive eventId={eventId} />
     </BackendGate>
   );
+}
+
+function GuestEventCard({ children }: { readonly children: ReactNode }) {
+  return <Card className="p-4 sm:p-6">{children}</Card>;
 }
 
 function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
@@ -86,27 +105,41 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
     };
   }, [hasHome, uploadsOpen]);
 
-  if (authLoading) return <JoinLoading />;
-
-  if (!isAuthenticated) {
+  if (authLoading) {
     return (
-      <div className="space-y-5">
-        <h1 className="text-lg font-semibold tracking-tight text-ink">
-          Sign in to open this event
-        </h1>
-        <p className="text-sm text-muted">
-          Scan the host's QR code again, or type the six-digit code from the sign.
-        </p>
-        <Link href="/join">
-          <Button size="lg" fullWidth>
-            Join with a code
-          </Button>
-        </Link>
-      </div>
+      <GuestEventCard>
+        <JoinLoading />
+      </GuestEventCard>
     );
   }
 
-  if (home === undefined) return <JoinLoading />;
+  if (!isAuthenticated) {
+    return (
+      <GuestEventCard>
+        <div className="space-y-5">
+          <h1 className="text-lg font-semibold tracking-tight text-ink">
+            Sign in to open this event
+          </h1>
+          <p className="text-sm text-muted">
+            Scan the host's QR code again, or type the six-digit code from the sign.
+          </p>
+          <Link href="/join">
+            <Button size="lg" fullWidth>
+              Join with a code
+            </Button>
+          </Link>
+        </div>
+      </GuestEventCard>
+    );
+  }
+
+  if (home === undefined) {
+    return (
+      <GuestEventCard>
+        <JoinLoading />
+      </GuestEventCard>
+    );
+  }
 
   return (
     <div>
@@ -159,58 +192,53 @@ function GuestEventWebApp({
   }, []);
 
   return (
-    <div
-      className={cn("space-y-6", activeTab === "camera" && appPrompt.visible && "pb-40 sm:pb-36")}
-    >
+    <div className="space-y-3">
       <GuestEventTabs active={activeTab} onChange={openTab} />
 
-      <GuestEventTabPanel tab="camera" active={activeTab} className="space-y-6">
-        <EventWelcome event={event} />
+      <GuestEventCard>
+        <div className="space-y-6">
+          <GuestEventTabPanel tab="camera" active={activeTab} className="space-y-6">
+            <EventWelcome event={event} />
 
-        {waitingForEvent ? (
-          <PreEventCountdown startsAt={event.startsAt} now={now} />
-        ) : (
-          <>
-            <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
-              {uploadsOpen
-                ? event.state === "scheduled"
-                  ? "Pre-event uploads are open — you can start adding photos and video."
-                  : "The event is live — you can start adding photos and video."
-                : uploadAvailabilityDescription(event, now)}
-            </Callout>
+            {waitingForEvent ? (
+              <PreEventCountdown startsAt={event.startsAt} now={now} />
+            ) : (
+              <>
+                {!uploadsOpen ? (
+                  <Callout tone="info" live="polite">
+                    {uploadAvailabilityDescription(event, now)}
+                  </Callout>
+                ) : null}
 
-            <CapturePanel
-              controller={controller}
-              uploadsOpen={uploadsOpen}
-              allowLibraryImport={event.allowLibraryImport}
-              closedReason={uploadAvailabilityDescription(event, now)}
-              showHeading={false}
+                <CapturePanel
+                  controller={controller}
+                  uploadsOpen={uploadsOpen}
+                  allowLibraryImport={event.allowLibraryImport}
+                  closedReason={uploadAvailabilityDescription(event, now)}
+                  showHeading={false}
+                />
+              </>
+            )}
+          </GuestEventTabPanel>
+
+          <GuestEventTabPanel tab="gallery" active={activeTab} className="space-y-8">
+            <MyMedia
+              eventId={event.id}
+              queue={controller.queue}
+              onRetry={(captureId) => {
+                void controller.send(captureId);
+              }}
+              onCancel={controller.cancel}
             />
-          </>
-        )}
-      </GuestEventTabPanel>
 
-      <GuestEventTabPanel tab="gallery" active={activeTab} className="space-y-8">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-ink">Gallery</h1>
-          <p className="mt-1 text-sm text-muted">Photos and videos from {event.name}.</p>
+            {galleryVisible ? <EventGallery eventId={event.id} /> : null}
+          </GuestEventTabPanel>
+
+          <GuestEventTabPanel tab="settings" active={activeTab}>
+            <GuestEventSettings eventId={event.id} isHost={home.isHost} onOpenTab={openTab} />
+          </GuestEventTabPanel>
         </div>
-
-        <MyMedia
-          eventId={event.id}
-          queue={controller.queue}
-          onRetry={(captureId) => {
-            void controller.send(captureId);
-          }}
-          onCancel={controller.cancel}
-        />
-
-        {galleryVisible ? <EventGallery eventId={event.id} /> : null}
-      </GuestEventTabPanel>
-
-      <GuestEventTabPanel tab="settings" active={activeTab}>
-        <GuestEventSettings eventId={event.id} isHost={home.isHost} onOpenTab={openTab} />
-      </GuestEventTabPanel>
+      </GuestEventCard>
 
       {activeTab === "camera" && appPrompt.visible ? (
         <GuestAppPrompt onDismiss={appPrompt.dismiss} />

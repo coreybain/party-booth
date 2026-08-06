@@ -46,11 +46,6 @@ export function GuestEventSettings({
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Your party, shortcuts and account.</p>
-      </div>
-
       {me === undefined ? (
         <div className="h-20 animate-pulse rounded-xl bg-raised" role="status">
           <span className="sr-only">Loading your account…</span>
@@ -70,13 +65,7 @@ export function GuestEventSettings({
         </section>
       )}
 
-      <section aria-labelledby="quick-actions-heading" className="space-y-3">
-        <h2
-          id="quick-actions-heading"
-          className="text-xs font-semibold uppercase tracking-widest text-faint"
-        >
-          Quick actions
-        </h2>
+      <section aria-label="Quick actions">
         <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
           <Button size="lg" fullWidth onClick={() => onOpenTab("camera")}>
             Take a photo
