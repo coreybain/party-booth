@@ -7,14 +7,29 @@ import { SiteFooter } from "@/components/layout/site-footer";
 import { JoinByToken } from "@/components/join/join-by-token";
 import { JoinRejected } from "@/components/join/join-states";
 import { isValidInviteToken, JOIN_REJECTED_MESSAGE, normalizeInviteToken } from "@/lib/contracts";
+import { mobileJoinUrl } from "@/lib/join-url";
+import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
-export const metadata: Metadata = {
-  title: "Join an event",
-  // The token is a bearer credential; keep it out of search engines and out of
-  // any referrer sent to a third party.
-  robots: { index: false, follow: false, nocache: true },
-  referrer: "no-referrer",
-};
+export async function generateMetadata({
+  params,
+}: {
+  readonly params: Promise<{ readonly token: string }>;
+}): Promise<Metadata> {
+  const { token } = await params;
+  const normalised = normalizeInviteToken(token);
+
+  return {
+    title: "Join an event",
+    // The token is a bearer credential; keep it out of search engines and out
+    // of any referrer sent to a third party.
+    robots: { index: false, follow: false, nocache: true },
+    referrer: "no-referrer",
+    itunes: {
+      appId: PARTYBOOTH_APP_STORE_ID,
+      appArgument: isValidInviteToken(normalised) ? mobileJoinUrl(normalised) : PARTYBOOTH_APP_URL,
+    },
+  };
+}
 
 /**
  * The QR / universal-link target: `https://<site>/join/<token>`.

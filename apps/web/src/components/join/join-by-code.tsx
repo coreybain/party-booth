@@ -10,13 +10,14 @@ import { NameConfirmForm } from "@/components/guest/name-confirm-form";
 import { EventPreviewCard } from "@/components/join/event-preview-card";
 import { JoinCodeForm } from "@/components/join-code-form";
 import { JoinLoading, JoinRejected, JoinThrottled } from "@/components/join/join-states";
+import { OpenPartyBoothApp } from "@/components/join/open-partybooth-app";
 import { StoreBadges } from "@/components/join/store-badges";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { appErrorMessage } from "@/lib/app-errors";
 import { backendApi, type JoinPreview } from "@/lib/convex-api";
 import { JOIN_REJECTED_MESSAGE } from "@/lib/contracts";
-import { joinFallbackUrl } from "@/lib/join-url";
+import { joinFallbackUrl, mobileJoinUrl } from "@/lib/join-url";
 import { requestPreviewByCode } from "@/lib/join-transport";
 import { useJoinAttempt } from "@/lib/use-join";
 
@@ -158,19 +159,30 @@ function JoinByCodeLive() {
     );
   }
 
+  // A preview can only be produced by a completed lookup, which also records
+  // the code. Keep that invariant explicit before building the native route.
+  if (code === undefined) return <JoinLoading />;
+
   if (preview.alreadyMember) {
     return (
       <div className="space-y-6">
         <EventPreviewCard preview={preview} />
         <Callout tone="success">You're already in this event.</Callout>
+        <div className="space-y-3">
+          <OpenPartyBoothApp deepLink={mobileJoinUrl(code)} />
+          <p className="text-center text-xs leading-relaxed text-faint">
+            Don’t have PartyBooth yet? We’ll take you to the App Store.
+          </p>
+        </div>
         <Button
+          variant="secondary"
           size="lg"
           fullWidth
           onClick={() => {
             router.replace(`/event/${preview.eventId}`);
           }}
         >
-          Open the event
+          Continue in browser
         </Button>
       </div>
     );

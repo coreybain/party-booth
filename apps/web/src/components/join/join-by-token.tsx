@@ -10,12 +10,13 @@ import { NameConfirmForm } from "@/components/guest/name-confirm-form";
 import { EventPreviewCard } from "@/components/join/event-preview-card";
 import { JoinLoading, JoinRejected, JoinThrottled } from "@/components/join/join-states";
 import { OpenInApp } from "@/components/join/open-in-app";
+import { OpenPartyBoothApp } from "@/components/join/open-partybooth-app";
 import { PastEventGallery } from "@/components/join/past-event-gallery";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { backendApi } from "@/lib/convex-api";
 import { JOIN_REJECTED_MESSAGE } from "@/lib/contracts";
-import { joinUrl } from "@/lib/join-url";
+import { joinUrl, mobileJoinUrl } from "@/lib/join-url";
 import { useJoinAttempt } from "@/lib/use-join";
 
 /**
@@ -130,14 +131,21 @@ function JoinByTokenLive({ token }: { readonly token: string }) {
       <div className="space-y-6">
         {eventCard}
         <Callout tone="success">You're already in this event.</Callout>
+        <div className="space-y-3">
+          <OpenPartyBoothApp deepLink={mobileJoinUrl(token)} />
+          <p className="text-center text-xs leading-relaxed text-faint">
+            Don’t have PartyBooth yet? We’ll take you to the App Store.
+          </p>
+        </div>
         <Button
+          variant="secondary"
           size="lg"
           fullWidth
           onClick={() => {
             router.replace(`/event/${preview.eventId}`);
           }}
         >
-          Open the event
+          Continue in browser
         </Button>
       </div>
     );

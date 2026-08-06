@@ -5,9 +5,11 @@ import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { JoinByCode } from "@/components/join/join-by-code";
+import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
 export const metadata: Metadata = {
   title: "Join an event",
+  itunes: { appId: PARTYBOOTH_APP_STORE_ID, appArgument: PARTYBOOTH_APP_URL },
   robots: { index: false, follow: false },
 };
 

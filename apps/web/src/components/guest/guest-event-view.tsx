@@ -14,6 +14,7 @@ import { EventGallery } from "@/components/guest/event-gallery";
 import { MyMedia } from "@/components/guest/my-media";
 import { CheckIcon, LogoMark } from "@/components/icons";
 import { JoinLoading } from "@/components/join/join-states";
+import { OpenPartyBoothApp } from "@/components/join/open-partybooth-app";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { cn } from "@/lib/cn";
@@ -29,6 +30,7 @@ import {
 } from "@/lib/event-view";
 import { useCaptureUpload } from "@/lib/use-capture-upload";
 import { useNow } from "@/lib/use-now";
+import { PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
 /**
  * Where a guest lands the moment they are in.
@@ -126,6 +128,14 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
             </span>
           </p>
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <OpenPartyBoothApp deepLink={PARTYBOOTH_APP_URL} />
+        <p className="text-center text-xs leading-relaxed text-faint">
+          If it isn’t installed, we’ll take you to the App Store. Sign in with the same account and
+          this event will already be selected.
+        </p>
       </div>
 
       {waitingForEvent ? (
