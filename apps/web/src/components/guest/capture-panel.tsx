@@ -30,9 +30,9 @@ import type { CaptureController } from "@/lib/use-capture-upload";
  *   does not — that attribute is the only difference between the camera and the
  *   photo roll on mobile, and the second button is hidden entirely when the host
  *   has turned library imports off, rather than shown and then refused.
- * - **Explicit send.** The app auto-sends with a 15-second undo; here the guest
- *   presses a button, which is the same protection without a timer that a
- *   backgrounded Safari tab would not run anyway.
+ * - **Immediate send.** Preparation builds and hashes the exact upload bytes,
+ *   then the controller starts the transfer without another tap. A guest can
+ *   still cancel an in-flight upload or explicitly retry a failure.
  * - **Touch targets are `size="lg"` (48 px) and full width.** Nothing on this
  *   card is a small tap target, including the destructive ones.
  *
@@ -223,10 +223,10 @@ export function CapturePanel({
  * One photo that has not landed yet.
  *
  * Every state offers exactly the action that state permits, and no others: a
- * `captured` item can be sent or thrown away, an in-flight one can only be
- * cancelled, and a failure offers "Try again" only when trying again could
- * possibly work — a photo refused because the host paused the party is not
- * retryable, and a button that cannot succeed is worse than no button.
+ * `captured` item is waiting for the auto-start effect, an in-flight one can
+ * only be cancelled, and a failure offers "Try again" only when trying again
+ * could possibly work — a photo refused because the host paused the party is
+ * not retryable, and a button that cannot succeed is worse than no button.
  */
 function PendingCapture({
   item,
@@ -266,28 +266,6 @@ function PendingCapture({
         ) : null}
 
         <div className="flex flex-wrap gap-2">
-          {item.state === "captured" ? (
-            <>
-              <Button
-                size="sm"
-                onClick={() => {
-                  void controller.send(item.captureId);
-                }}
-              >
-                Send it
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  controller.discard(item.captureId);
-                }}
-              >
-                Discard
-              </Button>
-            </>
-          ) : null}
-
           {item.state === "queued" || item.state === "uploading" ? (
             <Button
               variant="ghost"

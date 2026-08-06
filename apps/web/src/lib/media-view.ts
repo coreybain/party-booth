@@ -67,7 +67,7 @@ export const MODERATION_STATE_COPY: Readonly<Record<MediaState, StatusCopy>> = {
 
 /** In-flight states, which only the guest who is uploading ever sees. */
 export const CAPTURE_STATE_COPY: Readonly<Record<CaptureState, StatusCopy>> = {
-  captured: { label: "Ready", tone: "neutral", detail: "Not sent yet." },
+  captured: { label: "Starting", tone: "progress", detail: "Preparing to send." },
   queued: { label: "Starting", tone: "progress", detail: "Asking for permission to send." },
   uploading: { label: "Sending", tone: "progress", detail: "" },
   uploaded: { label: "Sent", tone: "positive", detail: "" },

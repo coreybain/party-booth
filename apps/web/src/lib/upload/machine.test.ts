@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CAPTURE_STATES, captureStateMachine, type CaptureState } from "@/lib/contracts";
 
 import {
+  capturedCaptureIds,
   emptyUploadQueue,
   findItem,
   isInFlight,
@@ -281,6 +282,18 @@ describe("uploadReducer — failure and retry", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("uploadReducer — housekeeping", () => {
+  it("auto-starts only newly captured items, not failures awaiting a retry", () => {
+    const secondId = "w".padEnd(33, "d");
+    const queue = run([
+      CAPTURED,
+      { type: "queued", captureId: CAPTURE_ID },
+      { type: "failed", captureId: CAPTURE_ID, message: "Try again.", retryable: true },
+      { type: "captured", capture: capture({ captureId: secondId }) },
+    ]);
+
+    expect(capturedCaptureIds(queue)).toEqual([secondId]);
+  });
+
   it("ignores a second capture of an id already in the queue", () => {
     // Swapping the file underneath an upload in flight is how a checksum stops
     // matching the grant it was minted against.

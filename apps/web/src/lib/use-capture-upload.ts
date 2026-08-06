@@ -53,6 +53,7 @@ import {
 } from "@/lib/upload/derivative";
 import {
   emptyUploadQueue,
+  capturedCaptureIds,
   findItem,
   releasePreview,
   uploadReducer,
@@ -307,6 +308,9 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
       const item = findItem(queueRef.current, captureId);
       if (item === undefined) return;
       if (item.state !== "captured" && item.state !== "failed") return;
+      // An effect auto-start and a fast double tap on Retry can land in the
+      // same render. Only one grant request may own a capture at a time.
+      if (aborters.current.has(captureId)) return;
 
       /*
        * The aborter is registered **before** the grant request, not after it.
@@ -468,6 +472,19 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
     },
     [event.eventId, sendDerivatives],
   );
+
+  /*
+   * Start as soon as preparation has produced the exact bytes, checksum and
+   * dimensions the grant must describe. The queue ref is synchronized by the
+   * earlier effect before this one runs, so `send` sees the item dispatched by
+   * `select`; the aborter guard above makes this safe under repeated effects.
+   * Failed items are deliberately excluded — a retry remains the guest's call.
+   */
+  useEffect(() => {
+    for (const captureId of capturedCaptureIds(queue)) {
+      void send(captureId);
+    }
+  }, [queue, send]);
 
   /* ---------------------------------------------------------------------- */
   /* Taking it back                                                         */

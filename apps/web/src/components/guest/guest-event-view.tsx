@@ -21,6 +21,7 @@ import { CapturePanel } from "@/components/guest/capture-panel";
 import { EventGallery } from "@/components/guest/event-gallery";
 import { GuestAppPrompt, useGuestAppPrompt } from "@/components/guest/guest-app-prompt";
 import { GuestEventSettings } from "@/components/guest/guest-event-settings";
+import { TermsAcceptance } from "@/components/guest/terms-acceptance";
 import {
   GuestEventTabPanel,
   GuestEventTabs,
@@ -34,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card } from "@/components/layout/card";
 import { cn } from "@/lib/cn";
+import { hasAcceptedTerms } from "@/lib/contracts";
 import type { EventHome, EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
@@ -81,6 +83,7 @@ function GuestEventCard({ children }: { readonly children: ReactNode }) {
 function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const home = useQuery(backendApi.events.home, isAuthenticated ? { eventId } : "skip");
+  const currentUser = useQuery(backendApi.users.currentUser, isAuthenticated ? {} : "skip");
   // A future scheduled event owns a seconds-accurate countdown. Every other
   // event keeps the shared 30-second clock used by relative-time copy.
   const now = useNow(home?.event.state === "scheduled" ? 1_000 : undefined);
@@ -133,7 +136,7 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
     );
   }
 
-  if (home === undefined) {
+  if (home === undefined || currentUser == null) {
     return (
       <GuestEventCard>
         <JoinLoading />
@@ -144,7 +147,12 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
   return (
     <div>
       {celebrating ? <EventStartCelebration /> : null}
-      <GuestEventWebApp home={home} uploadsOpen={uploadsOpen} now={now} />
+      <GuestEventWebApp
+        home={home}
+        uploadsOpen={uploadsOpen}
+        now={now}
+        needsTermsAcceptance={!hasAcceptedTerms(currentUser)}
+      />
     </div>
   );
 }
@@ -154,10 +162,12 @@ function GuestEventWebApp({
   home,
   uploadsOpen,
   now,
+  needsTermsAcceptance,
 }: {
   readonly home: EventHome;
   readonly uploadsOpen: boolean;
   readonly now: number;
+  readonly needsTermsAcceptance: boolean;
 }) {
   const { event } = home;
   const controller = useCaptureUpload({
@@ -202,6 +212,8 @@ function GuestEventWebApp({
 
             {waitingForEvent ? (
               <PreEventCountdown startsAt={event.startsAt} now={now} />
+            ) : needsTermsAcceptance && uploadsOpen ? (
+              <TermsAcceptance />
             ) : (
               <>
                 {!uploadsOpen ? (

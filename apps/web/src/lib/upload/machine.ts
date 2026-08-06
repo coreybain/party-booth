@@ -18,10 +18,10 @@
  * that arrive late (a progress tick after a cancel) are normal on a phone, not
  * faults.
  *
- * Web has no 15-second undo. That is deliberate: `CAPTURE_UNDO_WINDOW_MS` exists
- * for the app's auto-send, where a photo leaves without being asked. On the web
- * the guest presses "Send", which is the same protection with none of the
- * timer — so `captured` here means "chosen, previewed, not yet sent".
+ * Web sends as soon as preparation finishes. `captured` is therefore a short
+ * hand-off state between building the exact bytes and the upload controller
+ * requesting a grant; it remains explicit because retries and late network
+ * actions still need the shared capture state machine to reject illegal moves.
  */
 
 import {
@@ -112,6 +112,11 @@ export interface UploadQueue {
 
 export const emptyUploadQueue: UploadQueue = { items: [] };
 
+/** Captures the controller should start automatically, without retrying failures. */
+export function capturedCaptureIds(queue: UploadQueue): readonly string[] {
+  return queue.items.filter((item) => item.state === "captured").map((item) => item.captureId);
+}
+
 /**
  * Both predicates come from `@partybooth/contracts/media`, where they are
  * derived from the capture state machine's own transition table and shared with
@@ -145,9 +150,9 @@ export interface CapturedPayload {
 }
 
 export type UploadAction =
-  /** A photo has been chosen, re-encoded and hashed. Not sent. */
+  /** A photo has been chosen, re-encoded and hashed. Ready for auto-send. */
   | { readonly type: "captured"; readonly capture: CapturedPayload }
-  /** The guest pressed send, or a retry re-queued it. */
+  /** Auto-send started, or the guest re-queued a failed capture. */
   | { readonly type: "queued"; readonly captureId: string }
   /** A grant was issued and bytes are moving. */
   | { readonly type: "uploadStarted"; readonly captureId: string }
