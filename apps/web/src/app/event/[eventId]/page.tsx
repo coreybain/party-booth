@@ -29,7 +29,7 @@ export default async function GuestEventPage({
 
   return (
     <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
-      <Card>
+      <Card className="p-4 sm:p-6">
         <GuestEventView eventId={eventId} />
       </Card>
     </CentredPane>

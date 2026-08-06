@@ -49,6 +49,8 @@ export interface CapturePanelProps {
   readonly allowLibraryImport: boolean;
   /** Copy explaining why uploads are shut, from `EVENT_STATE_COPY`. */
   readonly closedReason: string;
+  /** The tabbed guest shell already names the Camera area. */
+  readonly showHeading?: boolean;
 }
 
 export function CapturePanel({
@@ -56,6 +58,7 @@ export function CapturePanel({
   uploadsOpen,
   allowLibraryImport,
   closedReason,
+  showHeading = true,
 }: CapturePanelProps) {
   const cameraInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
@@ -77,10 +80,17 @@ export function CapturePanel({
 
   if (!uploadsOpen) {
     return (
-      <section id="add-media" aria-labelledby="capture-heading" className="scroll-mt-28 space-y-4">
-        <h2 id="capture-heading" className="text-base font-semibold text-ink">
-          Add a photo or video
-        </h2>
+      <section
+        id="add-media"
+        aria-label={showHeading ? undefined : "Add a photo or video"}
+        aria-labelledby={showHeading ? "capture-heading" : undefined}
+        className="scroll-mt-28 space-y-4"
+      >
+        {showHeading ? (
+          <h2 id="capture-heading" className="text-base font-semibold text-ink">
+            Add a photo or video
+          </h2>
+        ) : null}
         <Callout tone="info" live="polite">
           {closedReason}
         </Callout>
@@ -89,10 +99,17 @@ export function CapturePanel({
   }
 
   return (
-    <section id="add-media" aria-labelledby="capture-heading" className="scroll-mt-28 space-y-4">
-      <h2 id="capture-heading" className="text-base font-semibold text-ink">
-        Add a photo or video
-      </h2>
+    <section
+      id="add-media"
+      aria-label={showHeading ? undefined : "Add a photo or video"}
+      aria-labelledby={showHeading ? "capture-heading" : undefined}
+      className="scroll-mt-28 space-y-4"
+    >
+      {showHeading ? (
+        <h2 id="capture-heading" className="text-base font-semibold text-ink">
+          Add a photo or video
+        </h2>
+      ) : null}
 
       <input
         ref={cameraInput}

@@ -2,7 +2,7 @@
 
 import { useConvexAuth, useQuery } from "convex/react";
 import Link from "next/link";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { BackendGate } from "@/components/backend-gate";
 import {
@@ -11,14 +11,21 @@ import {
 } from "@/components/events/guest-event-menu";
 import { CapturePanel } from "@/components/guest/capture-panel";
 import { EventGallery } from "@/components/guest/event-gallery";
+import { GuestAppPrompt, useGuestAppPrompt } from "@/components/guest/guest-app-prompt";
+import { GuestEventSettings } from "@/components/guest/guest-event-settings";
+import {
+  GuestEventTabPanel,
+  GuestEventTabs,
+  guestEventTabFromHash,
+  type GuestEventTab,
+} from "@/components/guest/guest-event-tabs";
 import { MyMedia } from "@/components/guest/my-media";
 import { CheckIcon, LogoMark } from "@/components/icons";
 import { JoinLoading } from "@/components/join/join-states";
-import { OpenPartyBoothApp } from "@/components/join/open-partybooth-app";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { cn } from "@/lib/cn";
-import type { EventSummary } from "@/lib/convex-api";
+import type { EventHome, EventSummary } from "@/lib/convex-api";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import {
@@ -30,7 +37,6 @@ import {
 } from "@/lib/event-view";
 import { useCaptureUpload } from "@/lib/use-capture-upload";
 import { useNow } from "@/lib/use-now";
-import { PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
 /**
  * Where a guest lands the moment they are in.
@@ -102,68 +108,139 @@ function GuestEventViewLive({ eventId }: { readonly eventId: string }) {
 
   if (home === undefined) return <JoinLoading />;
 
+  return (
+    <div>
+      {celebrating ? <EventStartCelebration /> : null}
+      <GuestEventWebApp home={home} uploadsOpen={uploadsOpen} now={now} />
+    </div>
+  );
+}
+
+/** The three-area mobile-web shell, backed by one persistent upload controller. */
+function GuestEventWebApp({
+  home,
+  uploadsOpen,
+  now,
+}: {
+  readonly home: EventHome;
+  readonly uploadsOpen: boolean;
+  readonly now: number;
+}) {
   const { event } = home;
+  const controller = useCaptureUpload({
+    eventId: event.id,
+    state: event.state,
+    allowLibraryImport: event.allowLibraryImport,
+    ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
+  });
+  const [activeTab, setActiveTab] = useState<GuestEventTab>("camera");
+  const appPrompt = useGuestAppPrompt();
   const waitingForEvent = guestEventIsWaiting(event, now);
+  const galleryVisible = galleryIsVisible(event.state);
+
+  useEffect(() => {
+    const syncFromHash = () => setActiveTab(guestEventTabFromHash(window.location.hash));
+    syncFromHash();
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, []);
+
+  const openTab = useCallback((tab: GuestEventTab) => {
+    setActiveTab(tab);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}#${tab}`,
+    );
+    window.scrollTo({
+      top: 0,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
 
   return (
-    <div className="space-y-6">
-      {celebrating ? <EventStartCelebration /> : null}
+    <div
+      className={cn("space-y-6", activeTab === "camera" && appPrompt.visible && "pb-40 sm:pb-36")}
+    >
+      <GuestEventTabs active={activeTab} onChange={openTab} />
 
-      <div className="flex items-start gap-3">
-        <span
-          className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-positive/15 text-positive"
-          aria-hidden="true"
-        >
-          <CheckIcon size={20} />
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-positive">You're in</p>
-          <h1 className="mt-0.5 text-xl font-semibold leading-tight tracking-tight text-ink">
-            {event.name}
-          </h1>
-          <p className="mt-1 text-sm text-muted">
-            {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
-            <span className="text-faint">
-              ({timeZoneAbbreviation(event.startsAt, event.timeZone)})
-            </span>
-          </p>
+      <GuestEventTabPanel tab="camera" active={activeTab} className="space-y-6">
+        <EventWelcome event={event} />
+
+        {waitingForEvent ? (
+          <PreEventCountdown startsAt={event.startsAt} now={now} />
+        ) : (
+          <>
+            <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
+              {uploadsOpen
+                ? event.state === "scheduled"
+                  ? "Pre-event uploads are open — you can start adding photos and video."
+                  : "The event is live — you can start adding photos and video."
+                : uploadAvailabilityDescription(event, now)}
+            </Callout>
+
+            <CapturePanel
+              controller={controller}
+              uploadsOpen={uploadsOpen}
+              allowLibraryImport={event.allowLibraryImport}
+              closedReason={uploadAvailabilityDescription(event, now)}
+              showHeading={false}
+            />
+          </>
+        )}
+      </GuestEventTabPanel>
+
+      <GuestEventTabPanel tab="gallery" active={activeTab} className="space-y-8">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-ink">Gallery</h1>
+          <p className="mt-1 text-sm text-muted">Photos and videos from {event.name}.</p>
         </div>
-      </div>
 
-      <div className="space-y-2">
-        <OpenPartyBoothApp deepLink={PARTYBOOTH_APP_URL} />
-        <p className="text-center text-xs leading-relaxed text-faint">
-          If it isn’t installed, we’ll take you to the App Store. Sign in with the same account and
-          this event will already be selected.
-        </p>
-      </div>
+        <MyMedia
+          eventId={event.id}
+          queue={controller.queue}
+          onRetry={(captureId) => {
+            void controller.send(captureId);
+          }}
+          onCancel={controller.cancel}
+        />
 
-      {waitingForEvent ? (
-        <PreEventCountdown startsAt={event.startsAt} now={now} />
-      ) : (
-        <>
-          <Callout tone={uploadsOpen ? "success" : "info"} live="polite">
-            {uploadsOpen
-              ? event.state === "scheduled"
-                ? "Pre-event uploads are open — you can start adding photos and video."
-                : "The event is live — you can start adding photos and video."
-              : uploadAvailabilityDescription(event, now)}
-          </Callout>
+        {galleryVisible ? <EventGallery eventId={event.id} /> : null}
+      </GuestEventTabPanel>
 
-          <hr className="border-line" />
+      <GuestEventTabPanel tab="settings" active={activeTab}>
+        <GuestEventSettings eventId={event.id} isHost={home.isHost} onOpenTab={openTab} />
+      </GuestEventTabPanel>
 
-          <GuestCapture event={event} uploadsOpen={uploadsOpen} now={now} />
-        </>
-      )}
-
-      {home.isHost ? (
-        <Link href={`/events/${event.id}`} className="block">
-          <Button variant="secondary" size="lg" fullWidth>
-            Open the host console
-          </Button>
-        </Link>
+      {activeTab === "camera" && appPrompt.visible ? (
+        <GuestAppPrompt onDismiss={appPrompt.dismiss} />
       ) : null}
     </div>
+  );
+}
+
+function EventWelcome({ event }: { readonly event: EventSummary }) {
+  return (
+    <header className="flex items-start gap-3">
+      <span
+        className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-full bg-positive/15 text-positive"
+        aria-hidden="true"
+      >
+        <CheckIcon size={21} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-positive">You're in</p>
+        <h1 className="mt-0.5 text-2xl font-semibold leading-tight tracking-tight text-ink">
+          {event.name}
+        </h1>
+        <p className="mt-1 text-sm leading-relaxed text-muted">
+          {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
+          <span className="text-faint">
+            ({timeZoneAbbreviation(event.startsAt, event.timeZone)})
+          </span>
+        </p>
+      </div>
+    </header>
   );
 }
 
