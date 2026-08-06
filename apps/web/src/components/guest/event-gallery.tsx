@@ -1,9 +1,11 @@
 "use client";
 
 import { useQuery } from "convex/react";
+import { useMemo, useState } from "react";
 
 import { Placeholder } from "@/components/layout/card";
 import { MediaTile } from "@/components/media/media-tile";
+import { MediaViewer, mediaViewerItemOf } from "@/components/media/media-viewer";
 import { SIGNED_READ_URL_TTL_SECONDS } from "@/lib/contracts";
 import { backendApi } from "@/lib/convex-api";
 import { useSignedUrlRefreshKey } from "@/lib/use-signed-url-refresh";
@@ -30,6 +32,7 @@ import { useSignedUrlRefreshKey } from "@/lib/use-signed-url-refresh";
  */
 
 export function EventGallery({ eventId }: { readonly eventId: string }) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const urlRefreshKey = useSignedUrlRefreshKey(SIGNED_READ_URL_TTL_SECONDS);
   const media = useQuery(backendApi.media.eventMedia, {
     eventId,
@@ -37,6 +40,16 @@ export function EventGallery({ eventId }: { readonly eventId: string }) {
     limit: 200,
     urlRefreshKey,
   });
+  const viewerItems = useMemo(
+    () =>
+      (media ?? []).map((item) =>
+        mediaViewerItemOf(
+          item,
+          `${item.mediaType === "video" ? "Video" : "Photo"} by ${item.uploaderDisplayName}`,
+        ),
+      ),
+    [media],
+  );
 
   return (
     <section
@@ -61,11 +74,25 @@ export function EventGallery({ eventId }: { readonly eventId: string }) {
         <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {media.map((item) => (
             <li key={item.id}>
-              <MediaTile item={item} shape="square" />
+              <button
+                type="button"
+                aria-label={`Open ${item.mediaType === "video" ? "video" : "photo"} by ${item.uploaderDisplayName}`}
+                onClick={() => setSelectedKey(item.id)}
+                className="block w-full rounded-xl text-left transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <MediaTile item={item} alt="" shape="square" playable={false} />
+              </button>
             </li>
           ))}
         </ul>
       )}
+
+      <MediaViewer
+        items={viewerItems}
+        selectedKey={selectedKey}
+        onSelect={setSelectedKey}
+        onClose={() => setSelectedKey(null)}
+      />
     </section>
   );
 }

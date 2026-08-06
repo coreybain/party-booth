@@ -154,6 +154,15 @@ export function MediaTile({
                 <PlayIcon size={22} />
               </span>
             </button>
+          ) : source !== undefined ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 grid place-items-center bg-black/25"
+            >
+              <span className="grid h-12 w-12 place-items-center rounded-full bg-black/60 text-white">
+                <PlayIcon size={22} />
+              </span>
+            </span>
           ) : (
             <span className="absolute inset-x-0 bottom-0 bg-black/60 px-2 py-1 text-[11px] text-white">
               Video · host view only

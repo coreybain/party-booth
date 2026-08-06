@@ -1,9 +1,11 @@
 "use client";
 
 import { useMutation, useQuery } from "convex/react";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
+import { playableUrlOf, reviewUrlOf, stillUrlOf } from "@/components/media/media-tile";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
+import { MediaViewer, type MediaViewerItem } from "@/components/media/media-viewer";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { ProgressBar } from "@/components/ui/progress-bar";
@@ -54,6 +56,7 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
   const [confirming, setConfirming] = useState<string | undefined>(undefined);
   const [working, setWorking] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const onWithdraw = useCallback(
     async (mediaId: string): Promise<void> => {
@@ -72,6 +75,10 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
   );
 
   const entries = mergeMediaTimeline(media ?? [], queue.items);
+  const viewerItems = useMemo(
+    () => entries.flatMap((entry) => viewerItemForEntry(entry) ?? []),
+    [entries],
+  );
 
   if (media === undefined && entries.length === 0) {
     return (
@@ -121,6 +128,7 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
                 onRetry={onRetry}
                 onCancel={onCancel}
                 onAskWithdraw={setConfirming}
+                onOpen={() => setSelectedKey(entry.captureId)}
                 onWithdraw={(mediaId) => {
                   void onWithdraw(mediaId);
                 }}
@@ -129,6 +137,13 @@ export function MyMedia({ eventId, queue, onRetry, onCancel }: MyMediaProps) {
           ))}
         </ul>
       )}
+
+      <MediaViewer
+        items={viewerItems}
+        selectedKey={selectedKey}
+        onSelect={setSelectedKey}
+        onClose={() => setSelectedKey(null)}
+      />
     </section>
   );
 }
@@ -140,6 +155,7 @@ function MyMediaRow({
   onRetry,
   onCancel,
   onAskWithdraw,
+  onOpen,
   onWithdraw,
 }: {
   readonly entry: MediaTimelineEntry;
@@ -148,13 +164,22 @@ function MyMediaRow({
   readonly onRetry: (captureId: string) => void;
   readonly onCancel: (captureId: string) => void;
   readonly onAskWithdraw: (mediaId: string | undefined) => void;
+  readonly onOpen: () => void;
   readonly onWithdraw: (mediaId: string) => void;
 }) {
   const mediaId = entry.media?.id;
 
   return (
     <div className="flex gap-3 rounded-xl border border-line bg-surface/60 p-3">
-      <MediaThumbnail url={entry.thumbnailUrl} alt="Your photo" className="w-20" />
+      <button
+        type="button"
+        aria-label={`Open your ${entry.media?.mediaType ?? entry.upload?.mediaType ?? "photo"}`}
+        onClick={onOpen}
+        disabled={entry.thumbnailUrl === undefined}
+        className="h-fit shrink-0 rounded-xl transition-transform enabled:active:scale-95 disabled:cursor-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        <MediaThumbnail url={entry.thumbnailUrl} alt="" className="w-20" />
+      </button>
 
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex items-start justify-between gap-2">
@@ -246,4 +271,28 @@ function MyMediaRow({
       </div>
     </div>
   );
+}
+
+function viewerItemForEntry(entry: MediaTimelineEntry): MediaViewerItem | null {
+  const mediaType = entry.media?.mediaType ?? entry.upload?.mediaType;
+  if (mediaType === undefined) return null;
+
+  const imageUrl =
+    entry.media === undefined
+      ? entry.thumbnailUrl
+      : mediaType === "photo"
+        ? reviewUrlOf(entry.media)
+        : stillUrlOf(entry.media);
+  const videoUrl =
+    entry.media !== undefined && mediaType === "video" ? playableUrlOf(entry.media) : undefined;
+  if (imageUrl === undefined && videoUrl === undefined) return null;
+
+  return {
+    key: entry.captureId,
+    mediaType,
+    imageUrl,
+    videoUrl,
+    title: `Your ${mediaType}`,
+    subtitle: entry.status.label,
+  };
 }
