@@ -158,6 +158,7 @@ export {
   eventScheduleSchema,
   hexColorSchema,
   timeZoneSchema,
+  uploadGrantRequestSchema,
   updateEventInputSchema,
 } from "@partybooth/contracts/schemas";
 

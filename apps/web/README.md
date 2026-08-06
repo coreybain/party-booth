@@ -30,13 +30,13 @@ may branch on that string.
 Sprint 3, and the half of the guest journey that PLAN.md calls _guaranteed_.
 Five hops, and the interesting thing about each one is which side is trusted:
 
-| #   | Where                                | What happens                                                                                    |
-| --- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| 1   | browser · `lib/upload/derivative.ts` | the chosen photo is **decoded and re-encoded** to JPEG ≤ 2560 px, plus a local 480 px thumbnail |
-| 2   | browser · `lib/upload/checksum.ts`   | SHA-256 of the **re-encoded** bytes — the value the grant is bound to                           |
-| 3   | Convex · `media.requestUploadGrant`  | permission, event state, library flag, size caps, throttle → a two-minute single-use secret     |
-| 4   | `POST /api/uploadthing` · `core.ts`  | middleware re-checks the file against the ticket and the grant against Convex, then presigns    |
-| 5   | UploadThing → `onUploadComplete`     | `media.completeUpload`, server-to-server, authenticated by `UPLOAD_CALLBACK_SECRET`             |
+| #   | Where                                | What happens                                                                                     |
+| --- | ------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| 1   | browser · `lib/upload/derivative.ts` | the chosen photo is **decoded and re-encoded** to JPEG ≤ 2560 px, plus a local 480 px thumbnail  |
+| 2   | browser · `lib/upload/checksum.ts`   | SHA-256 of the **re-encoded** bytes — the value the grant is bound to                            |
+| 3   | `POST /api/upload-grant` → Convex    | same-origin session bridge requests permission, policy checks and a two-minute single-use secret |
+| 4   | `POST /api/uploadthing` · `core.ts`  | middleware re-checks the file against the ticket and the grant against Convex, then presigns     |
+| 5   | UploadThing → `onUploadComplete`     | `media.completeUpload`, server-to-server, authenticated by `UPLOAD_CALLBACK_SECRET`              |
 
 Four things in there are load-bearing and easy to undo by accident.
 
@@ -128,6 +128,7 @@ src/app/
   join/, join/[token]/        code entry + universal-link target
   event/[eventId]/            where a guest lands after joining
   api/auth/[...all]/          Better Auth ↔ Convex proxy
+  api/upload-grant/           authenticated HTTP bridge for media.requestUploadGrant
   api/uploadthing/            core.ts = FileRouter · route.ts = handler (503 with no creds)
   error.tsx, global-error.tsx, not-found.tsx
 
@@ -179,7 +180,7 @@ src/lib/
   use-now.ts                  render-safe wall clock (useSyncExternalStore)
   upload/
     ticket.ts                 the .input() payload + file cross-check  (tested)
-    grant.ts                  re-parse GrantResult, fail closed        (tested)
+    grant-transport.ts        HTTP grant bridge + fail-closed parser   (tested)
     derivative.ts             canvas re-encode, EXIF/GPS stripping     (tested)
     checksum.ts               SHA-256 over the re-encoded bytes
     capture-id.ts             unguessable idempotency key              (tested)

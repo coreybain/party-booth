@@ -27,7 +27,6 @@
  * This hook is the part that talks to the network, and it is deliberately thin.
  */
 
-import { useMutation } from "convex/react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { appErrorMessage } from "@/lib/app-errors";
@@ -38,12 +37,10 @@ import {
   isPermanentRejection,
   MEDIA_LIMITS,
   MEDIA_STATES,
-  parseGrantResult,
   type EventState,
   type MediaSource,
   type MediaState,
 } from "@/lib/contracts";
-import { backendApi } from "@/lib/convex-api";
 import { newCaptureId } from "@/lib/upload/capture-id";
 import { checksumOfBlob } from "@/lib/upload/checksum";
 import { clientUploadCompletion } from "@/lib/upload/completion";
@@ -65,6 +62,7 @@ import {
   type UploadQueue,
 } from "@/lib/upload/machine";
 import { alreadyUploadedActions } from "@/lib/upload/reconciliation";
+import { requestUploadGrant } from "@/lib/upload/grant-transport";
 import { PARTY_MEDIA_ROUTE, uploadFiles } from "@/lib/upload/uploader";
 import { browserVideoRuntime, buildVideoFacts, posterFileName } from "@/lib/upload/video";
 
@@ -112,7 +110,6 @@ export interface CaptureController {
 
 export function useCaptureUpload(event: CaptureEventContext): CaptureController {
   const [queue, dispatch] = useReducer(uploadReducer, emptyUploadQueue);
-  const requestGrant = useMutation(backendApi.media.requestUploadGrant);
 
   /*
    * `send` needs the current item without depending on `queue`, or every
@@ -232,8 +229,8 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
 
       try {
         const checksum = await checksumOfBlob(derivative.file);
-        const grant = parseGrantResult(
-          await requestGrant({
+        const grant = await requestUploadGrant(
+          {
             eventId: event.eventId,
             captureId: item.captureId,
             mediaType: item.mediaType,
@@ -252,7 +249,8 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
              */
             sourceMetadataStripped: true,
             capturedAt: item.createdAt,
-          }),
+          },
+          aborter.signal,
         );
 
         if (aborter.signal.aborted) return { retry: false };
@@ -289,7 +287,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         aborters.current.delete(key);
       }
     },
-    [event.eventId, requestGrant],
+    [event.eventId],
   );
 
   const sendDerivatives = useCallback(
@@ -327,8 +325,8 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
       try {
         let grant;
         try {
-          grant = parseGrantResult(
-            await requestGrant({
+          grant = await requestUploadGrant(
+            {
               eventId: event.eventId,
               captureId,
               mediaType: item.mediaType,
@@ -344,7 +342,8 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
               ...(item.durationSeconds === undefined
                 ? {}
                 : { durationSeconds: item.durationSeconds }),
-            }),
+            },
+            aborter.signal,
           );
         } catch (error) {
           if (aborter.signal.aborted) return;
@@ -467,7 +466,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         aborters.current.delete(captureId);
       }
     },
-    [event.eventId, requestGrant, sendDerivatives],
+    [event.eventId, sendDerivatives],
   );
 
   /* ---------------------------------------------------------------------- */
