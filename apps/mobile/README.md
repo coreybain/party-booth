@@ -14,7 +14,8 @@ covers upload trouble, a party opening or closing, and a host's queue building u
 
 ```bash
 cp apps/mobile/.env.example apps/mobile/.env.local   # optional — the app runs without it
-bun run --filter @partybooth/mobile dev                 # expo start --dev-client
+bun run start:mobile                                  # expo start --dev-client
+bun run start:mobile -- --port 8082                   # use a different Metro port
 ```
 
 Without a `.env.local` the app boots to a **"PartyBooth isn't configured"** screen listing

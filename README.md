@@ -29,11 +29,16 @@ degrade to a no-op with a warning; a variable only ever throws when the code tha
 
 ```bash
 bun run start          # backend + web + mobile together
-bun run start:web      # backend + web — http://localhost:3000
-bun run start:mobile   # backend + mobile — Expo dev server
+bun run start:web      # Next.js web only — http://localhost:3000
+bun run start:convex   # Convex backend only
+bun run start:mobile   # Expo mobile dev server only
+
+# Pass a custom port to either client development server when needed:
+bun run start:web -- --port 3100
+bun run start:mobile -- --port 8082
 ```
 
-Both boot with an empty environment. `apps/web` renders its authenticated shells behind a
+Each process can start with an empty environment. `apps/web` renders its authenticated shells behind a
 "backend not configured" banner; `apps/mobile` shows a screen naming each missing variable.
 
 Two env files, on purpose: the root `.env.local` covers the server and the web app, while
@@ -50,8 +55,9 @@ fresh clone typechecks offline; `bunx convex dev` regenerates it once a real dep
 | ----------------------- | ------------------------------------------------------ |
 | `bun run dev`           | every app's dev server (Turborepo, persistent)         |
 | `bun run start`         | backend, web and mobile dev servers together           |
-| `bun run start:web`     | Convex backend and Next.js web dev server              |
-| `bun run start:mobile`  | Convex backend and Expo mobile dev server              |
+| `bun run start:web`     | Next.js web dev server (accepts `-- --port <port>`)    |
+| `bun run start:convex`  | Convex backend dev process                             |
+| `bun run start:mobile`  | Expo dev server (accepts `-- --port <port>`)           |
 | `bun run build`         | build everything in dependency order                   |
 | `bun run typecheck`     | root config files, then every package's `tsc --noEmit` |
 | `bun run lint`          | ESLint 10 flat config across the repo                  |

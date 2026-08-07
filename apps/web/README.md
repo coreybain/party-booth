@@ -95,7 +95,8 @@ video. The capture panel says so in as many words.
 ## Run it
 
 ```bash
-bun run --filter @partybooth/web dev     # http://localhost:3000
+bun run start:web                        # http://localhost:3000
+bun run start:web -- --port 3100         # custom development port
 bun run --filter @partybooth/web build
 bun run --filter @partybooth/web test
 ```
