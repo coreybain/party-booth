@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { createClientEnv, mobileAppDownloadsEnabled } from "./client";
 import { createEnv, envKeys, envVar, type EnvDefinition } from "./create-env";
 import { clientVars, mobileVars, serverVars, STORAGE_REGIONS } from "./schema";
 
@@ -118,6 +119,18 @@ describe("declarations", () => {
 
   it("exposes pdx1 as the only beta storage region", () => {
     expect(STORAGE_REGIONS).toEqual(["pdx1"]);
+  });
+});
+
+describe("web client feature flags", () => {
+  it("hides mobile app downloads unless they are deliberately enabled", () => {
+    expect(mobileAppDownloadsEnabled(createClientEnv({}))).toBe(false);
+    expect(
+      mobileAppDownloadsEnabled(createClientEnv({ NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED: "0" })),
+    ).toBe(false);
+    expect(
+      mobileAppDownloadsEnabled(createClientEnv({ NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED: "1" })),
+    ).toBe(true);
   });
 });
 

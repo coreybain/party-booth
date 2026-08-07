@@ -31,6 +31,7 @@ export function createClientEnv(runtimeEnv: RuntimeEnv<ClientVars>): ClientEnv {
  */
 export const clientEnv: ClientEnv = createClientEnv({
   NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
+  NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED: process.env.NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED,
   NEXT_PUBLIC_CONVEX_URL: process.env.NEXT_PUBLIC_CONVEX_URL,
   NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
   NEXT_PUBLIC_SENTRY_ENVIRONMENT: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
@@ -38,10 +39,22 @@ export const clientEnv: ClientEnv = createClientEnv({
 
 /** Optional providers on the browser side. Never throws. */
 export const clientFeatures = {
+  get mobileAppDownloads(): boolean {
+    return mobileAppDownloadsEnabled();
+  },
   get sentry(): boolean {
     return envHas(clientEnv, "NEXT_PUBLIC_SENTRY_DSN");
   },
 } as const;
+
+/**
+ * Whether the public web experience may mention or link to the mobile apps.
+ * Missing is deliberately false: store promotion must be explicitly enabled
+ * after the listings are publicly downloadable.
+ */
+export function mobileAppDownloadsEnabled(env: ClientEnv = clientEnv): boolean {
+  return env.NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED === "1";
+}
 
 /** Browser Sentry environment tag. Never throws. */
 export function clientSentryEnvironment(): string {

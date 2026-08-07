@@ -109,6 +109,12 @@ and `/api/auth/*` answers 503 with an actionable message. Set `CONVEX_URL` and
 
 Run `bun run env:doctor` from the repo root to see what is still unset.
 
+Mobile-app promotion is disabled by default while the public store listings are unavailable.
+Set `NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED=1` in the web environment and rebuild/redeploy to
+restore the shared download prompt across QR-token, invalid-invite and typed-code join screens.
+Leaving the variable unset (or setting it to `0`) keeps those prompts completely absent while the
+browser-based join flow continues to work normally.
+
 ## Layout
 
 ```

@@ -281,6 +281,10 @@ export const clientVars = {
     httpUrl,
     "Same value as SITE_URL. On Vercel, use the production domain, not the preview URL.",
   ),
+  NEXT_PUBLIC_MOBILE_APP_DOWNLOADS_ENABLED: envVar(
+    z.enum(["0", "1"]).default("0"),
+    "Set to 1 only after the public mobile store listings are ready. Defaults to 0 so the web join flow never promotes an unavailable app.",
+  ),
   NEXT_PUBLIC_CONVEX_URL: envVar(
     httpUrl,
     "Same value as CONVEX_URL (https://<name>.convex.cloud).",
