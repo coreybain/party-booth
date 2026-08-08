@@ -79,11 +79,11 @@ describe("resolveStorageAdapter", () => {
       expiresInSeconds: 60,
     });
 
-    expect(result.url).toBe("https://freeapp123.ufs.sh/f/file%20key");
+    expect(result.url).toBe("https://utfs.io/f/file%20key");
     expect(result.expiresAt).toBeGreaterThan(Date.now());
   });
 
-  it("uses the token app id when a stale standalone id disagrees", async () => {
+  it("does not couple a public file URL to either configured app id", async () => {
     setToken(
       btoa(JSON.stringify({ apiKey: "not-real", appId: "token-app-123", regions: ["pdx1"] })),
     );
@@ -93,7 +93,7 @@ describe("resolveStorageAdapter", () => {
 
     const result = await resolveStorageAdapter("pdx1").createReadUrl("new-file-key");
 
-    expect(result.url).toBe("https://token-app-123.ufs.sh/f/new-file-key");
+    expect(result.url).toBe("https://utfs.io/f/new-file-key");
   });
 
   it("carries the region it was asked for, not the environment default", () => {

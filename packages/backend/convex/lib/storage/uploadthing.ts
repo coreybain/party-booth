@@ -131,7 +131,7 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
       ? envOptional(serverEnv, "UPLOADTHING_APP_ID")
       : (appIdFromToken(token) ?? envOptional(serverEnv, "UPLOADTHING_APP_ID"));
   const configured = token !== undefined && token !== "";
-  const usesPublicFiles = serverEnv.UPLOADTHING_ACL === "public-read" && appId !== undefined;
+  const usesPublicFiles = serverEnv.UPLOADTHING_ACL === "public-read";
 
   const description: StorageAppDescription = {
     region,
@@ -158,7 +158,11 @@ export function createUploadThingAdapter(region: StorageRegion): StorageAdapter 
        */
       if (usesPublicFiles) {
         return {
-          url: `https://${appId}.ufs.sh/f/${encodeURIComponent(key)}`,
+          // UploadThing's app-independent public host resolves the owning app
+          // from the file key. This keeps older event media readable if the
+          // configured writer app changes, while private ACLs still use the
+          // token-bound signed URL below.
+          url: `https://utfs.io/f/${encodeURIComponent(key)}`,
           expiresAt: Date.now() + expiresIn * 1000,
         };
       }
