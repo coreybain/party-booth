@@ -4,6 +4,7 @@ import {
   consoleMediaPanelFromHash,
   consoleMediaPanelLabel,
   guestEventMenuItems,
+  guestEventSettingsHref,
 } from "@/components/events/guest-event-menu";
 
 describe("guest event menu", () => {
@@ -31,5 +32,11 @@ describe("guest event menu", () => {
   it("labels the trigger with the active selection", () => {
     expect(consoleMediaPanelLabel("uploads")).toBe("Your uploads");
     expect(consoleMediaPanelLabel("gallery")).toBe("Party gallery");
+  });
+
+  it("opens the role-safe settings tab for this exact event", () => {
+    expect(guestEventSettingsHref("event/id with spaces")).toBe(
+      "/event/event%2Fid%20with%20spaces#settings",
+    );
   });
 });
