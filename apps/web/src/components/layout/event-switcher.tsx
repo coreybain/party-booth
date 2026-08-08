@@ -7,6 +7,7 @@ import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { ChevronDownIcon } from "@/components/icons";
 import { backendApi } from "@/lib/convex-api";
 import { cn } from "@/lib/cn";
+import { organiserEvents } from "@/lib/organiser-events";
 
 export interface EventSwitcherProps {
   readonly className?: string;
@@ -70,13 +71,13 @@ function EventSwitcherLive({ className }: EventSwitcherProps) {
   const router = useRouter();
   const params = useParams<{ eventId?: string }>();
 
-  const events = useQuery(backendApi.events.myEvents, {});
+  const memberships = useQuery(backendApi.events.myEvents, {});
   const active = useQuery(backendApi.events.activeEvent, {});
   const setActiveEvent = useMutation(backendApi.events.setActiveEvent);
 
   const shape = switcherShape(className);
 
-  if (events === undefined) {
+  if (memberships === undefined) {
     return (
       <span
         className={cn(shape, "border-dashed border-line text-faint")}
@@ -88,6 +89,8 @@ function EventSwitcherLive({ className }: EventSwitcherProps) {
       </span>
     );
   }
+
+  const events = organiserEvents(memberships);
 
   if (events.length === 0) {
     return (

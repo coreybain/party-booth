@@ -10,13 +10,14 @@ import { Card } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { backendApi, type EventSummary } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
+import { organiserEvents } from "@/lib/organiser-events";
 
 /**
- * Every event this account can walk into, newest first.
+ * Every event this account owns or co-hosts, newest first.
  *
- * `myEvents` is built from memberships rather than from ownership, so an event
- * someone made you a co-host of appears here beside your own — with the role
- * shown, because "can I archive this?" is the first question a co-host has.
+ * `myEvents` also includes ordinary QR-code guest memberships for the event
+ * chooser. The organiser dashboard must filter those out: being able to attend
+ * a party does not make it one the user administers.
  */
 export function EventList() {
   return (
@@ -27,9 +28,10 @@ export function EventList() {
 }
 
 function EventListLive() {
-  const events = useQuery(backendApi.events.myEvents, {});
+  const memberships = useQuery(backendApi.events.myEvents, {});
 
-  if (events === undefined) return <EventListSkeleton />;
+  if (memberships === undefined) return <EventListSkeleton />;
+  const events = organiserEvents(memberships);
   if (events.length === 0) return <NoEvents />;
 
   return (
@@ -61,11 +63,11 @@ function EventRow({ event }: { readonly event: EventSummary }) {
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-base font-semibold text-ink">{event.name}</h2>
             <StateBadge state={event.state} />
-            {event.role === "owner" ? null : (
+            {event.role === "cohost" ? (
               <span className="rounded-full border border-line px-2 py-0.5 text-xs text-faint">
                 Co-host
               </span>
-            )}
+            ) : null}
           </div>
           <p className="mt-1 text-sm text-muted">
             {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
