@@ -46,6 +46,7 @@ function anEvent(overrides: Partial<EventSummary> = {}): EventSummary {
     role: "guest",
     counts: { pending: 0, approved: 8, declined: 0, total: 8 },
     ...overrides,
+    photoChallengesEnabled: overrides.photoChallengesEnabled ?? false,
   };
 }
 

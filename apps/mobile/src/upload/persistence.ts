@@ -210,6 +210,7 @@ export function parseQueueItem(raw: unknown): QueueItem | null {
   const sendAt = num(source.sendAt) ?? capturedAt + undoDelayMs;
   const failure = readFailure(source.failure);
   const mediaId = str(source.mediaId);
+  const challengeAssignmentId = str(source.challengeAssignmentId);
   const width = optionalNum(source.width);
   const height = optionalNum(source.height);
   const durationSeconds = optionalNum(source.durationSeconds);
@@ -218,6 +219,7 @@ export function parseQueueItem(raw: unknown): QueueItem | null {
     // Absent means a pre-ownership row. Keep it so its local files are not
     // silently lost, but never guess who owns it; the provider quarantines it.
     ...(ownerUserId === null ? {} : { ownerUserId }),
+    ...(challengeAssignmentId === null ? {} : { challengeAssignmentId }),
     captureId,
     eventId,
     state,

@@ -36,6 +36,7 @@ const event: EventSummary = {
   startsAt: Date.now() - 1_000,
   timeZone: "Australia/Sydney",
   allowLibraryImport: true,
+  photoChallengesEnabled: false,
   publicGalleryEnabled: false,
   storageRegion: "pdx1",
   role: "guest",

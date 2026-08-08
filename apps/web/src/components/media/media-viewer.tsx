@@ -14,6 +14,7 @@ export interface MediaViewerItem {
   readonly videoUrl: string | undefined;
   readonly title: string;
   readonly subtitle?: string;
+  readonly challengePrompt?: string;
 }
 
 export function mediaViewerItemOf(
@@ -27,6 +28,9 @@ export function mediaViewerItemOf(
     imageUrl: item.mediaType === "photo" ? reviewUrlOf(item) : stillUrlOf(item),
     videoUrl: item.mediaType === "video" ? playableUrlOf(item) : undefined,
     title,
+    ...("challengePrompt" in item && item.challengePrompt !== undefined
+      ? { challengePrompt: item.challengePrompt }
+      : {}),
     ...(subtitle === undefined ? {} : { subtitle }),
   };
 }
@@ -238,6 +242,11 @@ export function MediaViewer({
                 <p className="text-sm font-medium text-ink">{items[selectedIndex]?.title}</p>
                 {items[selectedIndex]?.subtitle === undefined ? null : (
                   <p className="mt-0.5 text-xs text-muted">{items[selectedIndex]?.subtitle}</p>
+                )}
+                {items[selectedIndex]?.challengePrompt === undefined ? null : (
+                  <p className="mt-2 border-t border-line pt-2 text-sm font-medium text-plum">
+                    Challenge: {items[selectedIndex]?.challengePrompt}
+                  </p>
                 )}
                 {items.length > 1 ? (
                   <p className="mt-1 text-xs text-faint">Swipe or use the arrows to browse</p>

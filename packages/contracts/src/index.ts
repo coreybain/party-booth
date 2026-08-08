@@ -21,6 +21,7 @@ export * from "./join";
 export * from "./media";
 export * from "./otp";
 export * from "./permissions";
+export * from "./photo-challenges";
 export * from "./push";
 export * from "./qr";
 export * from "./roles";

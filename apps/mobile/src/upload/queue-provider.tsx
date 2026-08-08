@@ -209,6 +209,7 @@ export interface GrantArgs {
   readonly capturedAt: number;
   readonly mediaSource: MediaSource;
   readonly sourceMetadataStripped: boolean;
+  readonly challengeAssignmentId?: string | undefined;
   readonly durationSeconds?: number | undefined;
 }
 
@@ -597,6 +598,9 @@ export function UploadQueueProvider({
           ...(item.sourceCarriesNoLocation === undefined
             ? {}
             : { sourceCarriesNoLocation: item.sourceCarriesNoLocation }),
+          ...(item.challengeAssignmentId === undefined
+            ? {}
+            : { challengeAssignmentId: item.challengeAssignmentId }),
           ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds }),
         });
 

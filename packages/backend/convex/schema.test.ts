@@ -126,6 +126,13 @@ describe("tables", () => {
         // Durable keys for avatar/orphan deletes that have no retained media
         // row to surface a bounded provider failure.
         "storagePurgeJobs",
+
+        /* Photo challenges ----------------------------------------------- */
+        // Host-managed event deck, immutable personal snapshots, and the
+        // bounded no-repeat cursor for each event/account pair.
+        "photoChallenges",
+        "photoChallengeAssignments",
+        "photoChallengeProgress",
       ].sort(),
     );
   });
@@ -220,6 +227,9 @@ describe("indexes", () => {
     ["joinAttempts", ["by_key"]],
     ["cohostInvitations", ["by_email", "by_event", "by_event_and_email", "by_email_and_status"]],
     ["userEmails", ["by_user", "by_email", "by_user_and_email", "by_email_and_status"]],
+    ["photoChallenges", ["by_event", "by_event_and_status", "by_event_and_normalized"]],
+    ["photoChallengeAssignments", ["by_event_and_user", "by_event_and_user_and_status"]],
+    ["photoChallengeProgress", ["by_event_and_user"]],
   ])("%s has the indexes its access paths need", (table, required) => {
     const names = indexNames(table);
     for (const index of required) {

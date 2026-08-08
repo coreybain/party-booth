@@ -32,6 +32,7 @@ function event(overrides: Partial<EventSummary> & { id: string }): EventSummary 
     role: "guest",
     counts: { pending: 0, approved: 0, declined: 0, total: 0 },
     ...overrides,
+    photoChallengesEnabled: overrides.photoChallengesEnabled ?? false,
   };
 }
 

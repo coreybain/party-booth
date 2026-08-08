@@ -190,6 +190,7 @@ describe("eventToFormValues", () => {
     endsAt: Date.UTC(2026, 7, 6, 0, 0),
     timeZone: "Europe/London",
     allowLibraryImport: false,
+    photoChallengesEnabled: false,
     publicGalleryEnabled: false,
     storageRegion: "pdx1",
     role: "owner",

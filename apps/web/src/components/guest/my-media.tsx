@@ -294,5 +294,8 @@ function viewerItemForEntry(entry: MediaTimelineEntry): MediaViewerItem | null {
     videoUrl,
     title: `Your ${mediaType}`,
     subtitle: entry.status.label,
+    ...(entry.media?.challengePrompt === undefined
+      ? {}
+      : { challengePrompt: entry.media.challengePrompt }),
   };
 }

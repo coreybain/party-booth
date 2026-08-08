@@ -81,6 +81,7 @@ export interface UploadItem {
   readonly mimeType: string;
   readonly checksum: string;
   readonly metadataStripped: boolean;
+  readonly challengeAssignmentId?: string;
   readonly width?: number;
   readonly height?: number;
   /**
@@ -141,6 +142,7 @@ export interface CapturedPayload {
   readonly mimeType: string;
   readonly checksum: string;
   readonly metadataStripped: boolean;
+  readonly challengeAssignmentId?: string;
   readonly width?: number;
   readonly height?: number;
   readonly durationSeconds?: number;

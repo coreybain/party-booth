@@ -171,10 +171,13 @@ function GuestEventWebApp({
   readonly needsTermsAcceptance: boolean;
 }) {
   const { event, isHost } = home;
+  const [photoChallengesHidden, setPhotoChallengesHidden] = useState(false);
+  const photoChallengesEnabled = event.photoChallengesEnabled && !photoChallengesHidden;
   const controller = useCaptureUpload({
     eventId: event.id,
     state: event.state,
     allowLibraryImport: event.allowLibraryImport,
+    photoChallengesEnabled,
     ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
   });
   const [activeTab, setActiveTab] = useState<GuestEventTab>("camera");
@@ -229,10 +232,13 @@ function GuestEventWebApp({
 
                 <CapturePanel
                   controller={controller}
+                  eventId={event.id}
                   uploadsOpen={uploadsOpen}
                   allowLibraryImport={event.allowLibraryImport}
                   closedReason={uploadAvailabilityDescription(event, now)}
                   showHeading={false}
+                  photoChallengesEnabled={photoChallengesEnabled}
+                  onPhotoChallengesNotNow={() => setPhotoChallengesHidden(true)}
                 />
               </>
             )}
@@ -447,10 +453,13 @@ export function GuestCapture({
   readonly now: number;
   readonly layout?: "stack" | "console";
 }) {
+  const [photoChallengesHidden, setPhotoChallengesHidden] = useState(false);
+  const photoChallengesEnabled = event.photoChallengesEnabled && !photoChallengesHidden;
   const controller = useCaptureUpload({
     eventId: event.id,
     state: event.state,
     allowLibraryImport: event.allowLibraryImport,
+    photoChallengesEnabled,
     ...(event.uploadStartsAt === undefined ? {} : { uploadStartsAt: event.uploadStartsAt }),
   });
   const galleryVisible = galleryIsVisible(event.state);
@@ -499,9 +508,12 @@ export function GuestCapture({
       <div className={cn(layout === "console" && "lg:sticky lg:top-28")}>
         <CapturePanel
           controller={controller}
+          eventId={event.id}
           uploadsOpen={uploadsOpen}
           allowLibraryImport={event.allowLibraryImport}
           closedReason={uploadAvailabilityDescription(event, now)}
+          photoChallengesEnabled={photoChallengesEnabled}
+          onPhotoChallengesNotNow={() => setPhotoChallengesHidden(true)}
         />
       </div>
 

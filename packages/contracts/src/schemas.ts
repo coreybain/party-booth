@@ -394,7 +394,21 @@ export const uploadGrantRequestSchema = z
      * else.
      */
     sourceCarriesNoLocation: z.boolean().optional(),
+    /** Server-issued snapshot id. Only a newly captured original photo may carry it. */
+    challengeAssignmentId: idSchema.optional(),
   })
+  .refine(
+    (value) =>
+      value.challengeAssignmentId === undefined ||
+      (value.fileRole === "original" &&
+        value.mediaType === "photo" &&
+        (value.mediaSource === "capture" ||
+          (value.mediaSource === undefined && value.fromLibrary !== true))),
+    {
+      error: "A photo challenge may only be attached to a newly captured original photo.",
+      path: ["challengeAssignmentId"],
+    },
+  )
   .refine(
     (value) =>
       value.mediaSource === undefined ||

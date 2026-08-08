@@ -56,6 +56,15 @@ export interface VideoCaptureRequest {
   readonly capturedAt?: number | undefined;
 }
 
+export interface PreparedPhoto {
+  readonly draft: CaptureDraft;
+  readonly ownerUserId: string;
+}
+
+export type PhotoPreparationOutcome =
+  | { readonly status: "prepared"; readonly photo: PreparedPhoto }
+  | { readonly status: "refused"; readonly message: string };
+
 const NO_EVENT_MESSAGE = "Join a party first — there's nowhere to send this yet.";
 const PIPELINE_FAILED_MESSAGE =
   "That photo couldn't be prepared. Try taking it again; if it keeps happening, restart the app.";
@@ -81,6 +90,12 @@ export interface CaptureController {
   /** True while a frame or clip is being prepared. The shutter disables on it. */
   readonly busy: boolean;
   readonly capture: (request: CaptureRequest) => Promise<CaptureOutcome>;
+  readonly preparePhoto: (request: CaptureRequest) => Promise<PhotoPreparationOutcome>;
+  readonly commitPhoto: (
+    photo: PreparedPhoto,
+    challengeAssignmentId?: string,
+  ) => Promise<CaptureOutcome>;
+  readonly discardPhoto: (photo: PreparedPhoto) => Promise<void>;
   /**
    * Admit a finished recording.
    *
@@ -97,8 +112,8 @@ export function useCapture(event: EventSummary | null): CaptureController {
   const { enqueueForOwner, ownerUserId } = useUploadQueue();
   const [busy, setBusy] = useState(false);
 
-  const capture = useCallback(
-    async (request: CaptureRequest): Promise<CaptureOutcome> => {
+  const preparePhoto = useCallback(
+    async (request: CaptureRequest): Promise<PhotoPreparationOutcome> => {
       if (event === null) return { status: "refused", message: NO_EVENT_MESSAGE };
       const captureOwnerUserId = ownerUserId;
       if (captureOwnerUserId === null) {
@@ -154,12 +169,7 @@ export function useCapture(event: EventSummary | null): CaptureController {
           return { status: "refused", message: sized.message };
         }
 
-        const item = enqueueForOwner(draft, captureOwnerUserId);
-        if (item === null) {
-          await deleteDraftFiles(draft);
-          return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
-        }
-        return { status: "queued", item };
+        return { status: "prepared", photo: { draft, ownerUserId: captureOwnerUserId } };
       } catch (error) {
         // A failed encode is a device problem (out of storage, a corrupt frame),
         // not something a guest can be told anything useful about — so it goes to
@@ -170,7 +180,35 @@ export function useCapture(event: EventSummary | null): CaptureController {
         setBusy(false);
       }
     },
-    [enqueueForOwner, event, ownerUserId],
+    [event, ownerUserId],
+  );
+
+  const commitPhoto = useCallback(
+    async (photo: PreparedPhoto, challengeAssignmentId?: string): Promise<CaptureOutcome> => {
+      const draft: CaptureDraft = {
+        ...photo.draft,
+        ...(challengeAssignmentId === undefined ? {} : { challengeAssignmentId }),
+      };
+      const item = enqueueForOwner(draft, photo.ownerUserId);
+      if (item === null) {
+        await deleteDraftFiles(draft);
+        return { status: "refused", message: ACCOUNT_CHANGED_MESSAGE };
+      }
+      return { status: "queued", item };
+    },
+    [enqueueForOwner],
+  );
+
+  const discardPhoto = useCallback(async (photo: PreparedPhoto): Promise<void> => {
+    await deleteDraftFiles(photo.draft);
+  }, []);
+
+  const capture = useCallback(
+    async (request: CaptureRequest): Promise<CaptureOutcome> => {
+      const prepared = await preparePhoto(request);
+      return prepared.status === "prepared" ? await commitPhoto(prepared.photo) : prepared;
+    },
+    [commitPhoto, preparePhoto],
   );
 
   const captureVideo = useCallback(
@@ -259,7 +297,7 @@ export function useCapture(event: EventSummary | null): CaptureController {
     [enqueueForOwner, event, ownerUserId],
   );
 
-  return { busy, capture, captureVideo };
+  return { busy, capture, preparePhoto, commitPhoto, discardPhoto, captureVideo };
 }
 
 /** Files produced during preparation are ours until the queue accepts them. */

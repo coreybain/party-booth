@@ -226,6 +226,7 @@ export interface EventSummary {
   readonly accentColor?: string;
   readonly coverKey?: string;
   readonly allowLibraryImport: boolean;
+  readonly photoChallengesEnabled: boolean;
   readonly publicGalleryEnabled: boolean;
   readonly storageRegion: StorageRegion;
   readonly role: EventRole;
@@ -248,6 +249,41 @@ export interface EventHome {
      */
     readonly token?: string;
   };
+}
+
+export type PhotoChallengeId = string;
+export type PhotoChallengeAssignmentId = string;
+
+export interface PhotoChallenge {
+  readonly id: PhotoChallengeId;
+  readonly prompt: string;
+  readonly status: "active" | "archived";
+  readonly source: "starter" | "custom";
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface PhotoChallengeAssignment {
+  readonly id: PhotoChallengeAssignmentId;
+  readonly challengeId: PhotoChallengeId;
+  readonly prompt: string;
+  readonly cycle: number;
+  readonly assignedAt: number;
+}
+
+export type GuestPhotoChallenge =
+  | { readonly outcome: "available"; readonly assignment: PhotoChallengeAssignment }
+  | {
+      readonly outcome: "disabled";
+      readonly reason: "hostDisabled" | "notEnoughPrompts";
+    };
+
+export interface PhotoChallengeDeck {
+  readonly enabled: boolean;
+  readonly activeCount: number;
+  readonly minimumActive: number;
+  readonly maximumActive: number;
+  readonly challenges: readonly PhotoChallenge[];
 }
 
 /**
@@ -284,6 +320,7 @@ export interface PublicGalleryItem {
   readonly width?: number;
   readonly height?: number;
   readonly createdAt: number;
+  readonly challengePrompt?: string;
   readonly url?: string;
   readonly urlExpiresAt?: number;
   readonly previewUrl?: string;
@@ -352,6 +389,8 @@ export interface MediaItem {
   readonly capturedAt?: number;
   readonly uploadedAt?: number;
   readonly moderatedAt?: number;
+  /** Accepted prompt snapshot. Only set for newly captured challenge photos. */
+  readonly challengePrompt?: string;
   /**
    * How many members have reported this item, and when it was first flagged.
    *
@@ -427,6 +466,7 @@ export interface UploadGrantRequestArgs {
    * can still vouch for. See `MetadataClaim` in `@partybooth/contracts/media`.
    */
   readonly sourceCarriesNoLocation?: boolean;
+  readonly challengeAssignmentId?: PhotoChallengeAssignmentId;
 }
 
 /** `avatars.requestUploadGrant`; the index signature is required by Convex. */
@@ -952,6 +992,26 @@ export interface BackendApi {
     readonly myEvents: Query<NoArgs, EventSummary[]>;
     readonly activeEvent: Query<NoArgs, EventSummary | null>;
     readonly home: Query<{ eventId: EventId }, EventHome>;
+  };
+  readonly photo_challenges: {
+    readonly list: Query<{ eventId: EventId }, PhotoChallengeDeck>;
+    readonly create: Mutation<{ eventId: EventId; prompt: string }, PhotoChallenge>;
+    readonly update: Mutation<{ challengeId: PhotoChallengeId; prompt: string }, PhotoChallenge>;
+    readonly setArchived: Mutation<
+      { challengeId: PhotoChallengeId; archived: boolean },
+      PhotoChallenge
+    >;
+    readonly setEnabled: Mutation<{ eventId: EventId; enabled: boolean }, { enabled: boolean }>;
+    readonly currentOrDraw: Mutation<{ eventId: EventId }, GuestPhotoChallenge>;
+    readonly skip: Mutation<{ assignmentId: PhotoChallengeAssignmentId }, GuestPhotoChallenge>;
+    readonly resolve: Mutation<
+      {
+        assignmentId: PhotoChallengeAssignmentId;
+        outcome: "used" | "dismissed";
+        captureId: string;
+      },
+      GuestPhotoChallenge
+    >;
   };
   readonly media: {
     /**

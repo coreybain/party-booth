@@ -158,6 +158,8 @@ export async function ensureMediaRow(
     ...(grant.sourceCarriesNoLocation === undefined
       ? {}
       : { sourceCarriesNoLocation: grant.sourceCarriesNoLocation }),
+    ...(grant.challengeId === undefined ? {} : { challengeId: grant.challengeId }),
+    ...(grant.challengePrompt === undefined ? {} : { challengePrompt: grant.challengePrompt }),
     ...(grant.capturedAt === undefined ? {} : { capturedAt: grant.capturedAt }),
     createdAt: now,
     updatedAt: now,
@@ -362,6 +364,7 @@ export interface MediaView {
   capturedAt?: number;
   uploadedAt?: number;
   moderatedAt?: number;
+  challengePrompt?: string;
   /** How many open reports. Present only for hosts — see {@link projectMedia}. */
   reportCount?: number;
   flaggedAt?: number;
@@ -411,6 +414,7 @@ export const mediaViewValidator = v.object({
   capturedAt: v.optional(v.number()),
   uploadedAt: v.optional(v.number()),
   moderatedAt: v.optional(v.number()),
+  challengePrompt: v.optional(v.string()),
   reportCount: v.optional(v.number()),
   flaggedAt: v.optional(v.number()),
   url: v.optional(v.string()),
@@ -433,6 +437,7 @@ export const publicMediaViewValidator = v.object({
   width: v.optional(v.number()),
   height: v.optional(v.number()),
   createdAt: v.number(),
+  challengePrompt: v.optional(v.string()),
   url: v.optional(v.string()),
   urlExpiresAt: v.optional(v.number()),
   previewUrl: v.optional(v.string()),
@@ -448,6 +453,7 @@ export interface PublicMediaView {
   width?: number;
   height?: number;
   createdAt: number;
+  challengePrompt?: string;
   url?: string;
   urlExpiresAt?: number;
   previewUrl?: string;
@@ -622,6 +628,7 @@ export async function projectPublicMedia(
     ...(media.width === undefined ? {} : { width: media.width }),
     ...(media.height === undefined ? {} : { height: media.height }),
     createdAt: media.createdAt,
+    ...(media.challengePrompt === undefined ? {} : { challengePrompt: media.challengePrompt }),
     ...(original === undefined ? {} : { url: original.url, urlExpiresAt: original.expiresAt }),
     ...(preview === undefined
       ? {}
@@ -708,6 +715,7 @@ export async function projectMedia(
     ...(media.capturedAt === undefined ? {} : { capturedAt: media.capturedAt }),
     ...(media.uploadedAt === undefined ? {} : { uploadedAt: media.uploadedAt }),
     ...(media.moderatedAt === undefined ? {} : { moderatedAt: media.moderatedAt }),
+    ...(media.challengePrompt === undefined ? {} : { challengePrompt: media.challengePrompt }),
     // Hosts only. A guest learning that three people reported the photo next to
     // theirs is a leak, and telling an uploader they have been reported turns a
     // report into a confrontation.

@@ -156,6 +156,7 @@ export interface QueueItem {
    * `@partybooth/contracts/media`.
    */
   readonly sourceCarriesNoLocation?: boolean | undefined;
+  readonly challengeAssignmentId?: string | undefined;
 
   /**
    * The artefacts to send alongside the original, once it has landed.
@@ -235,6 +236,7 @@ export interface CaptureDraft {
   readonly capturedAt: number;
   readonly sourceMetadataStripped: boolean;
   readonly sourceCarriesNoLocation?: boolean | undefined;
+  readonly challengeAssignmentId?: string | undefined;
   /**
    * Already-encoded derivatives, in the state they leave the pipeline in.
    *

@@ -30,11 +30,16 @@ const fake = vi.hoisted(() => ({
   invite: undefined as unknown,
   pending: undefined as unknown,
   flagged: undefined as unknown,
+  challengeDeck: undefined as unknown,
   moderate: vi.fn(),
   rotate: vi.fn(),
   setState: vi.fn(),
   update: vi.fn(),
   resolveReport: vi.fn(),
+  createChallenge: vi.fn(),
+  updateChallenge: vi.fn(),
+  setArchivedChallenge: vi.fn(),
+  setChallengesEnabled: vi.fn(),
   queryCalls: [] as { readonly name: string; readonly args: unknown }[],
   session: {} as Record<string, unknown>,
   copyText: vi.fn(),
@@ -52,6 +57,7 @@ vi.mock("convex/react", () => ({
     fake.queryCalls.push({ name: reference.name, args });
     if (reference.name === "current") return fake.invite;
     if (reference.name === "flagged") return fake.flagged;
+    if (reference.name === "photoChallenges.list") return fake.challengeDeck;
     return fake.pending;
   },
   useMutation: (reference: { name: string }) => {
@@ -59,6 +65,10 @@ vi.mock("convex/react", () => ({
     if (reference.name === "setState") return fake.setState;
     if (reference.name === "update") return fake.update;
     if (reference.name === "resolveReport") return fake.resolveReport;
+    if (reference.name === "photoChallenges.create") return fake.createChallenge;
+    if (reference.name === "photoChallenges.update") return fake.updateChallenge;
+    if (reference.name === "photoChallenges.setArchived") return fake.setArchivedChallenge;
+    if (reference.name === "photoChallenges.setEnabled") return fake.setChallengesEnabled;
     return fake.moderate;
   },
 }));
@@ -75,6 +85,13 @@ vi.mock("@/lib/api", async (importOriginal) => {
         flagged: { name: "flagged" },
         moderate: { name: "moderate" },
         resolveReport: { name: "resolveReport" },
+      },
+      photo_challenges: {
+        list: { name: "photoChallenges.list" },
+        create: { name: "photoChallenges.create" },
+        update: { name: "photoChallenges.update" },
+        setArchived: { name: "photoChallenges.setArchived" },
+        setEnabled: { name: "photoChallenges.setEnabled" },
       },
     },
   };
@@ -133,6 +150,7 @@ function anEvent(overrides: Partial<EventSummary> = {}): EventSummary {
     role: "owner",
     counts: { pending: 2, approved: 8, declined: 1, total: 11 },
     ...overrides,
+    photoChallengesEnabled: overrides.photoChallengesEnabled ?? false,
   };
 }
 
@@ -178,6 +196,35 @@ beforeEach(() => {
   };
   fake.pending = [aMedia()];
   fake.flagged = [];
+  fake.challengeDeck = {
+    enabled: false,
+    activeCount: 3,
+    minimumActive: 3,
+    maximumActive: 50,
+    challenges: [
+      {
+        id: "challenge_1",
+        prompt: "Recreate a movie poster",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "challenge_2",
+        prompt: "Find the brightest colour",
+        status: "active",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      {
+        id: "challenge_3",
+        prompt: "Capture a tiny detail",
+        status: "active",
+        createdAt: 3,
+        updatedAt: 3,
+      },
+    ],
+  };
   fake.session = session({ eventRole: "owner" });
   fake.moderate.mockResolvedValue({ changed: 1, unchanged: 0, refused: [], results: [] });
   fake.rotate.mockResolvedValue({
@@ -190,12 +237,15 @@ beforeEach(() => {
   fake.setState.mockResolvedValue({ state: "paused" });
   fake.update.mockResolvedValue(null);
   fake.resolveReport.mockResolvedValue({ status: "actioned", stillFlagged: false });
+  fake.createChallenge.mockResolvedValue(null);
+  fake.updateChallenge.mockResolvedValue(null);
+  fake.setArchivedChallenge.mockResolvedValue(null);
+  fake.setChallengesEnabled.mockResolvedValue({ enabled: true });
   fake.copyText.mockResolvedValue(true);
   fake.copyImage.mockResolvedValue(undefined);
   fake.shareImage.mockResolvedValue(undefined);
-  fake.captureView.mockImplementation(
-    (_view: unknown, options: { result?: string }) =>
-      Promise.resolve(options.result === "base64" ? "QR_BASE64" : "file:///invite.png"),
+  fake.captureView.mockImplementation((_view: unknown, options: { result?: string }) =>
+    Promise.resolve(options.result === "base64" ? "QR_BASE64" : "file:///invite.png"),
   );
   fake.queryCalls.length = 0;
 });
@@ -255,6 +305,26 @@ describe("who gets the host tools", () => {
     expect(screen.queryByText(/Rotate the code/i)).toBeNull();
     // …and it does not tell them to ask themselves to be made a co-host.
     expect(screen.queryByText(/ask the host to add you/i)).toBeNull();
+  });
+});
+
+describe("photo challenges", () => {
+  it("lets a host discover the deck and add a custom prompt", async () => {
+    await renderHost();
+
+    expect(screen.getByText("Photo challenges")).toBeTruthy();
+    expect(screen.getByText("Recreate a movie poster")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Add a challenge"), {
+      target: { value: "Photograph matching colours" },
+    });
+    fireEvent.click(screen.getByText("Add challenge"));
+
+    await waitFor(() =>
+      expect(fake.createChallenge).toHaveBeenCalledWith({
+        eventId: "event_1",
+        prompt: "Photograph matching colours",
+      }),
+    );
   });
 });
 

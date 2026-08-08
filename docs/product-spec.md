@@ -104,6 +104,19 @@ a reason to say yes; Settings offers a way back for somebody who declined. A tap
 switches to the party it names and then opens the screen that answers it — upload trouble to My
 media, a party opening to the Camera, a host's queue to the Host tab.
 
+### Photo challenges
+
+New events offer a balanced 24-prompt starter deck. A guest sees one personal prompt in the web or
+native camera and may request another without repeats until the active deck is exhausted, or hide
+challenges for that session. Only a new camera photo is eligible; videos and library choices bypass
+the feature.
+
+After the shutter, the photo is held locally with **Use challenge**, **Send without challenge** and
+**Retake** choices. Confirming advances the account's event prompt. An accepted prompt is visible
+with the photo in the full-screen viewer and host slideshow, but not on gallery thumbnails or in the
+moderation grid. Owners and co-hosts manage prompts from web event settings or the native Host tab.
+Existing events default off; hosts can enable them after keeping at least three prompts active.
+
 **App Review requirements, all mandatory for submission:** in-app content reporting, user blocking,
 in-app account deletion, a privacy policy URL, a 17+/18+ age rating, Sign in with Apple alongside
 Google, and a reviewer demo account that bypasses live OTP via a fixed demo code, plus a seeded demo

@@ -208,6 +208,29 @@ describe("uploadGrantRequestSchema", () => {
         .success,
     ).toBe(true);
   });
+
+  it("allows a challenge assignment only on a newly captured original photo", () => {
+    expect(
+      uploadGrantRequestSchema.safeParse({ ...base, challengeAssignmentId: "assignment_1" })
+        .success,
+    ).toBe(true);
+    expect(
+      uploadGrantRequestSchema.safeParse({
+        ...base,
+        challengeAssignmentId: "assignment_1",
+        mediaSource: "library",
+      }).success,
+    ).toBe(false);
+    expect(
+      uploadGrantRequestSchema.safeParse({
+        ...base,
+        challengeAssignmentId: "assignment_1",
+        mediaType: "video",
+        mimeType: "video/mp4",
+        durationSeconds: 10,
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("completeUploadInputSchema", () => {

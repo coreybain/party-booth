@@ -467,6 +467,7 @@ function viewerItemForTimeline(entry: MediaTimelineEntry, now: number): MediaVie
     title: `Your ${mediaType}`,
     ...(detail.length === 0 ? {} : { subtitle: detail }),
     status: { label: entry.status.label, color: TONE_COLORS[entry.status.tone] },
+    ...(media?.challengePrompt === undefined ? {} : { challengePrompt: media.challengePrompt }),
   };
 }
 
@@ -831,6 +832,7 @@ function viewerItemForGallery(item: MediaItem, now: number): MediaViewerItem {
     title: item.isOwn ? `Your ${noun.toLowerCase()}` : `${noun} by ${item.uploaderDisplayName}`,
     subtitle: `${formatBytes(item.byteSize)} · Approved in the event gallery`,
     ...(item.isOwn ? { status: { label: "Yours", color: colors.accent } } : {}),
+    ...(item.challengePrompt === undefined ? {} : { challengePrompt: item.challengePrompt }),
   };
 }
 

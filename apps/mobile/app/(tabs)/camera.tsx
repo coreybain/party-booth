@@ -58,8 +58,10 @@ import * as Device from "expo-device";
 import { GlassView } from "expo-glass-effect";
 import * as ImagePicker from "expo-image-picker";
 import { Redirect, useIsFocused, useRouter } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useMutation } from "convex/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -82,9 +84,17 @@ import {
 import { UndoPill } from "@/components/undo-pill";
 import { Button, EmptyState, MutedText, Notice, Screen, ScreenHeader } from "@/components/ui";
 import { useCapture } from "@/hooks/use-capture";
+import type { PreparedPhoto } from "@/hooks/use-capture";
 import { useNow } from "@/hooks/use-now";
 import { zoomFromVerticalDrag } from "@/lib/camera-zoom";
 import { describeEvent, isPastEvent } from "@/lib/events";
+import {
+  api,
+  type EventId,
+  type GuestPhotoChallenge,
+  type PhotoChallengeAssignment,
+} from "@/lib/api";
+import { describeError } from "@/lib/errors";
 import { useShutter, type RecordedClip } from "@/hooks/use-shutter";
 import { captureHandledError } from "@/lib/sentry";
 import { useSession } from "@/providers/session";
@@ -99,7 +109,51 @@ const PICKER_FAILED = "That photo couldn't be opened. Try choosing it again.";
 const MICROPHONE_REFUSED =
   "Video needs the microphone, and PartyBooth doesn't have it. Turn it on in Settings if you'd like to record clips — photos work either way.";
 
+interface ChallengeBackend {
+  readonly currentOrDraw: (args: { readonly eventId: EventId }) => Promise<GuestPhotoChallenge>;
+  readonly skip: (args: {
+    readonly assignmentId: PhotoChallengeAssignment["id"];
+  }) => Promise<GuestPhotoChallenge>;
+  readonly resolve: (args: {
+    readonly assignmentId: PhotoChallengeAssignment["id"];
+    readonly outcome: "used" | "dismissed";
+    readonly captureId: string;
+  }) => Promise<GuestPhotoChallenge>;
+}
+
+/**
+ * Keep Convex hooks beneath the configured-session gate. Offline builds still
+ * have a working camera and durable local queue, but no Convex provider exists
+ * for a challenge hook to read from.
+ */
 export default function CameraScreen() {
+  const { activeEvent, configured } = useSession();
+  const eventKey = `${activeEvent?.id ?? "no-event"}:${String(
+    activeEvent?.photoChallengesEnabled === true,
+  )}`;
+  return configured ? (
+    <ConnectedCameraScreen key={eventKey} />
+  ) : (
+    <CameraExperience key={eventKey} challengeBackend={null} />
+  );
+}
+
+function ConnectedCameraScreen() {
+  const currentOrDraw = useMutation(api.photo_challenges.currentOrDraw);
+  const skip = useMutation(api.photo_challenges.skip);
+  const resolve = useMutation(api.photo_challenges.resolve);
+  const challengeBackend = useMemo<ChallengeBackend>(
+    () => ({ currentOrDraw, skip, resolve }),
+    [currentOrDraw, resolve, skip],
+  );
+  return <CameraExperience challengeBackend={challengeBackend} />;
+}
+
+function CameraExperience({
+  challengeBackend,
+}: {
+  readonly challengeBackend: ChallengeBackend | null;
+}) {
   const router = useRouter();
   const isFocused = useIsFocused();
   const { width, height } = useWindowDimensions();
@@ -108,7 +162,8 @@ export default function CameraScreen() {
 
   const { activeEvent, eventsLoading } = useSession();
   const queue = useUploadQueue();
-  const { busy, capture, captureVideo } = useCapture(activeEvent);
+  const { busy, capture, preparePhoto, commitPhoto, discardPhoto, captureVideo } =
+    useCapture(activeEvent);
 
   const cameraRef = useRef<CameraView | null>(null);
   const zoomGestureRef = useRef<{ startY: number; startZoom: number } | null>(null);
@@ -121,6 +176,13 @@ export default function CameraScreen() {
   const [mountError, setMountError] = useState<string | null>(null);
   /** One transient sentence under the controls — always a refusal, verbatim. */
   const [notice, setNotice] = useState<string | null>(null);
+  const [challenge, setChallenge] = useState<PhotoChallengeAssignment | null>(null);
+  const [challengeHidden, setChallengeHidden] = useState(false);
+  const [challengeBusy, setChallengeBusy] = useState(
+    activeEvent?.photoChallengesEnabled === true && challengeBackend !== null,
+  );
+  const [pendingPhoto, setPendingPhoto] = useState<PreparedPhoto | null>(null);
+  const pendingPhotoRef = useRef<PreparedPhoto | null>(null);
 
   // A simulator has no camera and `CameraView` fails to mount on it. Knowing
   // that *before* rendering the preview turns a black rectangle and a console
@@ -134,6 +196,34 @@ export default function CameraScreen() {
   const pending = queue.pendingFor(activeEvent?.id);
   const undoable = queue.undoableFor(activeEvent?.id);
   const allowLibrary = activeEvent?.allowLibraryImport === true;
+  const challengesEnabled = activeEvent?.photoChallengesEnabled === true && !challengeHidden;
+
+  useEffect(() => {
+    if (activeEvent?.photoChallengesEnabled !== true || challengeBackend === null) return;
+    let active = true;
+    void challengeBackend
+      .currentOrDraw({ eventId: activeEvent.id })
+      .then((result) => {
+        if (active) setChallengeFromResult(result, setChallenge);
+      })
+      .catch((error: unknown) => {
+        if (active) setNotice(describeError(error).message);
+      })
+      .finally(() => {
+        if (active) setChallengeBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeEvent?.id, activeEvent?.photoChallengesEnabled, challengeBackend]);
+
+  useEffect(
+    () => () => {
+      if (pendingPhotoRef.current !== null) void discardPhoto(pendingPhotoRef.current);
+      pendingPhotoRef.current = null;
+    },
+    [discardPhoto],
+  );
 
   /*
    * Video is offered only once the microphone has actually been granted.
@@ -175,13 +265,75 @@ export default function CameraScreen() {
           skipProcessing: false,
         });
         if (photo === undefined) return;
-        await runCapture({ uri: photo.uri, width: photo.width, height: photo.height }, false);
+        const request = {
+          source: { uri: photo.uri, width: photo.width, height: photo.height },
+          fromLibrary: false,
+          capturedAt: Date.now(),
+        };
+        if (challengesEnabled && challenge !== null) {
+          const outcome = await preparePhoto(request);
+          if (outcome.status === "prepared") {
+            pendingPhotoRef.current = outcome.photo;
+            setPendingPhoto(outcome.photo);
+            setNotice(null);
+          } else {
+            setNotice(outcome.message);
+          }
+        } else {
+          await runCapture(request.source, false);
+        }
       } catch (error) {
         captureHandledError(error, { scope: "camera.takePicture" });
         setNotice("The camera didn't manage that one. Try again.");
       }
     })();
-  }, [runCapture]);
+  }, [challenge, challengesEnabled, preparePhoto, runCapture]);
+
+  const onAnotherChallenge = useCallback(() => {
+    if (challenge === null || challengeBusy || challengeBackend === null) return;
+    setChallengeBusy(true);
+    setNotice(null);
+    void challengeBackend
+      .skip({ assignmentId: challenge.id })
+      .then((result) => setChallengeFromResult(result, setChallenge))
+      .catch((error: unknown) => setNotice(describeError(error).message))
+      .finally(() => setChallengeBusy(false));
+  }, [challenge, challengeBackend, challengeBusy]);
+
+  const onConfirmPhoto = useCallback(
+    (useChallenge: boolean) => {
+      if (pendingPhoto === null || challengeBusy || challengeBackend === null) return;
+      void (async () => {
+        setChallengeBusy(true);
+        setNotice(null);
+        try {
+          if (challenge !== null) {
+            const next = await challengeBackend.resolve({
+              assignmentId: challenge.id,
+              outcome: useChallenge ? "used" : "dismissed",
+              captureId: pendingPhoto.draft.captureId,
+            });
+            setChallengeFromResult(next, setChallenge);
+          }
+          const outcome = await commitPhoto(pendingPhoto, useChallenge ? challenge?.id : undefined);
+          pendingPhotoRef.current = null;
+          setPendingPhoto(null);
+          setNotice(outcome.status === "refused" ? outcome.message : null);
+        } catch (error) {
+          setNotice(describeError(error).message);
+        } finally {
+          setChallengeBusy(false);
+        }
+      })();
+    },
+    [challenge, challengeBackend, challengeBusy, commitPhoto, pendingPhoto],
+  );
+
+  const onRetakePhoto = useCallback(() => {
+    if (pendingPhoto === null || challengeBusy) return;
+    pendingPhotoRef.current = null;
+    void discardPhoto(pendingPhoto).finally(() => setPendingPhoto(null));
+  }, [challengeBusy, discardPhoto, pendingPhoto]);
 
   const onLibrary = useCallback(() => {
     void (async () => {
@@ -382,7 +534,13 @@ export default function CameraScreen() {
   // While recording, the button is the *stop* control and must stay live even
   // though `shutter.ready` was reset by the mode flip.
   const shutterDisabled =
-    !recording && (!uploadsOpen || !hasCamera || mountError !== null || !shutter.ready);
+    !recording &&
+    (!uploadsOpen ||
+      !hasCamera ||
+      mountError !== null ||
+      !shutter.ready ||
+      pendingPhoto !== null ||
+      challengeBusy);
 
   return (
     // Full-width below the status area: a viewfinder with side margins looks like
@@ -438,18 +596,13 @@ export default function CameraScreen() {
           </View>
         )}
 
-        {/* Overlays. Order matters: the pill sits above the controls so a long
-            filename or a long refusal cannot push the shutter off screen. */}
+        {/* Overlays. Order matters: review is mounted last and owns every tap. */}
         <View style={styles.overlay}>
           <View style={styles.topRow}>
             {recording ? (
               <RecordingIndicator seconds={shutter.seconds} remaining={shutter.remaining} />
             ) : null}
-
             <View style={styles.topCenter}>
-              {/* A still uses the flash; a recording uses the continuous torch.
-                  Keeping the active light control top-centre mirrors the lens and
-                  leaves the bottom rail to the three capture actions. */}
               {recording ? (
                 <TorchButton on={torch} onToggle={setTorch} />
               ) : (
@@ -460,7 +613,6 @@ export default function CameraScreen() {
                 />
               )}
             </View>
-
             <PendingBadge count={pending} />
           </View>
 
@@ -470,7 +622,6 @@ export default function CameraScreen() {
                 <MutedText>{description.detail}</MutedText>
               </Notice>
             ) : null}
-
             {queue.offline ? (
               <Notice tone="info" title="Nothing can be sent from this build">
                 <MutedText>
@@ -479,13 +630,11 @@ export default function CameraScreen() {
                 </MutedText>
               </Notice>
             ) : null}
-
             {notice !== null ? (
               <Notice tone="info" title="Just so you know">
                 <MutedText>{notice}</MutedText>
               </Notice>
             ) : null}
-
             {undoable ? (
               <UndoPill
                 item={undoable}
@@ -493,22 +642,16 @@ export default function CameraScreen() {
                 onSendNow={() => queue.sendNow(undoable.captureId)}
               />
             ) : null}
-
             <GlassView
               glassEffectStyle="regular"
               tintColor="rgba(18, 9, 27, 0.28)"
               style={[styles.controls, landscape && styles.controlsLandscape]}
             >
               <View style={styles.controlSlot}>
-                {/* Gated on the *event's* flag, which is a live field on the
-                    `events.myEvents` subscription — a host turning library
-                    imports off mid-party removes this button without a restart.
-                    The empty slot keeps the shutter geometrically centred. */}
                 {allowLibrary && !recording ? (
-                  <LibraryButton onPress={onLibrary} disabled={busy} />
+                  <LibraryButton onPress={onLibrary} disabled={busy || pendingPhoto !== null} />
                 ) : null}
               </View>
-
               <ShutterButton
                 onPressIn={onShutterPressIn}
                 onPressMove={onShutterPressMove}
@@ -521,18 +664,14 @@ export default function CameraScreen() {
                 busy={busy}
                 videoEnabled={videoEnabled}
               />
-
               <View style={styles.controlSlot}>
                 <FlipButton
                   onPress={onFlip}
-                  disabled={!hasCamera || mountError !== null || recording}
+                  disabled={!hasCamera || mountError !== null || recording || pendingPhoto !== null}
                 />
               </View>
             </GlassView>
-
             {hasCamera && !videoEnabled ? (
-              // Not a blocking gate: photographs work perfectly well without the
-              // microphone, so this is an offer rather than a wall.
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Allow the microphone to record video"
@@ -546,6 +685,62 @@ export default function CameraScreen() {
             ) : null}
           </View>
         </View>
+
+        {pendingPhoto === null && challengesEnabled && challenge !== null ? (
+          <View style={styles.challengeCard}>
+            <Text style={styles.challengeEyebrow}>PHOTO CHALLENGE</Text>
+            <Text style={styles.challengePrompt}>{challenge.prompt}</Text>
+            <View style={styles.challengeActions}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={challengeBusy}
+                onPress={onAnotherChallenge}
+                style={styles.challengeAction}
+              >
+                <Text style={styles.challengeActionText}>Another</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setChallengeHidden(true)}
+                style={styles.challengeAction}
+              >
+                <Text style={styles.challengeActionText}>Not now</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {pendingPhoto !== null ? (
+          <View style={styles.review}>
+            <Image source={{ uri: pendingPhoto.draft.previewUri }} style={styles.reviewImage} />
+            <View style={styles.reviewShade} />
+            <View style={styles.reviewPanel}>
+              <Text style={styles.reviewEyebrow}>YOUR PHOTO CHALLENGE</Text>
+              <Text style={styles.reviewPrompt}>{challenge?.prompt ?? "Send this photo?"}</Text>
+              {challenge !== null ? (
+                <Button
+                  label="Use challenge"
+                  busy={challengeBusy}
+                  onPress={() => onConfirmPhoto(true)}
+                />
+              ) : null}
+              <Button
+                label="Send without challenge"
+                variant="secondary"
+                disabled={challengeBusy}
+                onPress={() => onConfirmPhoto(false)}
+              />
+              <Pressable
+                accessibilityRole="button"
+                disabled={challengeBusy}
+                onPress={onRetakePhoto}
+                style={styles.retakeButton}
+              >
+                <Text style={styles.retakeText}>Retake</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
       </View>
     </Screen>
   );
@@ -626,4 +821,42 @@ const styles = StyleSheet.create({
   controlsLandscape: { maxWidth: 320 },
   hint: { ...typography.caption, color: colors.textMuted, textAlign: "center" },
   hintAction: { color: colors.accentSoft, textDecorationLine: "underline" },
+  challengeCard: {
+    position: "absolute",
+    left: spacing.lg,
+    right: spacing.lg,
+    top: 92,
+    zIndex: 3,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    backgroundColor: "rgba(38, 19, 51, 0.88)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.24)",
+  },
+  challengeEyebrow: { ...typography.caption, color: colors.accentSoft, fontWeight: "700" },
+  challengePrompt: { ...typography.body, color: "#fff", fontWeight: "700", marginTop: 4 },
+  challengeActions: { flexDirection: "row", gap: spacing.md, marginTop: spacing.sm },
+  challengeAction: { paddingVertical: spacing.xs },
+  challengeActionText: { ...typography.caption, color: "rgba(255,255,255,0.78)" },
+  review: { ...StyleSheet.absoluteFill, zIndex: 20, justifyContent: "flex-end" },
+  reviewImage: { ...StyleSheet.absoluteFill },
+  reviewShade: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(10,5,14,0.28)" },
+  reviewPanel: {
+    margin: spacing.lg,
+    gap: spacing.sm,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    backgroundColor: "rgba(28, 14, 38, 0.94)",
+  },
+  reviewEyebrow: { ...typography.caption, color: colors.accentSoft, fontWeight: "700" },
+  reviewPrompt: { ...typography.title, color: "#fff", marginBottom: spacing.sm },
+  retakeButton: { alignItems: "center", paddingVertical: spacing.sm },
+  retakeText: { ...typography.body, color: "rgba(255,255,255,0.78)" },
 });
+
+function setChallengeFromResult(
+  result: GuestPhotoChallenge,
+  setChallenge: (challenge: PhotoChallengeAssignment | null) => void,
+): void {
+  setChallenge(result.outcome === "available" ? result.assignment : null);
+}
