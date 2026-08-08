@@ -14,10 +14,13 @@
 export { ROLES, type Role, type EventRole, isHostRole } from "@partybooth/contracts/roles";
 
 export {
+  AVATAR_JPEG_QUALITY,
   AVATAR_MAX_BYTES,
   AVATAR_MIME_TYPE,
   AVATAR_UPLOAD_ROUTE_PATH,
   AVATAR_UPLOAD_ROUTE_SLUG,
+  avatarPixelSize,
+  avatarUploadRequestSchema,
   avatarUploadTicketSchema,
   parseAvatarUploadCompletionResult,
   buildAvatarUploadTicket,

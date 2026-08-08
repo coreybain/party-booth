@@ -34,3 +34,6 @@ export const { uploadFiles } = genUploader<PartyBoothFileRouter>({
 
 /** The one route slug. Named so a typo is a compile error, not a 404. */
 export const PARTY_MEDIA_ROUTE = "partyMedia" as const;
+
+/** Private account-avatar route, separately granted from event media. */
+export const AVATAR_IMAGE_ROUTE = "avatarImage" as const;

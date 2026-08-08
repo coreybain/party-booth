@@ -922,6 +922,8 @@ export interface BackendApi {
       { secret: string },
       Pick<IssuedAvatarUploadGrant, "byteSize" | "mimeType" | "checksum">
     >;
+    /** Remove the current avatar and queue its private object for deletion. */
+    readonly remove: Mutation<NoArgs, null>;
     /** Server-only callback; the provider key is accepted nowhere else. */
     readonly completeUpload: Mutation<
       {

@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
+import { ProfileAvatar } from "@/components/account/profile-avatar";
 import { EventSettingsPanel } from "@/components/events/event-settings-sheet";
+import { ArrowRightIcon } from "@/components/icons";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -56,18 +58,25 @@ export function GuestEventSettings({ home }: { readonly home: EventHome }) {
           <span className="sr-only">Loading your account…</span>
         </div>
       ) : me === null ? null : (
-        <section className="flex items-center gap-3 rounded-xl border border-line bg-raised/60 p-3">
-          <span
-            className="grid size-11 shrink-0 place-items-center rounded-full border border-accent/35 bg-accent-soft text-sm font-semibold text-accent"
-            aria-hidden="true"
-          >
-            {initials(me.displayName)}
-          </span>
-          <div className="min-w-0">
+        <Link
+          href={{
+            pathname: "/account/profile",
+            query: { returnTo: `/event/${eventId}#settings` },
+          }}
+          aria-label={`Edit profile for ${me.displayName}`}
+          className="flex items-center gap-3 rounded-xl border border-line bg-raised/60 p-3 transition-colors hover:border-line-strong hover:bg-raised"
+        >
+          <ProfileAvatar
+            displayName={me.displayName}
+            {...(me.avatarUrl === undefined ? {} : { avatarUrl: me.avatarUrl })}
+            className="size-11"
+          />
+          <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-semibold text-ink">{me.displayName}</h2>
             <p className="truncate text-xs text-muted">{me.email}</p>
           </div>
-        </section>
+          <ArrowRightIcon size={18} className="shrink-0 text-faint" />
+        </Link>
       )}
 
       {isHost ? (
@@ -153,9 +162,4 @@ export function GuestEventSettings({ home }: { readonly home: EventHome }) {
       </section>
     </div>
   );
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return `${parts[0]?.[0] ?? "?"}${parts.length > 1 ? (parts.at(-1)?.[0] ?? "") : ""}`.toUpperCase();
 }

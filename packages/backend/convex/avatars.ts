@@ -110,6 +110,27 @@ export const confirmUpload = mutation({
   },
 });
 
+/** Clear the visible avatar immediately and durably purge its private object. */
+export const remove = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const user = await requireActiveUser(ctx);
+    if (user.avatarKey === undefined) return null;
+
+    const key = user.avatarKey;
+    const region = user.avatarStorageRegion ?? serverEnv.STORAGE_DEFAULT_REGION;
+    const now = Date.now();
+    await ctx.db.patch(user._id, {
+      avatarKey: undefined,
+      avatarStorageRegion: undefined,
+      updatedAt: now,
+    });
+    await purge(ctx, region, key, "avatarRemoval", now);
+    return null;
+  },
+});
+
 const completionValidator = v.object({
   outcome: v.union(
     v.literal("registered"),

@@ -1113,6 +1113,7 @@ export default defineSchema({
     keys: v.optional(v.array(v.string())),
     source: v.union(
       v.literal("avatarReplacement"),
+      v.literal("avatarRemoval"),
       v.literal("accountAvatar"),
       v.literal("rejectedUpload"),
     ),

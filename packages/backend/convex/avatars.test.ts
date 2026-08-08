@@ -223,6 +223,38 @@ describe("avatars upload lifecycle", () => {
     expect(jobs[0]?.keys).toBeUndefined();
   });
 
+  it("removes the current avatar and durably purges its private object", async () => {
+    const storage = useFakeStorage();
+    const f = await fixture();
+    storage.put(FILE_KEY, 1_024);
+    await f.t.run(async (ctx) =>
+      ctx.db.patch(f.userId, { avatarKey: FILE_KEY, avatarStorageRegion: "pdx1" }),
+    );
+
+    await expect(
+      f.t.withIdentity({ subject: "avatar-user" }).mutation(api.avatars.remove, {}),
+    ).resolves.toBeNull();
+    const user = await f.t.run(async (ctx) => ctx.db.get(f.userId));
+    expect(user?.avatarKey).toBeUndefined();
+    expect(user?.avatarStorageRegion).toBeUndefined();
+
+    await runScheduled(f.t);
+    expect(storage.has(FILE_KEY)).toBe(false);
+    const jobs = await f.t.run(async (ctx) => ctx.db.query("storagePurgeJobs").collect());
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      source: "avatarRemoval",
+      state: "completed",
+      requested: 1,
+      deleted: 1,
+    });
+    expect(jobs[0]?.keys).toBeUndefined();
+
+    await expect(
+      f.t.withIdentity({ subject: "avatar-user" }).mutation(api.avatars.remove, {}),
+    ).resolves.toBeNull();
+  });
+
   it("retains a durable avatar key when replacement cleanup exhausts retries", async () => {
     const storage = useFakeStorage({ failDeletes: true });
     const f = await fixture();

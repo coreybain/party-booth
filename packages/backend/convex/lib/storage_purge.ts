@@ -3,7 +3,8 @@ import type { StorageRegion } from "@partybooth/contracts/storage";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 
-export type GenericStoragePurgeSource = "avatarReplacement" | "accountAvatar" | "rejectedUpload";
+export type GenericStoragePurgeSource =
+  "avatarReplacement" | "avatarRemoval" | "accountAvatar" | "rejectedUpload";
 
 /**
  * Persist the only trustworthy pointer to a non-media object before scheduling

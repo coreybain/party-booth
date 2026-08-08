@@ -1,11 +1,13 @@
 "use client";
 
 import { useMutation, useQuery } from "convex/react";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { AccountDeletionRequest } from "@/components/account/account-deletion-request";
+import { ProfileAvatar } from "@/components/account/profile-avatar";
 import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { BackendNotConfigured } from "@/components/backend-not-configured";
+import { MediaIcon } from "@/components/icons";
 import { Card, SectionHeading } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -14,6 +16,7 @@ import { appErrorMessage } from "@/lib/app-errors";
 import { authClient } from "@/lib/auth-client";
 import { backendApi, type CurrentUser } from "@/lib/convex-api";
 import { displayNameSchema } from "@/lib/contracts";
+import { uploadBrowserAvatar } from "@/lib/upload/avatar-client";
 
 interface LinkedAccount {
   readonly id: string;
@@ -40,6 +43,28 @@ export function AccountSettings() {
   );
 }
 
+/** Profile-only settings for guests entering from an event's Settings tab. */
+export function ProfileSettings() {
+  return (
+    <AuthenticatedBackendGate fallback={<BackendNotConfigured />}>
+      <ProfileSettingsLive />
+    </AuthenticatedBackendGate>
+  );
+}
+
+function ProfileSettingsLive() {
+  const me = useQuery(backendApi.users.currentUser, {});
+  if (me === undefined) return <ProfileSettingsSkeleton />;
+  if (me === null) {
+    return (
+      <Callout tone="warning">
+        Your session has ended. Sign in again before changing your profile.
+      </Callout>
+    );
+  }
+  return <ProfileCard user={me} />;
+}
+
 function AccountSettingsLive() {
   const me = useQuery(backendApi.users.currentUser, {});
 
@@ -63,13 +88,7 @@ function AccountSettingsLive() {
 
   return (
     <div className="space-y-4">
-      <Card as="section">
-        <SectionHeading
-          title="Profile"
-          description="The name hosts and guests see beside your activity."
-        />
-        <ProfileForm key={me.displayName} user={me} />
-      </Card>
+      <ProfileCard user={me} />
 
       <Card as="section">
         <SectionHeading
@@ -92,12 +111,65 @@ function AccountSettingsLive() {
   );
 }
 
+function ProfileCard({ user }: { readonly user: CurrentUser }) {
+  return (
+    <Card as="section">
+      <SectionHeading
+        title="Profile"
+        description="The photo and name hosts and guests see beside your activity."
+      />
+      <ProfileForm key={`${user.displayName}:${user.avatarUrl ?? "no-avatar"}`} user={user} />
+    </Card>
+  );
+}
+
 function ProfileForm({ user }: { readonly user: CurrentUser }) {
   const updateProfile = useMutation(backendApi.users.updateProfile);
+  const requestAvatarUploadGrant = useMutation(backendApi.avatars.requestUploadGrant);
+  const removeAvatarMutation = useMutation(backendApi.avatars.remove);
   const [name, setName] = useState(user.displayName);
   const [pending, setPending] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [removingAvatar, setRemovingAvatar] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [saved, setSaved] = useState(false);
+
+  const changeAvatar = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const source = event.currentTarget.files?.[0];
+      event.currentTarget.value = "";
+      if (source === undefined) return;
+
+      setUploadingAvatar(true);
+      setError(undefined);
+      setSaved(false);
+      try {
+        await uploadBrowserAvatar({ source, requestGrant: requestAvatarUploadGrant });
+        setSaved(true);
+      } catch (caught) {
+        setError(appErrorMessage(caught));
+      } finally {
+        setUploadingAvatar(false);
+      }
+    },
+    [requestAvatarUploadGrant],
+  );
+
+  const removeAvatar = useCallback(async () => {
+    setRemovingAvatar(true);
+    setError(undefined);
+    setSaved(false);
+    try {
+      await removeAvatarMutation({});
+      setSaved(true);
+    } catch (caught) {
+      setError(appErrorMessage(caught));
+    } finally {
+      setRemovingAvatar(false);
+    }
+  }, [removeAvatarMutation]);
+
+  const avatarPending = uploadingAvatar || removingAvatar;
 
   const submit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -132,6 +204,52 @@ function ProfileForm({ user }: { readonly user: CurrentUser }) {
         void submit(event);
       }}
     >
+      <div className="flex items-center gap-4 rounded-xl border border-line bg-canvas/30 p-4">
+        <ProfileAvatar
+          displayName={user.displayName}
+          {...(user.avatarUrl === undefined ? {} : { avatarUrl: user.avatarUrl })}
+          className="size-16 text-lg"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-ink">Profile photo</p>
+          <p className="mt-0.5 text-xs text-muted">
+            Choose a photo from your device. It will be resized to fit.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-line bg-raised px-3 text-sm font-medium text-ink transition-colors hover:border-line-strong has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-45">
+              <MediaIcon size={16} />
+              {uploadingAvatar
+                ? "Uploading…"
+                : user.avatarUrl === undefined
+                  ? "Add photo"
+                  : "Change photo"}
+              <input
+                type="file"
+                accept="image/*"
+                disabled={avatarPending || pending}
+                className="sr-only"
+                onChange={(event) => {
+                  void changeAvatar(event);
+                }}
+              />
+            </label>
+            {user.avatarUrl === undefined ? null : (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                loading={removingAvatar}
+                disabled={uploadingAvatar || pending}
+                onClick={() => {
+                  void removeAvatar();
+                }}
+              >
+                Remove photo
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
       <TextField
         label="Display name"
         name="display-name"
@@ -141,7 +259,7 @@ function ProfileForm({ user }: { readonly user: CurrentUser }) {
         autoCapitalize="words"
         hint="Used on hosted events, submissions and moderation activity."
         error={error}
-        disabled={pending}
+        disabled={pending || avatarPending}
         onChange={(event) => {
           setName(event.target.value);
           setError(undefined);
@@ -149,7 +267,11 @@ function ProfileForm({ user }: { readonly user: CurrentUser }) {
         }}
       />
       <div className="flex items-center gap-3">
-        <Button type="submit" loading={pending} disabled={name.trim() === user.displayName}>
+        <Button
+          type="submit"
+          loading={pending}
+          disabled={avatarPending || name.trim() === user.displayName}
+        >
           Save profile
         </Button>
         {saved ? (
@@ -159,6 +281,14 @@ function ProfileForm({ user }: { readonly user: CurrentUser }) {
         ) : null}
       </div>
     </form>
+  );
+}
+
+function ProfileSettingsSkeleton() {
+  return (
+    <div className="h-72 animate-pulse rounded-2xl bg-raised" role="status">
+      <span className="sr-only">Loading your profile…</span>
+    </div>
   );
 }
 
