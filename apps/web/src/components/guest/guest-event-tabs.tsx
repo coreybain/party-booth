@@ -73,7 +73,7 @@ export function GuestEventTabs({
         <div
           role="tablist"
           aria-label="Event areas"
-          className="grid min-w-0 flex-1 grid-cols-3 gap-1"
+          className="flex min-w-0 flex-1 gap-1 sm:grid sm:grid-cols-3"
         >
           {GUEST_EVENT_TABS.map((tab) => {
             const selected = active === tab;
@@ -87,6 +87,7 @@ export function GuestEventTabs({
                 id={`event-tab-${tab}`}
                 type="button"
                 role="tab"
+                aria-label={TAB_COPY[tab]}
                 aria-selected={selected}
                 aria-controls={`event-panel-${tab}`}
                 tabIndex={selected ? 0 : -1}
@@ -94,13 +95,16 @@ export function GuestEventTabs({
                 onKeyDown={(event) => onKeyDown(event, tab)}
                 className={cn(
                   "inline-flex min-h-12 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                  selected ? "flex-1" : "w-12 shrink-0 sm:w-auto",
                   selected
                     ? "bg-accent-soft text-accent"
                     : "text-muted hover:bg-raised hover:text-ink",
                 )}
               >
-                <Icon size={18} className="shrink-0 max-[340px]:hidden" />
-                <span className="truncate">{TAB_COPY[tab]}</span>
+                <Icon size={18} className="shrink-0" />
+                <span className={cn("truncate", !selected && "hidden sm:inline")}>
+                  {TAB_COPY[tab]}
+                </span>
               </button>
             );
           })}
@@ -111,10 +115,11 @@ export function GuestEventTabs({
             <span className="my-2 w-px shrink-0 bg-line" aria-hidden="true" />
             <Link
               href={hostConsoleHref}
-              className="inline-flex min-h-12 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              aria-label="Admin"
+              className="inline-flex min-h-12 w-12 shrink-0 items-center justify-center gap-1.5 rounded-xl px-0 text-sm font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto sm:px-3"
             >
-              <HomeIcon size={18} className="shrink-0 max-[340px]:hidden" />
-              <span>Admin</span>
+              <HomeIcon size={18} className="shrink-0" />
+              <span className="hidden sm:inline">Admin</span>
             </Link>
           </>
         )}
