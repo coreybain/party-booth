@@ -5,6 +5,7 @@ import { useEffect } from "react";
 
 import { AuthenticatedBackendGate } from "@/components/backend-gate";
 import { BackendNotConfigured } from "@/components/backend-not-configured";
+import { EventInviteDialog } from "@/components/events/event-invite-dialog";
 import { EventStateControl } from "@/components/events/event-state-control";
 import { EventStats } from "@/components/events/event-stats";
 import { GuestEventMenu } from "@/components/events/guest-event-menu";
@@ -88,7 +89,18 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
         description={eventStatusLine(event, now)}
         actions={
           isHost ? (
-            <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={now} />
+            <>
+              {invite === undefined ? null : (
+                <EventInviteDialog
+                  code={invite.code}
+                  token={invite.token}
+                  version={invite.version}
+                  state={event.state}
+                  eventName={event.name}
+                />
+              )}
+              <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={now} />
+            </>
           ) : isGuest ? (
             <GuestEventMenu eventId={event.id} showGallery={galleryIsVisible(event.state)} />
           ) : undefined
