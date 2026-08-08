@@ -62,37 +62,41 @@ export function EventStats({
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <SectionHeading
-            title="Waiting for you"
-            description="Everything a guest has sent that nobody has decided on."
-            action={
-              <Link href="/media">
-                <Button size="sm" variant={overview.pending > 0 ? "primary" : "secondary"}>
-                  Moderate
-                </Button>
-              </Link>
-            }
-          />
-          <div className="mt-4 flex items-baseline gap-3">
-            <span className="text-4xl font-semibold tabular-nums text-ink">{overview.pending}</span>
-            <span className="text-sm text-muted">
-              {overview.pending === 1 ? "submission" : "submissions"} pending
-            </span>
-          </div>
-          {overview.flagged > 0 ? (
-            <p className="mt-2 text-sm text-danger">
-              {overview.flagged} reported by guests — those are at the top of the queue.
-            </p>
-          ) : null}
-          {overview.processing > 0 ? (
-            <p className="mt-2 text-sm text-faint">
-              {overview.processing} still arriving. They are not counted above until they land.
-            </p>
-          ) : null}
-        </Card>
+        {overview.pending > 0 ? (
+          <Card>
+            <SectionHeading
+              title="Waiting for you"
+              description="Everything a guest has sent that nobody has decided on."
+              action={
+                <Link href="/media">
+                  <Button size="sm" variant="primary">
+                    Moderate
+                  </Button>
+                </Link>
+              }
+            />
+            <div className="mt-4 flex items-baseline gap-3">
+              <span className="text-4xl font-semibold tabular-nums text-ink">
+                {overview.pending}
+              </span>
+              <span className="text-sm text-muted">
+                {overview.pending === 1 ? "submission" : "submissions"} pending
+              </span>
+            </div>
+            {overview.flagged > 0 ? (
+              <p className="mt-2 text-sm text-danger">
+                {overview.flagged} reported by guests — those are at the top of the queue.
+              </p>
+            ) : null}
+            {overview.processing > 0 ? (
+              <p className="mt-2 text-sm text-faint">
+                {overview.processing} still arriving. They are not counted above until they land.
+              </p>
+            ) : null}
+          </Card>
+        ) : null}
 
-        <Card>
+        <Card className={overview.pending === 0 ? "sm:col-span-2" : undefined}>
           <SectionHeading title="The party so far" description="Everything, in numbers." />
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
             <Stat label="Approved" value={overview.approved} />
