@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Card } from "@/components/layout/card";
 import { CentredPane } from "@/components/layout/centred-pane";
 import { SiteFooter } from "@/components/layout/site-footer";
-import { JoinByCode } from "@/components/join/join-by-code";
+import { JoinPageContent } from "@/components/join/join-page-content";
 import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
 export const metadata: Metadata = {
@@ -17,9 +17,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * Code-entry fallback, for a guest who types the six digits from the printed
- * signage instead of scanning the QR (TODO.md Sprint 2 → "code entry fallback
- * with store links").
+ * QR-first join door, with six-digit entry for a guest whose camera cannot read
+ * the printed sign.
  *
  * This is also the URL printed on the sign under the QR, because it is the only
  * one that is safe to print in full: it carries no credential, so a photograph
@@ -29,7 +28,7 @@ export default function JoinPage() {
   return (
     <CentredPane width="md" footer={<SiteFooter note="Photos stay private to this event." />}>
       <Card>
-        <JoinByCode />
+        <JoinPageContent />
       </Card>
 
       <p className="mt-6 text-center text-sm text-muted">
