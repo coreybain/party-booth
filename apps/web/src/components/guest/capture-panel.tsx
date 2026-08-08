@@ -211,19 +211,9 @@ export function CapturePanel({
         </Callout>
       ) : null}
 
-      {/*
-        Honest about the difference between the two, because there is one.
-        A photo really is re-encoded on the device (ADR 0004 §7). A video cannot
-        be — there is no transcoder in a phone browser — so the recording is sent
-        as it came out of the camera, and only its thumbnail is re-made. Saying
-        "we strip everything" would be the easier sentence and the false one.
-      */}
-      <p className="text-xs leading-relaxed text-faint">
-        Photos are re-saved on your phone before they are sent, which removes the location and
-        camera details your camera stores in them. Videos are sent as recorded — up to{" "}
-        {VIDEO_MAX_DURATION_SECONDS} seconds and{" "}
-        {String(Math.round(MEDIA_LIMITS.video.maxBytes / (1024 * 1024)))} MB. Only people at this
-        party can see what you add.
+      <p className="text-center text-xs leading-relaxed text-faint">
+        Videos can be recorded up to {VIDEO_MAX_DURATION_SECONDS} seconds or{" "}
+        {String(Math.round(MEDIA_LIMITS.video.maxBytes / (1024 * 1024)))} MB.
       </p>
 
       {pending.length > 0 ? (

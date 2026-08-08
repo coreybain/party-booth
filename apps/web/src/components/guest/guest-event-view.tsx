@@ -279,12 +279,11 @@ function EventWelcome({ event }: { readonly event: EventSummary }) {
       >
         <CheckIcon size={21} />
       </span>
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-positive">You're in</p>
-        <h1 className="mt-0.5 text-2xl font-semibold leading-tight tracking-tight text-ink">
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-2xl font-semibold leading-tight tracking-tight text-ink">
           {event.name}
         </h1>
-        <p className="mt-1 text-sm leading-relaxed text-muted">
+        <p className="mt-1 truncate text-sm leading-relaxed text-muted">
           {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
           <span className="text-faint">
             ({timeZoneAbbreviation(event.startsAt, event.timeZone)})

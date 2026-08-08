@@ -23,7 +23,7 @@ export default function AdminHomePage() {
     <>
       <PageHeader
         title="Console"
-        description="Invite organisers, inspect accounts and events, and act with an audit trail."
+        description="Invite hosts, inspect accounts and events, and act with an audit trail."
       />
 
       <div className="space-y-4">

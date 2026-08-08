@@ -101,9 +101,9 @@ export const ACCOUNT_ACTION_COPY: Record<AdminAccountAction, AdminActionCopy> = 
  */
 export const ORGANISER_INVITE_COPY: AdminActionCopy = {
   label: "Review invitation",
-  title: "Send this organiser invitation?",
+  title: "Send this host invitation?",
   consequences: [
-    "They become an organiser the first time they sign in with this exact address, verified.",
+    "They become a host the first time they sign in with this exact address, verified.",
     "Forwarding the email gets somebody else nothing — the invitation binds to the address, not to the link.",
     "It stays open for fourteen days, and can be re-sent.",
     "Check the address below: an invitation sent to the wrong one cannot be un-sent.",
@@ -202,7 +202,7 @@ export function accountStateNote(account: AdminAccount): string | undefined {
       return account.isGlobalAdmin
         ? "On the admin allowlist."
         : account.isOrganiser
-          ? "Invited organiser."
+          ? "Invited host."
           : undefined;
   }
 }

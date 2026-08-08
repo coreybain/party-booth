@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   normalizePhotoChallengePrompt,
+  PHOTO_CHALLENGE_MAX_ACTIVE,
   PHOTO_CHALLENGE_STARTER_DECK,
   photoChallengePromptSchema,
   pickPhotoChallengeIndex,
@@ -9,8 +10,8 @@ import {
 
 describe("photo challenges", () => {
   it("ships a balanced starter deck", () => {
-    expect(PHOTO_CHALLENGE_STARTER_DECK).toHaveLength(24);
-    expect(new Set(PHOTO_CHALLENGE_STARTER_DECK)).toHaveLength(24);
+    expect(PHOTO_CHALLENGE_STARTER_DECK).toHaveLength(PHOTO_CHALLENGE_MAX_ACTIVE);
+    expect(new Set(PHOTO_CHALLENGE_STARTER_DECK)).toHaveLength(PHOTO_CHALLENGE_MAX_ACTIVE);
   });
 
   it("normalizes event-local duplicate prompts", () => {

@@ -42,14 +42,14 @@ function OrganiserInviteAcceptanceLive({ token }: { readonly token: string }) {
         This invitation is no longer available
       </h1>
       <Callout tone="info" className="mt-4">
-        Ask the PartyBooth administrator to send you a new organiser invitation.
+        Ask the PartyBooth administrator to send you a new host invitation.
       </Callout>
     </>
   ) : (
     <>
       <h1 className="text-lg font-semibold tracking-tight text-ink">Accepting your invitation…</h1>
       <p className="mt-1 text-sm text-muted">
-        This link signs you in and activates organiser access automatically.
+        This link signs you in and activates host access automatically.
       </p>
     </>
   );

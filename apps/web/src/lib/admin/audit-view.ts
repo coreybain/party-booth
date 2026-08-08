@@ -28,7 +28,7 @@ export const AUDIT_GROUPS: readonly string[] = [
 ];
 
 const GROUP_LABELS: Record<string, string> = {
-  organiser: "Organiser invitations",
+  organiser: "Host invitations",
   event: "Events",
   membership: "Memberships",
   media: "Media",

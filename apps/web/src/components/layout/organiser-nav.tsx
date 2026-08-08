@@ -115,7 +115,7 @@ function OrganiserNavView({
   const items = visibleOrganiserNavItems(showHostOnly);
 
   return (
-    <nav aria-label="Organiser sections" className={cn("flex justify-center", className)}>
+    <nav aria-label="Host sections" className={cn("flex justify-center", className)}>
       <ul className="flex items-center gap-0.5 rounded-full border border-line bg-surface p-1 sm:gap-1">
         {items.map((item) => {
           const { href, label, Icon } = item;

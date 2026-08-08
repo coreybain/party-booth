@@ -157,7 +157,7 @@ describe("which actions an accounts row is offered", () => {
       "Abuse.",
     );
     expect(accountStateNote(account({ accountState: "locked" }))).toMatch(/administrator/i);
-    expect(accountStateNote(account())).toMatch(/organiser/i);
+    expect(accountStateNote(account())).toMatch(/host/i);
     expect(accountStateNote(account({ isOrganiser: false }))).toBeUndefined();
   });
 });

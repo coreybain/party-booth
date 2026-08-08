@@ -6,7 +6,7 @@ import { CentredPane } from "@/components/layout/centred-pane";
 import { OrganiserInviteAcceptance } from "@/components/organiser-invite-acceptance";
 
 export const metadata: Metadata = {
-  title: "Accept organiser invitation",
+  title: "Accept host invitation",
   robots: { index: false, follow: false, nocache: true },
   referrer: "no-referrer",
 };

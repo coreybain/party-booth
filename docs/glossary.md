@@ -30,7 +30,7 @@ dismissed, and no active prompt repeats until the deck's cycle is exhausted. The
 assignment snapshot, not the editable deck row or a client string, is attached to media.
 
 **Photo challenge deck** — the host-managed set of active and archived photo challenges for one
-event. New events start with 24 family-friendly prompts and challenges enabled; old events default
+event. New events start with 50 family-friendly prompts and challenges enabled; old events default
 off. Owners and co-hosts can manage it, with 3–50 active prompts required while enabled.
 
 **Co-host** (`cohost`) — a member invited by the owner to help run an event. Moderates, rotates

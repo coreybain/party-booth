@@ -96,8 +96,8 @@ export async function eventFreeze(
  * The audit log holds the real reason and the admin console shows it.
  */
 export const EVENT_FREEZE_MESSAGES: Record<EventFreezeReason, string> = {
-  ownerLocked: "This event is suspended. Ask the organiser to get in touch with us.",
-  ownerDeletionScheduled: "This event is closed — the organiser's account is being removed.",
+  ownerLocked: "This event is suspended. Ask the host to get in touch with us.",
+  ownerDeletionScheduled: "This event is closed — the host's account is being removed.",
   ownerDeleted: "This event is no longer available.",
 };
 

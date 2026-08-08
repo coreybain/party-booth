@@ -81,7 +81,7 @@ export function OrganiserInviteForm({ layout = "card" }: { readonly layout?: "ca
     <>
       {layout === "card" ? (
         <SectionHeading
-          title="Invite an organiser"
+          title="Invite a host"
           description="The only way into the private beta. Confirmed, reasoned and recorded, like everything else here."
         />
       ) : null}
@@ -107,7 +107,7 @@ export function OrganiserInviteForm({ layout = "card" }: { readonly layout?: "ca
             setEmailError(undefined);
           }}
           {...(emailError === undefined ? {} : { error: emailError })}
-          hint="The email contains a single-use sign-in link. Anyone with that link can claim this organiser account."
+          hint="The email contains a single-use sign-in link. Anyone with that link can claim this host account."
         />
 
         <TextField

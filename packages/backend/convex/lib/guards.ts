@@ -64,7 +64,7 @@ export async function requireActiveUser(ctx: ReadCtx): Promise<Doc<"users">> {
 function accountStateMessage(state: Doc<"users">["accountState"]): string {
   switch (state) {
     case "locked":
-      return "This account has been suspended. Contact the organiser who invited you.";
+      return "This account has been suspended. Contact the host who invited you.";
     case "deletionScheduled":
       return "This account is scheduled for deletion.";
     case "deleted":

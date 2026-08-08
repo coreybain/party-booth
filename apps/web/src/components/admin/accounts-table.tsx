@@ -97,7 +97,7 @@ function AccountRow({ account }: { readonly account: AdminAccount }) {
               tone={STATE_TONES[account.accountState]}
             />
             {account.isGlobalAdmin ? <StatusChip label="Admin" tone="progress" /> : null}
-            {account.isOrganiser ? <StatusChip label="Organiser" /> : null}
+            {account.isOrganiser ? <StatusChip label="Host" /> : null}
             {account.emailVerified ? null : <StatusChip label="Unverified" tone="warning" />}
           </div>
           <p className="mt-0.5 truncate text-sm text-muted">{account.email}</p>

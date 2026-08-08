@@ -69,7 +69,7 @@ function OrganiserOnlyLive({
 export function NeedsOrganiserInvitation() {
   return (
     <Card>
-      <Placeholder title="Creating events needs an organiser invitation">
+      <Placeholder title="Creating events needs a host invitation">
         You are here as a co-host, which lets you moderate, run the slideshow and change a
         party&rsquo;s settings — but starting a party of your own is invitation-only while
         PartyBooth is in private beta. Ask whoever invited you.{" "}

@@ -5,7 +5,7 @@ import { api, makeTest, seedEvent, seedMembership, seedUser } from "./testing.he
 const HOUR = 60 * 60 * 1000;
 
 describe("photo challenges", () => {
-  it("enables a 24-prompt starter deck for new events while old rows default off", async () => {
+  it("enables a 50-prompt starter deck for new events while old rows default off", async () => {
     const t = makeTest();
     const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
     const oldEventId = await seedEvent(t, ownerId);
@@ -26,7 +26,7 @@ describe("photo challenges", () => {
       .withIdentity({ subject: "owner" })
       .query(api.photo_challenges.list, { eventId: created.eventId });
     expect(deck.enabled).toBe(true);
-    expect(deck.activeCount).toBe(24);
+    expect(deck.activeCount).toBe(50);
     expect(deck.challenges.every((challenge) => challenge.source === "starter")).toBe(true);
   });
 

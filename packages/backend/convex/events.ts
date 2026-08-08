@@ -187,7 +187,7 @@ export const create = mutation({
     if (!decision.allowed) {
       throw forbidden(
         decision.reason === "resourceState"
-          ? "PartyBooth is invitation-only during the beta. Ask the person who invited you for an organiser invitation."
+          ? "PartyBooth is invitation-only during the beta. Ask the person who invited you for a host invitation."
           : DENIAL_MESSAGES[decision.reason],
       );
     }

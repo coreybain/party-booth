@@ -145,13 +145,12 @@ export function PhotoChallengeCard({
       <p className="mt-3 text-xl font-semibold leading-snug text-ink">
         {assignment?.prompt ?? "Finding a fresh idea…"}
       </p>
-      <p className="mt-2 text-sm text-muted">A little spark for your next photo.</p>
       {error ? (
         <div className="mt-4">
           <Callout tone="danger">{error}</Callout>
         </div>
       ) : null}
-      <div className="mt-5 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         <Button
           variant="secondary"
           disabled={!assignment || loading}

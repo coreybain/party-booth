@@ -49,7 +49,7 @@ export default async function HostSignInPage({
               You&rsquo;re signed in, but not invited yet
             </h1>
             <p className="mt-1 text-sm text-muted">
-              PartyBooth is invitation-only while it is in private beta. Hosting needs an organiser
+              PartyBooth is invitation-only while it is in private beta. Hosting needs a host
               invitation, which arrives by email; co-hosting needs a host to invite this address.
             </p>
             <Callout tone="info" className="mt-4">
@@ -75,7 +75,7 @@ export default async function HostSignInPage({
             </div>
             {needs === "invitation" ? (
               <Callout tone="info" className="mb-4">
-                That console needs an organiser invitation. Sign in with the address it was sent to.
+                That console needs a host invitation. Sign in with the address it was sent to.
               </Callout>
             ) : null}
             <OtpSignInForm audience="organiser" redirectTo="/dashboard" />

@@ -20,17 +20,17 @@ export function OrganiserInviteSheet() {
           variant="ghost"
           size="sm"
           className="size-9 rounded-full px-0 text-muted hover:text-accent"
-          aria-label="Invite an organiser"
-          title="Invite an organiser"
+          aria-label="Invite a host"
+          title="Invite a host"
         >
           <UserPlusIcon size={18} />
         </Button>
       </SheetTrigger>
       <SheetContent>
         <SheetHeader>
-          <SheetTitle>Invite an organiser</SheetTitle>
+          <SheetTitle>Invite a host</SheetTitle>
           <SheetDescription>
-            Send a single-use invitation link that signs the recipient in and grants organiser
+            Send a single-use invitation link that signs the recipient in and grants host
             access. The action and your reason are written to the audit log.
           </SheetDescription>
         </SheetHeader>
