@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { EventSettingsPanel } from "@/components/events/event-settings-sheet";
-import type { GuestEventTab } from "@/components/guest/guest-event-tabs";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -24,13 +23,7 @@ export function eventRoleLabel(role: EventSummary["role"]): string {
   }
 }
 
-export function GuestEventSettings({
-  home,
-  onOpenTab,
-}: {
-  readonly home: EventHome;
-  readonly onOpenTab: (tab: GuestEventTab) => void;
-}) {
+export function GuestEventSettings({ home }: { readonly home: EventHome }) {
   const { event, invite, isHost } = home;
   const eventId = event.id;
   const router = useRouter();
@@ -91,16 +84,7 @@ export function GuestEventSettings({
             </p>
           </div>
 
-          <EventSettingsPanel event={event} invite={invite} />
-
-          <Button
-            variant="secondary"
-            size="lg"
-            fullWidth
-            onClick={() => router.push(`/events/${eventId}`)}
-          >
-            Open the full host console
-          </Button>
+          <EventSettingsPanel event={event} invite={invite} collapsible />
         </section>
       ) : (
         <Callout tone="info">
@@ -110,30 +94,7 @@ export function GuestEventSettings({
         </Callout>
       )}
 
-      <section aria-label="Quick actions">
-        <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-          <Button size="lg" fullWidth onClick={() => onOpenTab("camera")}>
-            Take a photo
-          </Button>
-          <Button variant="secondary" size="lg" fullWidth onClick={() => onOpenTab("gallery")}>
-            View your photos
-          </Button>
-        </div>
-      </section>
-
-      <section aria-labelledby="events-heading" className="space-y-3">
-        <div>
-          <h2
-            id="events-heading"
-            className="text-xs font-semibold uppercase tracking-widest text-faint"
-          >
-            Your events
-          </h2>
-          <p className="mt-1 text-sm text-muted">
-            Choose where the web camera and PartyBooth app should open.
-          </p>
-        </div>
-
+      <section aria-label="Your events" className="space-y-3">
         {error ? (
           <Callout tone="danger" live="assertive">
             {error}

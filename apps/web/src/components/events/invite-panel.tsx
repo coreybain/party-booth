@@ -54,7 +54,7 @@ export function InvitePanel({ code, token, version, state, eventName }: InvitePa
         </Callout>
       )}
 
-      <div className="grid gap-5 sm:grid-cols-[minmax(0,13rem)_1fr] sm:items-start">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] items-start gap-5">
         <div className="mx-auto w-full max-w-[13rem]">
           {url === undefined ? (
             <div className="grid aspect-square place-items-center rounded-2xl border border-dashed border-line p-4 text-center text-sm text-muted">

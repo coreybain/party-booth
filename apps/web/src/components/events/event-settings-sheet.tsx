@@ -2,13 +2,13 @@
 
 import { useMutation, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { CohostPanel } from "@/components/events/cohost-panel";
 import { InvitePanel } from "@/components/events/invite-panel";
 import { RotationPanel } from "@/components/events/rotation-panel";
 import { StateBadge } from "@/components/events/state-badge";
-import { MediaIcon } from "@/components/icons";
+import { ChevronDownIcon, MediaIcon } from "@/components/icons";
 import { SectionHeading } from "@/components/layout/card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -75,11 +75,13 @@ export function EventSettingsPanel({
   invite,
   onRequestClose,
   className,
+  collapsible = false,
 }: {
   readonly event: EventSummary;
   readonly invite?: EventHome["invite"];
   readonly onRequestClose?: () => void;
   readonly className?: string;
+  readonly collapsible?: boolean;
 }) {
   const router = useRouter();
   const me = useQuery(backendApi.users.currentUser, {});
@@ -88,11 +90,11 @@ export function EventSettingsPanel({
   return (
     <div className={cn("space-y-4", className)}>
       {invite === undefined ? null : (
-        <section className="rounded-2xl border border-line bg-canvas/35 p-4">
-          <SectionHeading
-            title="Join code & QR"
-            description="Hold this up so guests can scan it, or give them the six-digit code."
-          />
+        <SettingsCard
+          title="Join code & QR"
+          description="Hold this up so guests can scan it, or give them the six-digit code."
+          collapsible={collapsible}
+        >
           <div className="mt-4">
             <InvitePanel
               code={invite.code}
@@ -102,15 +104,15 @@ export function EventSettingsPanel({
               eventName={event.name}
             />
           </div>
-        </section>
+        </SettingsCard>
       )}
 
-      <section className="rounded-2xl border border-line bg-canvas/35 p-4">
-        <SectionHeading
-          title="Schedule & moderation"
-          description="When guests can join and whether submissions need approval."
-          action={<StateBadge state={event.state} />}
-        />
+      <SettingsCard
+        title="Schedule & moderation"
+        description="When guests can join and whether submissions need approval."
+        action={<StateBadge state={event.state} />}
+        collapsible={collapsible}
+      >
         <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
           <p className="min-w-0 text-sm text-ink">
             {formatSchedule(event.startsAt, event.endsAt, event.timeZone)}{" "}
@@ -136,39 +138,39 @@ export function EventSettingsPanel({
           initialMode={event.moderationMode === "automatic" ? "automatic" : "manual"}
           disabled={!editable}
         />
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-2xl border border-line bg-canvas/35 p-4">
-        <SectionHeading
-          title="Past event gallery"
-          description="Choose whether the event QR opens the approved photos after the party."
-          action={<MediaIcon size={18} className="text-faint" />}
-        />
+      <SettingsCard
+        title="Past event gallery"
+        description="Choose whether the event QR opens the approved photos after the party."
+        action={<MediaIcon size={18} className="text-faint" />}
+        collapsible={collapsible}
+      >
         <PublicGallerySetting
           key={`${event.id}:${String(event.publicGalleryEnabled)}`}
           eventId={event.id}
           initialEnabled={event.publicGalleryEnabled}
           disabled={event.role !== "owner"}
         />
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-2xl border border-line bg-canvas/35 p-4">
-        <SectionHeading
-          title="Co-hosts"
-          description="Invite someone to help moderate and run the slideshow."
-        />
+      <SettingsCard
+        title="Co-hosts"
+        description="Invite someone to help moderate and run the slideshow."
+        collapsible={collapsible}
+      >
         <CohostPanel
           className="mt-4"
           eventId={event.id}
           {...(me?.email === undefined ? {} : { ownEmail: me.email })}
         />
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-2xl border border-line bg-canvas/35 p-4">
-        <SectionHeading
-          title="Invite rotation"
-          description="Replace the join code and choose what happens to existing guests."
-        />
+      <SettingsCard
+        title="Invite rotation"
+        description="Replace the join code and choose what happens to existing guests."
+        collapsible={collapsible}
+      >
         {event.state === "live" ? (
           <Callout tone="warning" className="mt-4">
             This event is live. Have the new QR ready before rotating the code on the door.
@@ -180,8 +182,75 @@ export function EventSettingsPanel({
           eventName={event.name}
           canRotate={editable}
         />
-      </section>
+      </SettingsCard>
     </div>
+  );
+}
+
+function SettingsCard({
+  title,
+  description,
+  action,
+  collapsible,
+  children,
+}: {
+  readonly title: string;
+  readonly description: string;
+  readonly action?: ReactNode;
+  readonly collapsible: boolean;
+  readonly children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const contentId = useId();
+  const titleId = `${contentId}-title`;
+
+  return (
+    <section className="rounded-2xl border border-line bg-canvas/35 p-4">
+      {collapsible ? (
+        <>
+          <button
+            type="button"
+            className="flex w-full items-start gap-3 rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent sm:hidden"
+            aria-expanded={open}
+            aria-controls={contentId}
+            onClick={() => setOpen((current) => !current)}
+          >
+            <span className="min-w-0 flex-1">
+              <span
+                id={titleId}
+                role="heading"
+                aria-level={2}
+                className="block font-semibold text-ink"
+              >
+                {title}
+              </span>
+              <span className={cn("mt-1 block text-sm text-muted", !open && "truncate")}>
+                {description}
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2 pt-0.5">
+              {action}
+              <ChevronDownIcon
+                size={17}
+                className={cn("text-faint transition-transform", open && "rotate-180")}
+              />
+            </span>
+          </button>
+          <div className="hidden sm:block">
+            <SectionHeading title={title} description={description} action={action} />
+          </div>
+        </>
+      ) : (
+        <SectionHeading title={title} description={description} action={action} />
+      )}
+
+      <div
+        id={collapsible ? contentId : undefined}
+        className={cn(collapsible && !open && "hidden sm:block")}
+      >
+        {children}
+      </div>
+    </section>
   );
 }
 
