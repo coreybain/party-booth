@@ -10,7 +10,7 @@ export default async function CompleteOrganiserInvitationPage() {
 
   try {
     const result = await fetchAuthMutation(backendApi.users.refreshRoles, {});
-    redirect(result.isOrganiser ? "/dashboard" : "/host?needs=invitation");
+    redirect(result.isOrganiser ? "/events" : "/host?needs=invitation");
   } catch {
     redirect("/host?invite=invalid");
   }

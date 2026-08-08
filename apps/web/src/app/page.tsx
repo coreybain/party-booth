@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 /** The public front door: guests join first, while hosts can reach their sign-in. */
 export default async function HomePage() {
   const access = isServerBackendConfigured ? await getOrganiserAccess() : "signedOut";
-  if (access === "ok") redirect("/dashboard");
+  if (access === "ok") redirect("/events");
   if (access !== "signedOut" && access !== "needsInvitation") redirect("/account/blocked");
 
   return (

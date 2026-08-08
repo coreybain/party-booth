@@ -25,7 +25,7 @@ export default async function HostSignInPage({
   readonly searchParams: Promise<{ readonly needs?: string }>;
 }) {
   const access = isServerBackendConfigured ? await getOrganiserAccess() : "signedOut";
-  if (access === "ok") redirect("/dashboard");
+  if (access === "ok") redirect("/events");
   if (access !== "signedOut" && access !== "needsInvitation") redirect("/account/blocked");
 
   const { needs } = await searchParams;
@@ -78,7 +78,7 @@ export default async function HostSignInPage({
                 That console needs a host invitation. Sign in with the address it was sent to.
               </Callout>
             ) : null}
-            <OtpSignInForm audience="organiser" redirectTo="/dashboard" />
+            <OtpSignInForm audience="organiser" redirectTo="/events" />
           </>
         )}
       </Card>
