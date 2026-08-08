@@ -57,7 +57,7 @@ export default async function OrganiserLayout({ children }: { readonly children:
       banner={previewMode ? <PreviewModeBanner /> : null}
       compactMobileHeader
       brand={
-        <Link href="/dashboard" aria-label="PartyBooth home">
+        <Link href="/" aria-label="PartyBooth home">
           <PartyBoothWordmark className="text-base" compactOnMobile />
         </Link>
       }
