@@ -62,7 +62,7 @@ export function GuestSignIn({ callbackURL, onSignedIn }: GuestSignInProps) {
 
       <p className="text-xs leading-relaxed text-faint">
         Signing in tells the host who took which photo, and lets you take yours back down. Private
-        beta, 18+.
+        beta.
       </p>
     </div>
   );

@@ -18,6 +18,8 @@ export interface AppShellProps {
   readonly headerRight?: ReactNode;
   /** The centred icon nav. It shares the header row when there is no centre control. */
   readonly nav?: ReactNode;
+  /** Keep brand, navigation and account action on one compact row on phones. */
+  readonly compactMobileHeader?: boolean;
   /** Full-bleed strip above the header (preview mode, incidents, lock notices). */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
@@ -38,6 +40,7 @@ export function AppShell({
   headerCentre,
   headerRight,
   nav,
+  compactMobileHeader = false,
   banner,
   children,
 }: AppShellProps) {
@@ -51,7 +54,14 @@ export function AppShell({
           {headerCentre ? (
             <div className="flex min-w-0 flex-1 justify-center">{headerCentre}</div>
           ) : nav ? (
-            <div className="hidden min-w-0 flex-1 justify-center sm:flex">{nav}</div>
+            <div
+              className={cn(
+                "min-w-0 flex-1 justify-center",
+                compactMobileHeader ? "flex" : "hidden sm:flex",
+              )}
+            >
+              {nav}
+            </div>
           ) : (
             <div className="flex-1" />
           )}
@@ -60,7 +70,7 @@ export function AppShell({
         {nav && headerCentre ? (
           <div className="mx-auto w-full max-w-5xl px-4 pb-3">{nav}</div>
         ) : null}
-        {nav && !headerCentre ? (
+        {nav && !headerCentre && !compactMobileHeader ? (
           <div className="mx-auto w-full max-w-5xl px-4 pb-3 sm:hidden">{nav}</div>
         ) : null}
       </header>

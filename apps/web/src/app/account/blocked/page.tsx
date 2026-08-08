@@ -46,7 +46,7 @@ export default async function AccountBlockedPage() {
   // An account that is fine has no business on this page, and leaving it
   // reachable would make "am I locked?" answerable by URL rather than by fact.
   if (access === "ok" || access === "needsInvitation") redirect("/dashboard");
-  if (access === "signedOut") redirect("/");
+  if (access === "signedOut") redirect("/host");
 
   const copy = BLOCKED_ACCOUNT_COPY[access];
 

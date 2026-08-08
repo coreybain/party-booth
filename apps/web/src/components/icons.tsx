@@ -154,6 +154,15 @@ export function ArrowLeftIcon(props: IconProps) {
   );
 }
 
+export function LogOutIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10 4.5H5.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2H10" />
+      <path d="M14.5 8 18.5 12l-4 4M8.5 12h10" />
+    </Icon>
+  );
+}
+
 export function UsersIcon(props: IconProps) {
   return (
     <Icon {...props}>
@@ -245,6 +254,14 @@ export function FlagIcon(props: IconProps) {
     <Icon {...props}>
       <path d="M6 21V4" />
       <path d="M6 4.5h11.5l-2.2 4 2.2 4H6z" />
+    </Icon>
+  );
+}
+
+export function FilterIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 6h16M7 12h10M10 18h4" />
     </Icon>
   );
 }

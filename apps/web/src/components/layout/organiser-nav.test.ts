@@ -50,6 +50,11 @@ describe("isNavItemActive", () => {
 });
 
 describe("event-aware organiser navigation", () => {
+  it("keeps slideshow out of the compact mobile header", () => {
+    expect(item("/slideshow").mobileHidden).toBe(true);
+    expect(item("/media").mobileHidden).not.toBe(true);
+  });
+
   it("finds an event id on event detail routes only", () => {
     expect(eventIdFromOrganiserPath("/events/evt_1")).toBe("evt_1");
     expect(eventIdFromOrganiserPath("/events/evt_1/edit")).toBe("evt_1");

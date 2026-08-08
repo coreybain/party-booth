@@ -18,6 +18,8 @@ interface NavItem {
   readonly hostOnly?: boolean;
   /** Extra path prefixes this tab owns, beyond `href` itself. */
   readonly owns?: readonly string[];
+  /** Keep secondary destinations out of the one-row phone header. */
+  readonly mobileHidden?: boolean;
 }
 
 /**
@@ -30,7 +32,13 @@ interface NavItem {
  */
 export const ORGANISER_NAV: readonly NavItem[] = [
   { href: "/dashboard", label: "Home", Icon: HomeIcon, owns: ["/events"] },
-  { href: "/slideshow", label: "Slideshow", Icon: SlideshowIcon, hostOnly: true },
+  {
+    href: "/slideshow",
+    label: "Slideshow",
+    Icon: SlideshowIcon,
+    hostOnly: true,
+    mobileHidden: true,
+  },
   { href: "/media", label: "Moderate", Icon: MediaIcon, hostOnly: true },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
@@ -108,19 +116,19 @@ function OrganiserNavView({
 
   return (
     <nav aria-label="Organiser sections" className={cn("flex justify-center", className)}>
-      <ul className="flex items-center gap-1 rounded-full border border-line bg-surface p-1">
+      <ul className="flex items-center gap-0.5 rounded-full border border-line bg-surface p-1 sm:gap-1">
         {items.map((item) => {
           const { href, label, Icon } = item;
           const active = isNavItemActive(item, pathname);
           return (
-            <li key={href}>
+            <li key={href} className={cn(item.mobileHidden && "hidden sm:block")}>
               <Link
                 href={href}
                 aria-label={label}
                 aria-current={active ? "page" : undefined}
                 title={label}
                 className={cn(
-                  "flex h-10 items-center gap-2 rounded-full px-3.5 text-sm transition-colors",
+                  "flex h-9 items-center gap-2 rounded-full px-2.5 text-sm transition-colors sm:h-10 sm:px-3.5",
                   active
                     ? "bg-accent-soft text-accent"
                     : "text-muted hover:bg-raised hover:text-ink",

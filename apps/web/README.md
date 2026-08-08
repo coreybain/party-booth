@@ -2,13 +2,14 @@
 
 The Next.js 16 (App Router) site. It hosts three audiences from one codebase:
 
-| Audience           | Routes                                                                                                               | Status                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Organiser          | `/` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 4: moderation grid, slideshow, live home numbers        |
-| Global admin       | `/admin/login`, `/admin`                                                                                             | Sprint 1: shell only                                           |
-| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                     | Sprint 4: join, photo **and video** capture, my media, gallery |
-| Public             | `/privacy`                                                                                                           | Sprint 4: no account needed — App Review requires the URL      |
-| Storage            | `/api/uploadthing` (presign + provider callback)                                                                     | Sprint 4: originals **and** derivatives                        |
+| Audience           | Routes                                                                                                                   | Status                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Public entry       | `/` (join-or-host choice), `/join` (QR or six-digit code)                                                                | Sends guests and hosts into the right flow                     |
+| Organiser          | `/host` (sign in), `/dashboard`, `/events/new`, `/events/<id>`, `/events/<id>/edit`, `/slideshow`, `/media`, `/settings` | Sprint 4: moderation grid, slideshow, live home numbers        |
+| Global admin       | `/admin/login`, `/admin`                                                                                                 | Sprint 1: shell only                                           |
+| Guest (mobile web) | `/join/<token>` (QR target), `/join` (code entry), `/event/<id>`                                                         | Sprint 4: join, photo **and video** capture, my media, gallery |
+| Public             | `/privacy`                                                                                                               | Sprint 4: no account needed — App Review requires the URL      |
+| Storage            | `/api/uploadthing` (presign + provider callback)                                                                         | Sprint 4: originals **and** derivatives                        |
 
 ### The join path
 
@@ -126,7 +127,8 @@ vercel.json                   framework + region (iad1, co-located with Convex U
 
 src/app/
   layout.tsx                  <html>, metadata, viewport, providers, skip link
-  page.tsx                    organiser OTP sign-in (site root)
+  page.tsx                    public join-or-host choice (site root)
+  host/                       organiser OTP sign-in
   (organiser)/                authenticated organiser shell + four pages
   privacy/                    the public privacy policy — no shell, no auth
   admin/login/                admin OTP sign-in — reachable while signed out

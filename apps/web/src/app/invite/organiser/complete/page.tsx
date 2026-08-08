@@ -6,12 +6,12 @@ import { backendApi } from "@/lib/convex-api";
 export const dynamic = "force-dynamic";
 
 export default async function CompleteOrganiserInvitationPage() {
-  if (!fetchAuthMutation) redirect("/?invite=invalid");
+  if (!fetchAuthMutation) redirect("/host?invite=invalid");
 
   try {
     const result = await fetchAuthMutation(backendApi.users.refreshRoles, {});
-    redirect(result.isOrganiser ? "/dashboard" : "/?needs=invitation");
+    redirect(result.isOrganiser ? "/dashboard" : "/host?needs=invitation");
   } catch {
-    redirect("/?invite=invalid");
+    redirect("/host?invite=invalid");
   }
 }

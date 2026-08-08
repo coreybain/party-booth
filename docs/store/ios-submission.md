@@ -383,15 +383,12 @@ What now exists, and is what you are attesting to:
   the server records it; an account with no accepted version is refused an upload grant
   (`termsNotAccepted`). The acceptance is versioned, so changing the rules asks everybody
   again.
-- **The footer on every screen** says "Private beta · 18+", including the sign-in screen a
-  reviewer sees first.
-
-Answer **"Is your app restricted to users 18 years or older?" → Yes**, and in the review
-notes point at `/terms` and at the acceptance step. Attach the terms URL in the **License
-Agreement** field if you want the strongest version of the claim — Apple's standard EULA
-does not carry an age restriction, so a custom EULA is what turns "we say 18+" into a
-contract term. Not doing that is defensible; claiming the restriction with _neither_ the
-terms nor the acceptance was not.
+  Answer **"Is your app restricted to users 18 years or older?" → Yes**, and in the review
+  notes point at `/terms` and at the acceptance step. Attach the terms URL in the **License
+  Agreement** field if you want the strongest version of the claim — Apple's standard EULA
+  does not carry an age restriction, so a custom EULA is what turns "we say 18+" into a
+  contract term. Not doing that is defensible; claiming the restriction with _neither_ the
+  terms nor the acceptance was not.
 
 If you would rather not defend the override at all, remove it: with the answers in §7.1
 the app rates **16+** on content plus UGC, which is a perfectly shippable rating for a

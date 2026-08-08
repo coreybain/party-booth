@@ -18,11 +18,11 @@ import { getOrganiserAccess, isServerBackendConfigured } from "@/lib/auth-server
  * `organiserAccess` in `src/lib/lock-view.ts` is the tested decision behind it.
  * In short:
  *
- * - **signed out** → `/`, the sign-in page.
+ * - **signed out** → `/host`, the host sign-in page.
  * - **locked / being deleted** → `/account/blocked`, which says so. This used to
  *   land on `/?needs=invitation`, which was both untrue and — since `/` bounces
  *   a signed-in visitor to `/dashboard` — an infinite redirect.
- * - **no invitation** → `/?needs=invitation`. PLAN.md makes the private beta
+ * - **no invitation** → `/host?needs=invitation`. PLAN.md makes the private beta
  *   invitation-only, so a valid Better Auth session is authentication and
  *   `users.isOrganiser` or the admin allowlist is authorisation.
  * - **hosts something** → in. A co-host is not an organiser (accepting a
@@ -47,20 +47,21 @@ export default async function OrganiserLayout({ children }: { readonly children:
 
   if (!previewMode) {
     const access = await getOrganiserAccess();
-    if (access === "signedOut") redirect("/");
-    if (access === "needsInvitation") redirect("/?needs=invitation");
+    if (access === "signedOut") redirect("/host");
+    if (access === "needsInvitation") redirect("/host?needs=invitation");
     if (access !== "ok") redirect("/account/blocked");
   }
 
   return (
     <AppShell
       banner={previewMode ? <PreviewModeBanner /> : null}
+      compactMobileHeader
       brand={
         <Link href="/dashboard" aria-label="PartyBooth home">
-          <PartyBoothWordmark className="text-base" />
+          <PartyBoothWordmark className="text-base" compactOnMobile />
         </Link>
       }
-      headerRight={<SignOutButton redirectTo="/" />}
+      headerRight={<SignOutButton redirectTo="/" iconOnlyOnMobile />}
       nav={<OrganiserNav />}
     >
       {children}

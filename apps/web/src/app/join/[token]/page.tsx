@@ -80,8 +80,8 @@ export default async function JoinByTokenPage({
 
       <p className="mt-6 text-center text-sm text-muted">
         Hosting instead?{" "}
-        <Link href="/" className="text-accent underline underline-offset-2">
-          Organiser sign in
+        <Link href="/host" className="text-accent underline underline-offset-2">
+          Log in as host
         </Link>
       </p>
     </CentredPane>

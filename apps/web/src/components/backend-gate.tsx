@@ -101,7 +101,7 @@ function ConvexAuthGate({
         ) : (
           <div className="rounded-xl border border-warning/35 bg-warning/8 px-4 py-3 text-sm text-warning">
             Your session has ended.{" "}
-            <a href="/" className="underline underline-offset-2">
+            <a href="/host" className="underline underline-offset-2">
               Sign in again
             </a>
             .

@@ -51,11 +51,24 @@ export function CentredPane({
   );
 }
 
-export function PartyBoothWordmark({ className }: { readonly className?: string }) {
+export function PartyBoothWordmark({
+  className,
+  compactOnMobile = false,
+}: {
+  readonly className?: string;
+  readonly compactOnMobile?: boolean;
+}) {
   return (
     <span className={cn("inline-flex items-center gap-2 text-ink", className)}>
       <LogoMark size={26} className="text-accent" />
-      <span className="text-lg font-semibold tracking-tight">PartyBooth</span>
+      <span
+        className={cn(
+          "text-lg font-semibold tracking-tight",
+          compactOnMobile && "hidden sm:inline",
+        )}
+      >
+        PartyBooth
+      </span>
     </span>
   );
 }

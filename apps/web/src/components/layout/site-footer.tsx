@@ -14,7 +14,7 @@ import Link from "next/link";
 export function SiteFooter({ note }: { readonly note?: string }) {
   return (
     <>
-      Private beta · 18+{note === undefined ? "" : ` · ${note}`} · <TermsLink /> · <PrivacyLink />
+      Private beta{note === undefined ? "" : ` · ${note}`} · <TermsLink /> · <PrivacyLink />
     </>
   );
 }
