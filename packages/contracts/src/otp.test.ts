@@ -14,30 +14,31 @@ import {
 
 const T0 = 1_800_000_000_000; // fixed clock; nothing here reads Date.now()
 const MINUTE = 60_000;
+const SECOND = 1000;
 
 describe("OTP_POLICY", () => {
   it("matches the numbers in PLAN.md", () => {
     expect(OTP_POLICY.codeLength).toBe(6);
     expect(OTP_POLICY.ttlMs).toBe(10 * MINUTE);
     expect(OTP_POLICY.maxAttempts).toBe(5);
-    expect(OTP_POLICY.resendCooldownMs).toBe(MINUTE);
+    expect(OTP_POLICY.resendCooldownMs).toBe(15 * SECOND);
     expect(OTP_POLICY.maxSendsPerWindow).toBe(5);
     expect(OTP_POLICY.sendWindowMs).toBe(60 * MINUTE);
   });
 });
 
 describe("resend cooldown", () => {
-  it("blocks a resend inside sixty seconds and reports the wait", () => {
-    const decision = canSendOtp(createOtpSendState(T0), T0 + 30_000);
+  it("blocks a resend inside fifteen seconds and reports the wait", () => {
+    const decision = canSendOtp(createOtpSendState(T0), T0 + 5_000);
     expect(decision.allowed).toBe(false);
     expect(decision.allowed === false && decision.reason).toBe("cooldown");
-    expect(decision.allowed === false && decision.retryAfterMs).toBe(30_000);
+    expect(decision.allowed === false && decision.retryAfterMs).toBe(10_000);
   });
 
-  it("allows a resend on the sixty-second boundary", () => {
+  it("allows a resend on the fifteen-second boundary", () => {
     const state = createOtpSendState(T0);
-    expect(canSendOtp(state, T0 + MINUTE).allowed).toBe(true);
-    expect(canSendOtp(state, T0 + MINUTE - 1).allowed).toBe(false);
+    expect(canSendOtp(state, T0 + OTP_POLICY.resendCooldownMs).allowed).toBe(true);
+    expect(canSendOtp(state, T0 + OTP_POLICY.resendCooldownMs - 1).allowed).toBe(false);
   });
 
   it("always allows the very first send", () => {

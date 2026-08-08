@@ -5,7 +5,7 @@ import { defaultRandomBytes, generateEventCode, type RandomBytes } from "./codes
 /**
  * Six-digit email OTP policy, as pure logic.
  *
- * PLAN.md fixes the numbers: **10-minute expiry, five attempts, 60-second
+ * PLAN.md fixes the numbers: **10-minute expiry, five attempts, 15-second
  * resend cooldown**, plus the per-address send ceiling that closes the
  * enumeration hole.
  *
@@ -16,7 +16,7 @@ import { defaultRandomBytes, generateEventCode, type RandomBytes } from "./codes
  *   are handed to it in `packages/backend/convex/lib/otp.ts`. There is
  *   deliberately no second implementation here: a parallel `verifyOtp` with its
  *   own tests and no callers reads as a guarantee and is not one.
- * - **Sending** — the 60-second cooldown and the hourly ceiling — is enforced by
+ * - **Sending** — the 15-second cooldown and the hourly ceiling — is enforced by
  *   *us*, in `packages/backend/convex/otp.ts`, because Better Auth's own rate
  *   limiter defaults to an in-memory store that Convex's recycled isolates do
  *   not share. {@link canSendOtp} and {@link registerOtpSend} are what that
@@ -33,7 +33,7 @@ export const OTP_POLICY = {
   /** Wrong guesses allowed before the code is burned. Enforced by the plugin. */
   maxAttempts: 5,
   /** Minimum gap between "send me another code" requests. */
-  resendCooldownMs: 60 * 1000,
+  resendCooldownMs: 15 * 1000,
   /**
    * Enumeration protection: a hard ceiling on codes sent for one address per
    * window, independent of the cooldown. Stops a slow drip of sends being used
@@ -94,7 +94,7 @@ export function createOtpSendState(now: number): OtpSendState {
 /**
  * May we send (or resend) a code right now?
  *
- * Two independent brakes: the 60-second cooldown between consecutive sends, and
+ * Two independent brakes: the 15-second cooldown between consecutive sends, and
  * the per-window ceiling. The caller should surface `retryAfterMs` to the user
  * but must **not** vary the response by whether the address exists — that is
  * the enumeration hole this whole policy exists to close.

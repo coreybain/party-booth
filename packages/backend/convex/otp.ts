@@ -9,7 +9,7 @@ import { registerOtpSendFor } from "./lib/otp_throttle";
 /**
  * The per-address OTP send throttle.
  *
- * PLAN.md fixes a 60-second resend cooldown and TODO.md Sprint 2 asks for
+ * PLAN.md fixes a 15-second resend cooldown and TODO.md Sprint 2 asks for
  * "enumeration protection" on the OTP path. Neither can be delegated to Better
  * Auth here:
  *

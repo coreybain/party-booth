@@ -106,7 +106,7 @@ role; "organiser" also names the website they use, as opposed to the `/admin` co
 never retained. Moot at launch, since the camera is clean.
 
 **OTP** — the six-digit one-time code emailed for sign-in. Ten-minute expiry, five attempts,
-60-second resend cooldown. Delivered by Resend.
+15-second resend cooldown. Delivered by Resend.
 
 **Owner** (`owner`) — the creator of an event, with full power over it including deletion and
 transfer.

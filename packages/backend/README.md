@@ -338,7 +338,7 @@ Two brakes, because Better Auth's own one cannot be trusted inside Convex:
   storage that Convex's recycled, parallel isolates do not share.
 - `convex/otp.ts` (`registerSend`) is the one that actually holds. It runs as a
   Convex mutation, so the read-decide-write is transactional, and it enforces
-  both the 60-second resend cooldown and the hourly per-address ceiling from
+  both the 15-second resend cooldown and the hourly per-address ceiling from
   `OTP_POLICY`. `sendVerificationOTP` calls it before any mail goes out and
   throws `TOO_MANY_REQUESTS` when it refuses. The decision depends only on send
   history for the address, never on whether an account exists.

@@ -45,23 +45,27 @@ describe("otp.registerSend", () => {
     });
   });
 
-  it("enforces the sixty-second cooldown that Better Auth's limiter does not", async () => {
+  it("enforces the fifteen-second cooldown independently of Better Auth", async () => {
     await send("guest@partybooth.test", T0);
 
-    const blocked = await send("guest@partybooth.test", T0 + 30_000);
+    const blocked = await send("guest@partybooth.test", T0 + 5_000);
     expect(blocked.allowed).toBe(false);
     expect(blocked.reason).toBe("cooldown");
-    expect(blocked.retryAfterMs).toBe(30_000);
+    expect(blocked.retryAfterMs).toBe(10_000);
 
-    expect((await send("guest@partybooth.test", T0 + MINUTE)).allowed).toBe(true);
+    expect((await send("guest@partybooth.test", T0 + OTP_POLICY.resendCooldownMs)).allowed).toBe(
+      true,
+    );
   });
 
   it("does not extend the cooldown when it refuses", async () => {
     await send("guest@partybooth.test", T0);
+    await send("guest@partybooth.test", T0 + 5_000);
     await send("guest@partybooth.test", T0 + 10_000);
-    await send("guest@partybooth.test", T0 + 20_000);
     // A client retrying in a loop must still get through on the boundary.
-    expect((await send("guest@partybooth.test", T0 + MINUTE)).allowed).toBe(true);
+    expect((await send("guest@partybooth.test", T0 + OTP_POLICY.resendCooldownMs)).allowed).toBe(
+      true,
+    );
   });
 
   it("caps sends per address per hour, however patient the caller is", async () => {

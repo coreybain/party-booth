@@ -33,7 +33,7 @@ export function authBaseUrl(): NonNullable<BetterAuthOptions["baseURL"]> {
   const authUrl = envOptional(serverEnv, "BETTER_AUTH_URL");
   if (authUrl) allowedHosts.add(new URL(authUrl).host);
 
-  if (isExplicitDevelopmentDeployment()) allowedHosts.add("localhost:3000");
+  if (isExplicitDevelopmentDeployment()) allowedHosts.add("localhost:*");
 
   return {
     allowedHosts: [...allowedHosts],
@@ -46,9 +46,10 @@ export function authBaseUrl(): NonNullable<BetterAuthOptions["baseURL"]> {
  * Whether Better Auth must add the `Secure` attribute and `__Secure-` prefix.
  *
  * Auth itself runs on Convex's HTTPS origin, but the Next.js development app
- * proxies those endpoints through `http://localhost:3000`. Better Auth derives
- * cookie security from its HTTPS base URL, so without this explicit development
- * exception the proxy returns a cookie the local browser cannot retain.
+ * proxies those endpoints through `http://localhost:<port>`. Better Auth
+ * derives cookie security from its HTTPS base URL, so without this explicit
+ * development exception the proxy returns a cookie the local browser cannot
+ * retain.
  *
  * This fails secure: only an explicitly valid `development` marker opts out.
  * Preview, production, unset, blank and malformed markers all keep secure
@@ -76,12 +77,12 @@ export function trustedOrigins(): string[] {
   const convexSite = envOptional(serverEnv, "CONVEX_SITE_URL");
   if (convexSite) origins.add(stripTrailingSlash(convexSite));
   // `SITE_URL` may be the LAN address used by Expo while the browser uses the
-  // fixed Next.js development origin. localhost is trusted only on a deployment
-  // that has *said* it is a development deployment — see
+  // Next.js development origin, whose port is user-selectable. localhost is
+  // trusted only on a deployment that has *said* it is a development deployment — see
   // `isExplicitDevelopmentDeployment`. Neither localhost nor a private-network
   // origin belongs in the production allowlist.
   if (isExplicitDevelopmentDeployment()) {
-    origins.add("http://localhost:3000");
+    origins.add("http://localhost:*");
   }
   // Expo dev builds and the shipped app return through the custom scheme.
   origins.add("partybooth://");

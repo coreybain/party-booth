@@ -40,7 +40,7 @@ Global admins have **no media access and no impersonation**, by design. See
 
 ## Identity
 
-- **Organisers, web:** six-digit email OTP — 10-minute expiry, five attempts, 60-second resend cooldown.
+- **Organisers, web:** six-digit email OTP — 10-minute expiry, five attempts, 15-second resend cooldown.
 - **Guests, web:** Google sign-in _or_ email OTP. There is no Sign in with Apple on the web.
 - **Guests, app:** Sign in with Apple or Google, then a name + photo confirmation step. A verified
   email that matches an organiser or co-host record unlocks the host surfaces in the app. Apple

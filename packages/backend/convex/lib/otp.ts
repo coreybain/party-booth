@@ -7,13 +7,14 @@ import { demoLogin, isAdminEmail, isDemoAddress } from "./config";
  * The email-OTP policy, translated for Better Auth.
  *
  * PLAN.md fixes the numbers — six digits, ten-minute expiry, five attempts,
- * sixty-second resend cooldown — and `@partybooth/contracts` owns them so the
+ * fifteen-second resend cooldown — and `@partybooth/contracts` owns them so the
  * clients can display the same limits. This is the single place they cross into
  * provider configuration, which is why it is a separate, testable function
  * rather than an object literal buried in `auth.ts`.
  *
- * Better Auth expresses the resend cooldown as a rate limit on the
- * send-verification endpoint: one request per sixty-second window.
+ * Better Auth applies one shared rate-limit rule to both sending and checking a
+ * code. The five-request burst below therefore matches the five-guess budget;
+ * our transactional per-address throttle enforces the actual resend cooldown.
  */
 export function emailOtpPolicyOptions(): Omit<EmailOTPOptions, "sendVerificationOTP"> {
   return {
@@ -22,7 +23,7 @@ export function emailOtpPolicyOptions(): Omit<EmailOTPOptions, "sendVerification
     allowedAttempts: OTP_POLICY.maxAttempts,
     rateLimit: {
       window: Math.floor(OTP_POLICY.resendCooldownMs / 1000),
-      max: 1,
+      max: OTP_POLICY.maxAttempts,
     },
     // Never keep a usable code at rest: a database leak must not also be a
     // sign-in-as-anyone leak.

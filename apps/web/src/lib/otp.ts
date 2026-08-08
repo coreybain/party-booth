@@ -84,7 +84,7 @@ export function authErrorMessage(error: unknown): string {
   const status = typeof record["status"] === "number" ? record["status"] : 0;
 
   if (code.includes("TOO_MANY") || code.includes("RATE") || status === 429) {
-    return "Too many attempts. Wait a minute and try again.";
+    return "Too many attempts. Wait a few seconds and try again.";
   }
   if (code.includes("EXPIRED")) {
     return "That code has expired. Ask for a new one.";

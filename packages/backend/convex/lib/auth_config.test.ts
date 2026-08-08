@@ -71,7 +71,7 @@ describe("emailOtpPolicyOptions", () => {
     // Better Auth counts in seconds; the contract is in milliseconds.
     expect(options.expiresIn).toBe(600);
     expect(options.allowedAttempts).toBe(5);
-    expect(options.rateLimit).toEqual({ window: 60, max: 1 });
+    expect(options.rateLimit).toEqual({ window: 15, max: 5 });
   });
 
   it("stays derived from the contract rather than hard-coded", () => {
@@ -80,6 +80,7 @@ describe("emailOtpPolicyOptions", () => {
     expect(options.expiresIn).toBe(OTP_POLICY.ttlMs / 1000);
     expect(options.allowedAttempts).toBe(OTP_POLICY.maxAttempts);
     expect(options.rateLimit?.window).toBe(OTP_POLICY.resendCooldownMs / 1000);
+    expect(options.rateLimit?.max).toBe(OTP_POLICY.maxAttempts);
   });
 
   it("never stores a usable code at rest", () => {
@@ -193,7 +194,7 @@ describe("URLs", () => {
       DEPLOYMENT_ENVIRONMENT: "development",
     });
     expect(authBaseUrl()).toEqual({
-      allowedHosts: ["x.convex.site", "192.168.1.20:3000", "localhost:3000"],
+      allowedHosts: ["x.convex.site", "192.168.1.20:3000", "localhost:*"],
       fallback: "https://x.convex.site",
       protocol: "auto",
     });
@@ -231,21 +232,21 @@ describe("URLs", () => {
    */
   it("trusts localhost only when the deployment says it is development", () => {
     setEnv({ DEPLOYMENT_ENVIRONMENT: "development" });
-    expect(trustedOrigins()).toContain("http://localhost:3000");
+    expect(trustedOrigins()).toContain("http://localhost:*");
   });
 
   it("does not trust localhost on an explicitly production deployment", () => {
     setEnv({ DEPLOYMENT_ENVIRONMENT: "production" });
-    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+    expect(trustedOrigins()).not.toContain("http://localhost:*");
   });
 
   it("does not trust localhost when the marker is unset or blank", () => {
     clearEnv();
-    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+    expect(trustedOrigins()).not.toContain("http://localhost:*");
 
     // `FOO=` in a dashboard or an .env file is an unset variable, not a choice.
     setEnv({ DEPLOYMENT_ENVIRONMENT: "" });
-    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+    expect(trustedOrigins()).not.toContain("http://localhost:*");
   });
 
   it("fails closed on a mistyped marker instead of throwing out of the auth config", () => {
@@ -253,7 +254,7 @@ describe("URLs", () => {
     setEnv({ DEPLOYMENT_ENVIRONMENT: "dev" });
     // A typo must not 500 every /api/auth/* request on party night.
     expect(() => trustedOrigins()).not.toThrow();
-    expect(trustedOrigins()).not.toContain("http://localhost:3000");
+    expect(trustedOrigins()).not.toContain("http://localhost:*");
     expect(error.mock.calls.flat().join(" ")).toContain("DEPLOYMENT_ENVIRONMENT");
   });
 });

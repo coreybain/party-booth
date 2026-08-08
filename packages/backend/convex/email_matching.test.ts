@@ -388,7 +388,7 @@ describe("email verification (the Apple private-relay path)", () => {
 
   it("shares the OTP send counter, so this is not an unthrottled mailer", async () => {
     const now = Date.now();
-    // The 60-second cooldown from OTP_POLICY applies to the second request.
+    // The 15-second cooldown from OTP_POLICY applies to the second request.
     await t.mutation(internal.emails.issueChallenge, {
       authId: "relay",
       email: "real@partybooth.test",

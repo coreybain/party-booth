@@ -55,7 +55,7 @@ describe("Better Auth email OTP transport", () => {
     };
     await expect(sendEmailSignInCode(rateLimited, "a@example.com")).resolves.toEqual({
       status: "error",
-      message: "Too many attempts. Wait a minute and try again.",
+      message: "Too many attempts. Wait a few seconds and try again.",
     });
 
     expect(emailOtpErrorMessage({ code: "OTP_EXPIRED" })).toMatch(/expired/i);

@@ -39,7 +39,7 @@ Unchanged from the original plan except where noted. In brief:
 
 ### Identity and roles
 
-- Organisers: six-digit email OTP on web (10-min expiry, five attempts, 60-s resend cooldown).
+- Organisers: six-digit email OTP on web (10-min expiry, five attempts, 15-s resend cooldown).
 - Guests in app: Apple or Google sign-in, then name + photo confirmation. Verified-email matching unlocks organiser/co-host features; Apple private-relay users can verify an organiser email via OTP.
 - **Guests on web: Google sign-in or email OTP** (no Apple web OAuth).
 - Global admins: separate `/admin` OTP login with server-side allowlist.

@@ -85,8 +85,12 @@ describe("formatCooldown", () => {
 
 describe("authErrorMessage", () => {
   it("explains rate limiting", () => {
-    expect(authErrorMessage({ status: 429 })).toMatch(/too many/i);
-    expect(authErrorMessage({ code: "TOO_MANY_ATTEMPTS" })).toMatch(/too many/i);
+    expect(authErrorMessage({ status: 429 })).toBe(
+      "Too many attempts. Wait a few seconds and try again.",
+    );
+    expect(authErrorMessage({ code: "TOO_MANY_ATTEMPTS" })).toBe(
+      "Too many attempts. Wait a few seconds and try again.",
+    );
   });
 
   it("explains an expired code", () => {

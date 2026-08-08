@@ -38,7 +38,7 @@ type Step = "email" | "code";
 /**
  * Six-digit email OTP sign-in, built against the Better Auth `emailOTP` plugin
  * (PLAN.md → "Organisers: six-digit email OTP on web (10-min expiry, five
- * attempts, 60-s resend cooldown)").
+ * attempts, 15-s resend cooldown)").
  *
  * The limits enforced here are courtesy only — they stop a user wasting a round
  * trip and make the rules visible. Convex re-enforces every one of them

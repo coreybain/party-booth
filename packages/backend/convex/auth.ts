@@ -281,7 +281,7 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
         },
       }),
       emailOTP({
-        // Six digits, ten-minute expiry, five attempts, sixty-second resend
+        // Six digits, ten-minute expiry, five attempts, fifteen-second resend
         // cooldown — see `lib/otp.ts`, which derives all of it from
         // `@partybooth/contracts`.
         ...emailOtpPolicyOptions(),

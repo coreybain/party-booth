@@ -191,7 +191,7 @@ everything but `deleted`, and `globalAdmin` sees nothing at all.
 ## OTP policy
 
 `OTP_POLICY` encodes PLAN.md's numbers — six digits, 10-minute expiry, five
-attempts, 60-second resend cooldown — plus a per-hour send ceiling for
+attempts, 15-second resend cooldown — plus a per-hour send ceiling for
 enumeration protection.
 
 The module is split along the line of **who enforces what**, and holds nothing
