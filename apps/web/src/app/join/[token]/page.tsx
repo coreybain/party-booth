@@ -1,3 +1,4 @@
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -24,10 +25,16 @@ export async function generateMetadata({
     // of any referrer sent to a third party.
     robots: { index: false, follow: false, nocache: true },
     referrer: "no-referrer",
-    itunes: {
-      appId: PARTYBOOTH_APP_STORE_ID,
-      appArgument: isValidInviteToken(normalised) ? mobileJoinUrl(normalised) : PARTYBOOTH_APP_URL,
-    },
+    ...(mobileAppDownloadsEnabled()
+      ? {
+          itunes: {
+            appId: PARTYBOOTH_APP_STORE_ID,
+            appArgument: isValidInviteToken(normalised)
+              ? mobileJoinUrl(normalised)
+              : PARTYBOOTH_APP_URL,
+          },
+        }
+      : {}),
   };
 }
 

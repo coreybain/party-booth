@@ -1,5 +1,6 @@
 "use client";
 
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import { useConvexAuth, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
@@ -47,6 +48,7 @@ export function JoinByCode() {
 }
 
 function JoinByCodeLive() {
+  const showMobileAppDownloads = mobileAppDownloadsEnabled();
   const router = useRouter();
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
 
@@ -168,12 +170,14 @@ function JoinByCodeLive() {
       <div className="space-y-6">
         <EventPreviewCard preview={preview} />
         <Callout tone="success">You're already in this event.</Callout>
-        <div className="space-y-3">
-          <OpenPartyBoothApp deepLink={mobileJoinUrl(code)} />
-          <p className="text-center text-xs leading-relaxed text-faint">
-            Don’t have PartyBooth yet? We’ll take you to the App Store.
-          </p>
-        </div>
+        {showMobileAppDownloads ? (
+          <div className="space-y-3">
+            <OpenPartyBoothApp deepLink={mobileJoinUrl(code)} />
+            <p className="text-center text-xs leading-relaxed text-faint">
+              Don’t have PartyBooth yet? We’ll take you to the App Store.
+            </p>
+          </div>
+        ) : null}
         <Button
           variant="secondary"
           size="lg"

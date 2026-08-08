@@ -1,3 +1,4 @@
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -9,7 +10,9 @@ import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 
 export const metadata: Metadata = {
   title: "Join an event",
-  itunes: { appId: PARTYBOOTH_APP_STORE_ID, appArgument: PARTYBOOTH_APP_URL },
+  ...(mobileAppDownloadsEnabled()
+    ? { itunes: { appId: PARTYBOOTH_APP_STORE_ID, appArgument: PARTYBOOTH_APP_URL } }
+    : {}),
   robots: { index: false, follow: false },
 };
 

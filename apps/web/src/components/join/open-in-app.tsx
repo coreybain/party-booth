@@ -1,3 +1,5 @@
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
+
 import { OpenPartyBoothApp } from "@/components/join/open-partybooth-app";
 import { mobileJoinUrl } from "@/lib/join-url";
 
@@ -6,10 +8,22 @@ import { mobileJoinUrl } from "@/lib/join-url";
  * open the registered scheme, the shared control falls through to the App
  * Store while this page remains the complete browser path.
  */
-export function OpenInApp({ token }: { readonly token: string }) {
+export function OpenInApp({
+  token,
+  enabled = mobileAppDownloadsEnabled(),
+}: {
+  readonly token: string;
+  readonly enabled?: boolean;
+}) {
+  if (!enabled) return null;
+
   return (
     <section aria-label="Open in the PartyBooth app" className="space-y-3">
-      <OpenPartyBoothApp deepLink={mobileJoinUrl(token)} label="Open this event in the app" />
+      <OpenPartyBoothApp
+        deepLink={mobileJoinUrl(token)}
+        label="Open this event in the app"
+        enabled={enabled}
+      />
 
       <p className="text-center text-xs leading-relaxed text-faint">
         It opens straight to this event if PartyBooth is installed. Otherwise, you’ll be taken to

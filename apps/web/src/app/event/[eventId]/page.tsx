@@ -1,3 +1,4 @@
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import type { Metadata } from "next";
 
 import { GuestEventView } from "@/components/guest/guest-event-view";
@@ -8,7 +9,9 @@ import { PARTYBOOTH_APP_STORE_ID, PARTYBOOTH_APP_URL } from "@/lib/mobile-app";
 export const metadata: Metadata = {
   title: "Your event",
   robots: { index: false, follow: false },
-  itunes: { appId: PARTYBOOTH_APP_STORE_ID, appArgument: PARTYBOOTH_APP_URL },
+  ...(mobileAppDownloadsEnabled()
+    ? { itunes: { appId: PARTYBOOTH_APP_STORE_ID, appArgument: PARTYBOOTH_APP_URL } }
+    : {}),
 };
 
 /**

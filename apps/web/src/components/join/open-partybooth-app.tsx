@@ -1,5 +1,6 @@
 "use client";
 
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import { useCallback, useRef, type MouseEvent } from "react";
 
 import { ArrowRightIcon, LogoMark } from "@/components/icons";
@@ -10,6 +11,7 @@ export interface OpenPartyBoothAppProps {
   readonly deepLink: string;
   readonly className?: string;
   readonly label?: string;
+  readonly enabled?: boolean;
 }
 
 /**
@@ -21,6 +23,7 @@ export function OpenPartyBoothApp({
   deepLink,
   className,
   label = "Open in the PartyBooth app",
+  enabled = mobileAppDownloadsEnabled(),
 }: OpenPartyBoothAppProps) {
   const fallbackTimer = useRef<number | null>(null);
 
@@ -62,6 +65,8 @@ export function OpenPartyBoothApp({
     },
     [deepLink],
   );
+
+  if (!enabled) return null;
 
   return (
     <a

@@ -1,5 +1,6 @@
 "use client";
 
+import { mobileAppDownloadsEnabled } from "@partybooth/env/client";
 import { useCallback, useState, useSyncExternalStore } from "react";
 
 import { XIcon } from "@/components/icons";
@@ -14,6 +15,7 @@ export function appPromptWasDismissed(value: string | null): boolean {
 }
 
 export function useGuestAppPrompt() {
+  const downloadsEnabled = mobileAppDownloadsEnabled();
   const [dismissedForSession, setDismissedForSession] = useState(false);
   const storedVisible = useSyncExternalStore(
     subscribeToPromptPreference,
@@ -31,7 +33,7 @@ export function useGuestAppPrompt() {
     }
   }, []);
 
-  return { visible: storedVisible && !dismissedForSession, dismiss } as const;
+  return { visible: downloadsEnabled && storedVisible && !dismissedForSession, dismiss } as const;
 }
 
 function readPromptPreference(): boolean {
@@ -55,7 +57,15 @@ function subscribeToPromptPreference(onChange: () => void): () => void {
   };
 }
 
-export function GuestAppPrompt({ onDismiss }: { readonly onDismiss: () => void }) {
+export function GuestAppPrompt({
+  onDismiss,
+  enabled = mobileAppDownloadsEnabled(),
+}: {
+  readonly onDismiss: () => void;
+  readonly enabled?: boolean;
+}) {
+  if (!enabled) return null;
+
   return (
     <aside
       aria-label="Open PartyBooth app"
@@ -74,6 +84,7 @@ export function GuestAppPrompt({ onDismiss }: { readonly onDismiss: () => void }
         deepLink={PARTYBOOTH_APP_URL}
         label="Open the PartyBooth app"
         className="h-12 px-4 text-sm"
+        enabled={enabled}
       />
     </aside>
   );
