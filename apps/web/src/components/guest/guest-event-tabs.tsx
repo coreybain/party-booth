@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, type KeyboardEvent, type ReactNode } from "react";
 
-import { LogoMark, MediaIcon, SettingsIcon } from "@/components/icons";
+import { HomeIcon, LogoMark, MediaIcon, SettingsIcon } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
 export const GUEST_EVENT_TABS = ["camera", "gallery", "settings"] as const;
@@ -13,6 +14,11 @@ const TAB_COPY: Record<GuestEventTab, string> = {
   gallery: "Gallery",
   settings: "Settings",
 };
+
+/** The organiser console for this event, kept separate from guest-facing tabs. */
+export function guestEventAdminHref(eventId: string): string {
+  return `/events/${encodeURIComponent(eventId)}`;
+}
 
 /** Preserve old media hashes when opening bookmarks made before tabs existed. */
 export function guestEventTabFromHash(hash: string): GuestEventTab {
@@ -42,9 +48,11 @@ export function guestEventTabForKey(current: GuestEventTab, key: string): GuestE
 export function GuestEventTabs({
   active,
   onChange,
+  hostConsoleHref,
 }: {
   readonly active: GuestEventTab;
   readonly onChange: (tab: GuestEventTab) => void;
+  readonly hostConsoleHref?: string;
 }) {
   const buttons = useRef<Partial<Record<GuestEventTab, HTMLButtonElement | null>>>({});
 
@@ -61,36 +69,55 @@ export function GuestEventTabs({
       className="sticky top-[max(0.5rem,env(safe-area-inset-top))] z-30 rounded-2xl border border-line bg-surface/95 p-1 shadow-lg shadow-bg/40 backdrop-blur"
       aria-label="Event areas"
     >
-      <div role="tablist" aria-label="Event areas" className="grid grid-cols-3 gap-1">
-        {GUEST_EVENT_TABS.map((tab) => {
-          const selected = active === tab;
-          const Icon = tab === "camera" ? LogoMark : tab === "gallery" ? MediaIcon : SettingsIcon;
-          return (
-            <button
-              key={tab}
-              ref={(node) => {
-                buttons.current[tab] = node;
-              }}
-              id={`event-tab-${tab}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={`event-panel-${tab}`}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => onChange(tab)}
-              onKeyDown={(event) => onKeyDown(event, tab)}
-              className={cn(
-                "inline-flex min-h-12 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-                selected
-                  ? "bg-accent-soft text-accent"
-                  : "text-muted hover:bg-raised hover:text-ink",
-              )}
+      <div className="flex items-stretch gap-1">
+        <div
+          role="tablist"
+          aria-label="Event areas"
+          className="grid min-w-0 flex-1 grid-cols-3 gap-1"
+        >
+          {GUEST_EVENT_TABS.map((tab) => {
+            const selected = active === tab;
+            const Icon = tab === "camera" ? LogoMark : tab === "gallery" ? MediaIcon : SettingsIcon;
+            return (
+              <button
+                key={tab}
+                ref={(node) => {
+                  buttons.current[tab] = node;
+                }}
+                id={`event-tab-${tab}`}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={`event-panel-${tab}`}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => onChange(tab)}
+                onKeyDown={(event) => onKeyDown(event, tab)}
+                className={cn(
+                  "inline-flex min-h-12 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                  selected
+                    ? "bg-accent-soft text-accent"
+                    : "text-muted hover:bg-raised hover:text-ink",
+                )}
+              >
+                <Icon size={18} className="shrink-0 max-[340px]:hidden" />
+                <span className="truncate">{TAB_COPY[tab]}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {hostConsoleHref === undefined ? null : (
+          <>
+            <span className="my-2 w-px shrink-0 bg-line" aria-hidden="true" />
+            <Link
+              href={hostConsoleHref}
+              className="inline-flex min-h-12 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
-              <Icon size={18} className="shrink-0 max-[340px]:hidden" />
-              <span className="truncate">{TAB_COPY[tab]}</span>
-            </button>
-          );
-        })}
+              <HomeIcon size={18} className="shrink-0 max-[340px]:hidden" />
+              <span>Admin</span>
+            </Link>
+          </>
+        )}
       </div>
     </nav>
   );

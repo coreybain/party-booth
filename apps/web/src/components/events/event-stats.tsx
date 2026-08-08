@@ -18,8 +18,8 @@ import { useNow } from "@/lib/use-now";
  * strip of what just arrived.
  *
  * PLAN.md → "Live home: code/QR, status, pending count, recent submissions,
- * totals". The code and QR are `InvitePanel`'s and stay exactly where they were;
- * this is everything else.
+ * totals". The code and QR remain available from the header's "Show join QR"
+ * action; this is everything else.
  *
  * **Two queries, deliberately.** `stats.overview` returns numbers and nothing
  * else, so a global admin may read it; `stats.recentSubmissions` returns

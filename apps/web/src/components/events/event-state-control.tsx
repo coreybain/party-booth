@@ -334,6 +334,14 @@ export function EventStateControl({
                   </DropdownMenuItem>
                 ) : null}
                 {hasImmediateAction ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuItem
+                  onSelect={() => {
+                    router.push(`/event/${encodeURIComponent(eventId)}`);
+                  }}
+                >
+                  <MediaIcon size={16} className="mr-2 text-muted" />
+                  View as guest
+                </DropdownMenuItem>
                 {canOpenSettings ? (
                   <DropdownMenuItem
                     onSelect={() => {

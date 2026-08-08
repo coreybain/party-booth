@@ -25,6 +25,7 @@ import { TermsAcceptance } from "@/components/guest/terms-acceptance";
 import {
   GuestEventTabPanel,
   GuestEventTabs,
+  guestEventAdminHref,
   guestEventTabFromHash,
   type GuestEventTab,
 } from "@/components/guest/guest-event-tabs";
@@ -169,7 +170,7 @@ function GuestEventWebApp({
   readonly now: number;
   readonly needsTermsAcceptance: boolean;
 }) {
-  const { event } = home;
+  const { event, isHost } = home;
   const controller = useCaptureUpload({
     eventId: event.id,
     state: event.state,
@@ -203,7 +204,11 @@ function GuestEventWebApp({
 
   return (
     <div className="space-y-3">
-      <GuestEventTabs active={activeTab} onChange={openTab} />
+      <GuestEventTabs
+        active={activeTab}
+        onChange={openTab}
+        {...(isHost ? { hostConsoleHref: guestEventAdminHref(event.id) } : {})}
+      />
 
       <GuestEventCard>
         <div className="space-y-6">

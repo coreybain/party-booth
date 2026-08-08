@@ -10,12 +10,10 @@ import { EventStateControl } from "@/components/events/event-state-control";
 import { EventStats } from "@/components/events/event-stats";
 import { GuestEventMenu } from "@/components/events/guest-event-menu";
 import { GuestManagerSheet } from "@/components/events/guest-manager-sheet";
-import { InvitePanel } from "@/components/events/invite-panel";
 import { StateBadge } from "@/components/events/state-badge";
 import { GuestCapture } from "@/components/guest/guest-event-view";
 import { UsersIcon } from "@/components/icons";
 import { PageHeader } from "@/components/layout/app-shell";
-import { Card, SectionHeading } from "@/components/layout/card";
 import { backendApi } from "@/lib/convex-api";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import {
@@ -131,24 +129,6 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
       </div>
 
       <div className="space-y-8">
-        {isHost && invite !== undefined ? (
-          <Card>
-            <SectionHeading
-              title="Join code & QR"
-              description="Hold this up, or print it. Both work from the moment the event is scheduled."
-            />
-            <div className="mt-4">
-              <InvitePanel
-                code={invite.code}
-                token={invite.token}
-                version={invite.version}
-                state={event.state}
-                eventName={event.name}
-              />
-            </div>
-          </Card>
-        ) : null}
-
         {isGuest ? (
           <GuestCapture
             event={event}
