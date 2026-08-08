@@ -87,11 +87,7 @@ export function GuestEventSettings({ home }: { readonly home: EventHome }) {
           <EventSettingsPanel event={event} invite={invite} collapsible />
         </section>
       ) : (
-        <Callout tone="info">
-          You’re attending {event.name} as a guest, so this event’s host settings are not available
-          to this account. Ask the owner to add {me?.email ?? "this account"} as a co-host, or
-          switch to an event you host below.
-        </Callout>
+        <div className="border-t border-line" aria-hidden="true" />
       )}
 
       <section aria-label="Your events" className="space-y-3">
