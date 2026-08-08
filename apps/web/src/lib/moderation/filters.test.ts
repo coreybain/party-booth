@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activeModerationFilters,
   countModerationRows,
   DEFAULT_MODERATION_FILTERS,
   describeVisible,
@@ -11,6 +12,7 @@ import {
   sortForModeration,
   submitterOptions,
   visibleModerationRows,
+  withoutModerationFilter,
   type ModerationFilters,
   type ModerationRow,
 } from "@/lib/moderation/filters";
@@ -87,6 +89,37 @@ describe("filtering", () => {
   it("knows when nothing has been changed", () => {
     expect(isDefaultFilters(filters())).toBe(true);
     expect(isDefaultFilters(filters({ flaggedOnly: true }))).toBe(false);
+  });
+
+  it("describes each active filter as a removable chip", () => {
+    expect(
+      activeModerationFilters(
+        filters({
+          status: "approved",
+          mediaType: "photo",
+          submitter: "u1",
+          flaggedOnly: true,
+          showDeclined: true,
+        }),
+        [{ value: "u1", label: "Ada", count: 3 }],
+      ),
+    ).toEqual([
+      { key: "status", label: "Status: Approved" },
+      { key: "mediaType", label: "Type: Photos" },
+      { key: "submitter", label: "Submitter: Ada" },
+      { key: "flaggedOnly", label: "Reported only" },
+      { key: "showDeclined", label: "Show declined" },
+    ]);
+  });
+
+  it("removes one filter without clearing the others", () => {
+    const current = filters({ status: "approved", mediaType: "video", flaggedOnly: true });
+    expect(withoutModerationFilter(current, "status")).toEqual(
+      filters({ mediaType: "video", flaggedOnly: true }),
+    );
+    expect(withoutModerationFilter(current, "flaggedOnly")).toEqual(
+      filters({ status: "approved", mediaType: "video" }),
+    );
   });
 });
 

@@ -1,12 +1,26 @@
 "use client";
 
+import { FilterIcon, XIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
 import {
+  activeModerationFilters,
   describeVisible,
-  isDefaultFilters,
   STATUS_FILTER_OPTIONS,
   TYPE_FILTER_OPTIONS,
+  withoutModerationFilter,
   type ModerationCounts,
   type ModerationFilters,
   type StatusFilter,
@@ -15,17 +29,9 @@ import {
 } from "@/lib/moderation/filters";
 
 /**
- * The filter row above the grid.
- *
- * Everything here is a plain `<select>` or a plain `<button>` on purpose: a host
- * uses this one-handed on a phone in a dark room, and the platform's own select
- * wheel beats any listbox we would write this week (`ui/select-field.tsx` makes
- * the same argument at more length).
- *
- * The counts are of the **whole** event, not of the filtered view — see
- * `countModerationRows`. "12 pending" has to keep saying twelve while the host
- * is looking at approved items, or it stops being the number that tells them
- * whether to keep going.
+ * Event totals plus a single filter menu. Active choices become individually
+ * removable chips, so the compact control never hides what is narrowing the
+ * moderation queue.
  */
 
 export interface ModerationFilterBarProps {
@@ -45,6 +51,8 @@ export function ModerationFilterBar({
   onChange,
   onReset,
 }: ModerationFilterBarProps) {
+  const active = activeModerationFilters(filters, submitters);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -59,66 +67,137 @@ export function ModerationFilterBar({
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-end gap-2">
-        <InlineSelect
-          label="Status"
-          value={filters.status}
-          onChange={(value) => {
-            onChange({ ...filters, status: value as StatusFilter });
-          }}
-          options={STATUS_FILTER_OPTIONS}
-        />
-        <InlineSelect
-          label="Type"
-          value={filters.mediaType}
-          onChange={(value) => {
-            onChange({ ...filters, mediaType: value as TypeFilter });
-          }}
-          options={TYPE_FILTER_OPTIONS}
-        />
-        <InlineSelect
-          label="Submitter"
-          value={filters.submitter}
-          onChange={(value) => {
-            onChange({ ...filters, submitter: value });
-          }}
-          options={[
-            { value: "all", label: "Everyone" },
-            ...submitters.map((option) => ({
-              value: option.value,
-              label: `${option.label} (${String(option.count)})`,
-            })),
-          ]}
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterMenu filters={filters} submitters={submitters} onChange={onChange} />
 
-        <Toggle
-          pressed={filters.flaggedOnly}
-          onClick={() => {
-            onChange({ ...filters, flaggedOnly: !filters.flaggedOnly });
-          }}
-        >
-          Reported only
-        </Toggle>
-        <Toggle
-          pressed={filters.showDeclined}
-          onClick={() => {
-            onChange({ ...filters, showDeclined: !filters.showDeclined });
-          }}
-        >
-          Show declined
-        </Toggle>
+        {active.map((filter) => (
+          <span
+            key={filter.key}
+            className="inline-flex h-9 items-center gap-1 rounded-full border border-accent/35 bg-accent-soft px-3 pl-3.5 text-sm text-accent"
+          >
+            <span>{filter.label}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${filter.label} filter`}
+              onClick={() => {
+                onChange(withoutModerationFilter(filters, filter.key));
+              }}
+              className="ml-1 grid h-5 w-5 place-items-center rounded-full border border-accent/30 bg-accent/10 text-accent transition-colors hover:bg-accent hover:text-on-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <XIcon size={13} />
+            </button>
+          </span>
+        ))}
 
-        {isDefaultFilters(filters) ? null : (
-          <Button variant="ghost" size="sm" onClick={onReset}>
-            Reset
+        {active.length > 0 ? (
+          <Button variant="ghost" size="sm" onClick={onReset} className="rounded-full">
+            Clear all
           </Button>
-        )}
+        ) : null}
 
         <span className="ml-auto text-xs text-faint" role="status" aria-live="polite">
           {describeVisible(shown, counts.total)}
         </span>
       </div>
     </div>
+  );
+}
+
+function FilterMenu({
+  filters,
+  submitters,
+  onChange,
+}: {
+  readonly filters: ModerationFilters;
+  readonly submitters: readonly SubmitterOption[];
+  readonly onChange: (next: ModerationFilters) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="secondary" size="sm" aria-label="Choose moderation filters">
+          <FilterIcon size={16} />
+          Filters
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-52">
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Status</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuRadioGroup
+              value={filters.status}
+              onValueChange={(value) => {
+                onChange({ ...filters, status: value as StatusFilter });
+              }}
+            >
+              {STATUS_FILTER_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  {option.label}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Type</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuRadioGroup
+              value={filters.mediaType}
+              onValueChange={(value) => {
+                onChange({ ...filters, mediaType: value as TypeFilter });
+              }}
+            >
+              {TYPE_FILTER_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  {option.label}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Submitter</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuRadioGroup
+              value={filters.submitter}
+              onValueChange={(value) => {
+                onChange({ ...filters, submitter: value });
+              }}
+            >
+              <DropdownMenuRadioItem value="all">Everyone</DropdownMenuRadioItem>
+              {submitters.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  <span className="flex min-w-0 flex-1 items-center justify-between gap-4">
+                    <span className="truncate">{option.label}</span>
+                    <span className="text-xs tabular-nums text-faint">{option.count}</span>
+                  </span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem
+          checked={filters.flaggedOnly}
+          onCheckedChange={(checked) => {
+            onChange({ ...filters, flaggedOnly: checked === true });
+          }}
+        >
+          Reported only
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuCheckboxItem
+          checked={filters.showDeclined}
+          onCheckedChange={(checked) => {
+            onChange({ ...filters, showDeclined: checked === true });
+          }}
+        >
+          Show declined
+        </DropdownMenuCheckboxItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -149,62 +228,5 @@ function CountChip({
       <span className="text-sm font-semibold tabular-nums">{value}</span>
       {label}
     </span>
-  );
-}
-
-function InlineSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly onChange: (value: string) => void;
-  readonly options: readonly { readonly value: string; readonly label: string }[];
-}) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-[11px] font-medium uppercase tracking-wide text-faint">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-        className="h-9 rounded-lg border border-line bg-surface px-2.5 text-sm text-ink hover:border-line-strong"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function Toggle({
-  pressed,
-  onClick,
-  children,
-}: {
-  readonly pressed: boolean;
-  readonly onClick: () => void;
-  readonly children: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      onClick={onClick}
-      className={cn(
-        "h-9 rounded-lg border px-3 text-sm transition-colors",
-        pressed
-          ? "border-accent bg-accent-soft text-accent"
-          : "border-line bg-surface text-muted hover:text-ink",
-      )}
-    >
-      {children}
-    </button>
   );
 }

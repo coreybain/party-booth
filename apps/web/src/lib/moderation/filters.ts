@@ -106,6 +106,47 @@ export const TYPE_FILTER_OPTIONS: readonly { value: TypeFilter; label: string }[
   { value: "video", label: "Video" },
 ];
 
+export type ModerationFilterKey =
+  "status" | "mediaType" | "submitter" | "flaggedOnly" | "showDeclined";
+
+export interface ActiveModerationFilter {
+  readonly key: ModerationFilterKey;
+  readonly label: string;
+}
+
+/** The removable chips shown beside the combined Filters menu. */
+export function activeModerationFilters(
+  filters: ModerationFilters,
+  submitters: readonly SubmitterOption[],
+): ActiveModerationFilter[] {
+  const active: ActiveModerationFilter[] = [];
+
+  if (filters.status !== "all") {
+    const label = STATUS_FILTER_OPTIONS.find((option) => option.value === filters.status)?.label;
+    if (label) active.push({ key: "status", label: `Status: ${label}` });
+  }
+  if (filters.mediaType !== "all") {
+    const label = TYPE_FILTER_OPTIONS.find((option) => option.value === filters.mediaType)?.label;
+    if (label) active.push({ key: "mediaType", label: `Type: ${label}` });
+  }
+  if (filters.submitter !== "all") {
+    const label = submitters.find((option) => option.value === filters.submitter)?.label;
+    active.push({ key: "submitter", label: `Submitter: ${label ?? "Unknown"}` });
+  }
+  if (filters.flaggedOnly) active.push({ key: "flaggedOnly", label: "Reported only" });
+  if (filters.showDeclined) active.push({ key: "showDeclined", label: "Show declined" });
+
+  return active;
+}
+
+/** Reset one chip without disturbing any of the other active filters. */
+export function withoutModerationFilter(
+  filters: ModerationFilters,
+  key: ModerationFilterKey,
+): ModerationFilters {
+  return { ...filters, [key]: DEFAULT_MODERATION_FILTERS[key] };
+}
+
 export function isDefaultFilters(filters: ModerationFilters): boolean {
   return (
     filters.status === DEFAULT_MODERATION_FILTERS.status &&

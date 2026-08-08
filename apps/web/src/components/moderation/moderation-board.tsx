@@ -419,7 +419,7 @@ function ModerationBoardLive({ eventId }: { readonly eventId: string }) {
           </Placeholder>
         ) : (
           <>
-            <div className="mt-5 columns-2 gap-3 sm:columns-3 lg:columns-4">
+            <div className="mt-5 space-y-3 sm:columns-3 sm:space-y-0 lg:columns-4">
               {mounted.map((item) => (
                 <ModerationCard
                   key={item.id}

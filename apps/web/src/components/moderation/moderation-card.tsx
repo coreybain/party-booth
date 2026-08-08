@@ -61,23 +61,24 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
         onFocus(item.id);
       }}
       className={cn(
-        "mb-3 break-inside-avoid rounded-2xl border bg-surface p-2.5 transition-colors",
+        "flex break-inside-avoid gap-3 rounded-2xl border bg-surface p-2.5 transition-colors",
+        "sm:mb-3 sm:block",
         selected ? "border-accent bg-accent-soft/40" : "border-line",
         flagged && !selected && "border-danger/50",
         focused && "outline outline-2 outline-offset-2 outline-accent",
       )}
     >
-      <div className="relative">
+      <div className="relative h-28 w-28 shrink-0 sm:h-auto sm:w-auto">
         <button
           type="button"
           aria-label={`Review ${item.mediaType} from ${item.uploaderDisplayName}`}
-          className="block w-full rounded-xl text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="block h-full w-full rounded-xl text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:h-auto"
           onClick={(event) => {
             event.stopPropagation();
             onReview(item.id);
           }}
         >
-          <MediaTile item={item} playable={false} />
+          <MediaTile item={item} playable={false} className="h-full sm:h-auto" />
         </button>
 
         <label
@@ -112,7 +113,7 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
         ) : null}
       </div>
 
-      <div className="mt-2 space-y-1.5 px-0.5">
+      <div className="min-w-0 flex-1 space-y-1.5 px-0.5 sm:mt-2">
         <div className="flex items-center gap-2">
           <StatusChip label={copy.label} tone={copy.tone} />
           <span
@@ -126,10 +127,11 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
           {formatRelative(item.uploadedAt ?? item.createdAt, now)}
         </p>
 
-        <div className="flex flex-wrap gap-1.5 pt-1">
+        <div className="grid gap-1.5 pt-1 sm:flex sm:flex-wrap">
           {canAct(item, "approve") ? (
             <Button
               size="sm"
+              className="w-full sm:w-auto"
               disabled={busy}
               onClick={(event) => {
                 event.stopPropagation();
@@ -145,6 +147,7 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
             <Button
               variant="secondary"
               size="sm"
+              className="w-full sm:w-auto"
               disabled={busy}
               onClick={(event) => {
                 event.stopPropagation();
@@ -160,6 +163,7 @@ export const ModerationCard = forwardRef<HTMLElement, ModerationCardProps>(funct
             <Button
               variant="danger"
               size="sm"
+              className="w-full sm:w-auto"
               disabled={busy}
               onClick={(event) => {
                 event.stopPropagation();
