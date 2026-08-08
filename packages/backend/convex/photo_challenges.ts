@@ -5,6 +5,7 @@ import {
   photoChallengePromptSchema,
   pickPhotoChallengeIndex,
 } from "@partybooth/contracts/photo-challenges";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
@@ -66,22 +67,38 @@ export const list = query({
     const actor = await requireEventRole(ctx, args.eventId, "cohost");
     const rows = await ctx.db
       .query("photoChallenges")
-      .withIndex("by_event", (q) => q.eq("eventId", actor.event._id))
-      .take(PHOTO_CHALLENGE_MAX_ACTIVE * 2);
-    const challenges = rows
-      .map(projectChallenge)
-      .sort(
-        (a, b) =>
-          Number(a.status === "archived") - Number(b.status === "archived") ||
-          a.createdAt - b.createdAt,
-      );
+      .withIndex("by_event_and_status", (q) =>
+        q.eq("eventId", actor.event._id).eq("status", "active"),
+      )
+      .take(PHOTO_CHALLENGE_MAX_ACTIVE + 1);
+    const challenges = rows.map(projectChallenge).sort((a, b) => a.createdAt - b.createdAt);
     return {
       enabled: actor.event.photoChallengesEnabled ?? false,
-      activeCount: rows.filter((row) => row.status === "active").length,
+      activeCount: rows.length,
       minimumActive: PHOTO_CHALLENGE_MIN_ACTIVE,
       maximumActive: PHOTO_CHALLENGE_MAX_ACTIVE,
       challenges,
     };
+  },
+});
+
+/** Archived prompts are unbounded, so hosts page through them separately. */
+export const listArchived = query({
+  args: {
+    eventId: v.id("events"),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: paginationResultValidator(challengeValidator),
+  handler: async (ctx, args) => {
+    const actor = await requireEventRole(ctx, args.eventId, "cohost");
+    const page = await ctx.db
+      .query("photoChallenges")
+      .withIndex("by_event_and_status", (q) =>
+        q.eq("eventId", actor.event._id).eq("status", "archived"),
+      )
+      .order("desc")
+      .paginate(args.paginationOpts);
+    return { ...page, page: page.page.map(projectChallenge) };
   },
 });
 
@@ -226,6 +243,17 @@ export const resolve = mutation({
     if (captureId.length === 0 || captureId.length > 128)
       throw invalidInput("That capture id is not valid.");
     const now = Date.now();
+    if (assignment.status !== "current") {
+      const recordedCaptureId = assignment.resolutionCaptureId ?? assignment.usedCaptureId;
+      if (
+        assignment.userId !== actor.user._id ||
+        assignment.status !== args.outcome ||
+        recordedCaptureId !== captureId
+      ) {
+        throw invalidState("That challenge is no longer current.");
+      }
+      return await drawFor(ctx, actor.event, actor.user._id, now);
+    }
     await resolveCurrent(ctx, assignment, actor.user._id, args.outcome, now, captureId);
     return await drawFor(ctx, actor.event, actor.user._id, now);
   },
@@ -327,6 +355,7 @@ async function resolveCurrent(
   await ctx.db.patch(assignment._id, {
     status,
     resolvedAt: now,
+    ...(captureId === undefined ? {} : { resolutionCaptureId: captureId }),
     ...(status === "used" && captureId !== undefined ? { usedCaptureId: captureId } : {}),
   });
   await ctx.db.patch(progress._id, { currentAssignmentId: undefined, updatedAt: now });

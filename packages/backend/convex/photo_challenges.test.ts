@@ -53,6 +53,58 @@ describe("photo challenges", () => {
     ).rejects.toThrow(/permission/i);
   });
 
+  it("counts every active prompt and pages the complete archived deck", async () => {
+    const t = makeTest();
+    const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+    const eventId = await seedEvent(t, ownerId);
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 101; index += 1) {
+        await ctx.db.insert("photoChallenges", {
+          eventId,
+          prompt: `Archived ${String(index)}`,
+          normalizedPrompt: `archived ${String(index)}`,
+          status: "archived",
+          source: "custom",
+          createdByUserId: ownerId,
+          updatedByUserId: ownerId,
+          createdAt: index,
+          updatedAt: index,
+          archivedAt: index,
+        });
+      }
+      for (let index = 0; index < 3; index += 1) {
+        await ctx.db.insert("photoChallenges", {
+          eventId,
+          prompt: `Active ${String(index)}`,
+          normalizedPrompt: `active ${String(index)}`,
+          status: "active",
+          source: "custom",
+          createdByUserId: ownerId,
+          updatedByUserId: ownerId,
+          createdAt: 200 + index,
+          updatedAt: 200 + index,
+        });
+      }
+    });
+
+    const asOwner = t.withIdentity({ subject: "owner" });
+    const deck = await asOwner.query(api.photo_challenges.list, { eventId });
+    expect(deck.activeCount).toBe(3);
+    expect(deck.challenges).toHaveLength(3);
+    expect(deck.challenges.every((challenge) => challenge.status === "active")).toBe(true);
+
+    const first = await asOwner.query(api.photo_challenges.listArchived, {
+      eventId,
+      paginationOpts: { cursor: null, numItems: 60 },
+    });
+    const second = await asOwner.query(api.photo_challenges.listArchived, {
+      eventId,
+      paginationOpts: { cursor: first.continueCursor, numItems: 60 },
+    });
+    expect([...first.page, ...second.page]).toHaveLength(101);
+    expect(second.isDone).toBe(true);
+  });
+
   it("does not repeat within an active-deck cycle", async () => {
     const t = makeTest();
     const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
@@ -144,4 +196,56 @@ describe("photo challenges", () => {
     const row = await t.run(async (ctx) => ctx.db.get(grant.grantId));
     expect(row?.challengePrompt).toBe(snapshot);
   });
+
+  it.each(["used", "dismissed"] as const)(
+    "replays an identical %s resolution but rejects conflicting retries",
+    async (outcome) => {
+      const t = makeTest();
+      const ownerId = await seedUser(t, { authId: "owner", email: "owner@partybooth.test" });
+      const guestId = await seedUser(t, { authId: "guest", email: "guest@partybooth.test" });
+      const eventId = await seedEvent(t, ownerId);
+      await seedMembership(t, eventId, guestId, "guest");
+      await t.run(async (ctx) => {
+        await ctx.db.patch(eventId, { photoChallengesEnabled: true });
+        for (const prompt of ["One", "Two", "Three"]) {
+          await ctx.db.insert("photoChallenges", {
+            eventId,
+            prompt,
+            normalizedPrompt: prompt.toLowerCase(),
+            status: "active",
+            source: "custom",
+            createdByUserId: ownerId,
+            updatedByUserId: ownerId,
+            createdAt: 1,
+            updatedAt: 1,
+          });
+        }
+      });
+
+      const asGuest = t.withIdentity({ subject: "guest" });
+      const drawn = await asGuest.mutation(api.photo_challenges.currentOrDraw, { eventId });
+      if (drawn.outcome !== "available") throw new Error("expected assignment");
+      const args = {
+        assignmentId: drawn.assignment.id,
+        outcome,
+        captureId: "capture_retry",
+      };
+      const resolved = await asGuest.mutation(api.photo_challenges.resolve, args);
+      const retried = await asGuest.mutation(api.photo_challenges.resolve, args);
+      expect(retried).toEqual(resolved);
+      await expect(
+        asGuest.mutation(api.photo_challenges.resolve, {
+          ...args,
+          captureId: "capture_conflict",
+        }),
+      ).rejects.toThrow(/no longer current/i);
+
+      const row = await t.run(async (ctx) => ctx.db.get(drawn.assignment.id));
+      expect(row).toMatchObject({
+        status: outcome,
+        resolutionCaptureId: "capture_retry",
+        ...(outcome === "used" ? { usedCaptureId: "capture_retry" } : {}),
+      });
+    },
+  );
 });

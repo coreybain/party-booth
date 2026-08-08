@@ -365,6 +365,8 @@ export default defineSchema({
     ),
     assignedAt: v.number(),
     resolvedAt: v.optional(v.number()),
+    /** Stable client id recorded for retry-safe used and dismissed resolutions. */
+    resolutionCaptureId: v.optional(v.string()),
     usedCaptureId: v.optional(v.string()),
   })
     .index("by_event_and_user", ["eventId", "userId"])

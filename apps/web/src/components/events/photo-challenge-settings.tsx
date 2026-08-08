@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,12 @@ import { backendApi, type PhotoChallenge } from "@/lib/convex-api";
 
 export function PhotoChallengeSettings({ eventId }: { readonly eventId: string }) {
   const deck = useQuery(backendApi.photo_challenges.list, { eventId });
+  const [showArchived, setShowArchived] = useState(false);
+  const archived = usePaginatedQuery(
+    backendApi.photo_challenges.listArchived,
+    showArchived ? { eventId } : "skip",
+    { initialNumItems: 25 },
+  );
   const createChallenge = useMutation(backendApi.photo_challenges.create);
   const setEnabled = useMutation(backendApi.photo_challenges.setEnabled);
   const [prompt, setPrompt] = useState("");
@@ -80,13 +86,55 @@ export function PhotoChallengeSettings({ eventId }: { readonly eventId: string }
 
       {error ? <Callout tone="danger">{error}</Callout> : null}
 
-      <ul className="max-h-80 space-y-2 overflow-y-auto pr-1">
+      <ul className="max-h-80 space-y-2 overflow-y-auto pr-1" aria-label="Active challenges">
         {deck.challenges.map((challenge) => (
           <li key={challenge.id}>
             <ChallengeRow challenge={challenge} onError={setError} />
           </li>
         ))}
       </ul>
+
+      <Button
+        type="button"
+        variant="ghost"
+        fullWidth
+        onClick={() => setShowArchived((current) => !current)}
+      >
+        {showArchived ? "Hide archived challenges" : "Show archived challenges"}
+      </Button>
+
+      {showArchived ? (
+        <div className="space-y-2 border-t border-line pt-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-faint">
+            Archived challenges
+          </p>
+          {archived.status === "LoadingFirstPage" ? (
+            <p className="text-sm text-muted">Loading archived challenges…</p>
+          ) : archived.results.length === 0 ? (
+            <p className="text-sm text-muted">No archived challenges.</p>
+          ) : (
+            <ul className="max-h-80 space-y-2 overflow-y-auto pr-1">
+              {archived.results.map((challenge) => (
+                <li key={challenge.id}>
+                  <ChallengeRow challenge={challenge} onError={setError} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {archived.status === "CanLoadMore" || archived.status === "LoadingMore" ? (
+            <Button
+              type="button"
+              variant="secondary"
+              fullWidth
+              loading={archived.status === "LoadingMore"}
+              disabled={archived.status === "LoadingMore"}
+              onClick={() => archived.loadMore(25)}
+            >
+              Load more archived challenges
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

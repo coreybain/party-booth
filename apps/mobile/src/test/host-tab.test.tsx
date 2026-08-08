@@ -31,6 +31,7 @@ const fake = vi.hoisted(() => ({
   pending: undefined as unknown,
   flagged: undefined as unknown,
   challengeDeck: undefined as unknown,
+  archivedChallenges: [] as unknown[],
   moderate: vi.fn(),
   rotate: vi.fn(),
   setState: vi.fn(),
@@ -60,6 +61,14 @@ vi.mock("convex/react", () => ({
     if (reference.name === "photoChallenges.list") return fake.challengeDeck;
     return fake.pending;
   },
+  usePaginatedQuery: (reference: { name: string }, args: unknown) => {
+    if (args !== "skip") fake.queryCalls.push({ name: reference.name, args });
+    return {
+      results: args === "skip" ? [] : fake.archivedChallenges,
+      status: "Exhausted",
+      loadMore: vi.fn(),
+    };
+  },
   useMutation: (reference: { name: string }) => {
     if (reference.name === "rotate") return fake.rotate;
     if (reference.name === "setState") return fake.setState;
@@ -88,6 +97,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       },
       photo_challenges: {
         list: { name: "photoChallenges.list" },
+        listArchived: { name: "photoChallenges.listArchived" },
         create: { name: "photoChallenges.create" },
         update: { name: "photoChallenges.update" },
         setArchived: { name: "photoChallenges.setArchived" },
@@ -225,6 +235,16 @@ beforeEach(() => {
       },
     ],
   };
+  fake.archivedChallenges = [
+    {
+      id: "challenge_archived",
+      prompt: "Take a mirror selfie",
+      status: "archived",
+      source: "custom",
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  ];
   fake.session = session({ eventRole: "owner" });
   fake.moderate.mockResolvedValue({ changed: 1, unchanged: 0, refused: [], results: [] });
   fake.rotate.mockResolvedValue({
@@ -325,6 +345,18 @@ describe("photo challenges", () => {
         prompt: "Photograph matching colours",
       }),
     );
+  });
+
+  it("loads archived prompts only when the host opens the archive", async () => {
+    await renderHost();
+
+    expect(screen.queryByText("Take a mirror selfie")).toBeNull();
+    fireEvent.click(screen.getByText("Show archived challenges"));
+    expect(screen.getByText("Take a mirror selfie")).toBeTruthy();
+    expect(fake.queryCalls).toContainEqual({
+      name: "photoChallenges.listArchived",
+      args: { eventId: "event_1" },
+    });
   });
 });
 

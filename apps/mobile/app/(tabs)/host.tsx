@@ -44,7 +44,7 @@ import {
 import { REPORT_REASON_LABELS } from "@partybooth/contracts/copy";
 import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { Ionicons } from "@expo/vector-icons";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
@@ -181,6 +181,12 @@ function HostTools({ event }: { event: EventSummary }) {
 
 function PhotoChallengesSection({ event }: { event: EventSummary }) {
   const deck = useQuery(api.photo_challenges.list, { eventId: event.id });
+  const [showArchived, setShowArchived] = useState(false);
+  const archived = usePaginatedQuery(
+    api.photo_challenges.listArchived,
+    showArchived ? { eventId: event.id } : "skip",
+    { initialNumItems: 25 },
+  );
   const createChallenge = useMutation(api.photo_challenges.create);
   const updateChallenge = useMutation(api.photo_challenges.update);
   const setArchived = useMutation(api.photo_challenges.setArchived);
@@ -265,47 +271,91 @@ function PhotoChallengesSection({ event }: { event: EventSummary }) {
       ) : null}
       <View style={styles.challengeList}>
         {deck.challenges.map((item) => (
-          <View key={item.id} style={styles.challengeRow}>
-            <Text
-              style={[
-                styles.challengeRowPrompt,
-                item.status === "archived" && styles.challengeArchived,
-              ]}
-            >
-              {item.prompt}
-            </Text>
-            <View style={styles.challengeRowActions}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={() => {
+          <ChallengeRow
+            key={item.id}
+            item={item}
+            busy={busy}
+            onEdit={() => {
+              setEditing(item);
+              setPrompt(item.prompt);
+            }}
+            onArchive={() => void run(() => setArchived({ challengeId: item.id, archived: true }))}
+          />
+        ))}
+      </View>
+      <Button
+        label={showArchived ? "Hide archived challenges" : "Show archived challenges"}
+        variant="secondary"
+        disabled={busy}
+        onPress={() => setShowArchived((current) => !current)}
+      />
+      {showArchived ? (
+        <View style={styles.challengeList}>
+          <Text style={styles.when}>Archived challenges</Text>
+          {archived.status === "LoadingFirstPage" ? (
+            <ActivityIndicator color={colors.accent} />
+          ) : archived.results.length === 0 ? (
+            <MutedText>No archived challenges.</MutedText>
+          ) : (
+            archived.results.map((item) => (
+              <ChallengeRow
+                key={item.id}
+                item={item}
+                busy={busy}
+                onEdit={() => {
                   setEditing(item);
                   setPrompt(item.prompt);
                 }}
-              >
-                <Text style={styles.challengeLink}>Edit</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={() =>
-                  void run(() =>
-                    setArchived({
-                      challengeId: item.id,
-                      archived: item.status === "active",
-                    }),
-                  )
+                onArchive={() =>
+                  void run(() => setArchived({ challengeId: item.id, archived: false }))
                 }
-              >
-                <Text style={styles.challengeLink}>
-                  {item.status === "active" ? "Archive" : "Restore"}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        ))}
-      </View>
+              />
+            ))
+          )}
+          {archived.status === "CanLoadMore" || archived.status === "LoadingMore" ? (
+            <Button
+              label="Load more archived challenges"
+              variant="secondary"
+              busy={archived.status === "LoadingMore"}
+              disabled={archived.status === "LoadingMore"}
+              onPress={() => archived.loadMore(25)}
+            />
+          ) : null}
+        </View>
+      ) : null}
     </Card>
+  );
+}
+
+function ChallengeRow({
+  item,
+  busy,
+  onEdit,
+  onArchive,
+}: {
+  readonly item: PhotoChallenge;
+  readonly busy: boolean;
+  readonly onEdit: () => void;
+  readonly onArchive: () => void;
+}) {
+  return (
+    <View style={styles.challengeRow}>
+      <Text
+        style={[styles.challengeRowPrompt, item.status === "archived" && styles.challengeArchived]}
+      >
+        {item.prompt}
+      </Text>
+      <View style={styles.challengeRowActions}>
+        <Pressable accessibilityRole="button" disabled={busy} onPress={onEdit}>
+          <Text style={styles.challengeLink}>Edit</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" disabled={busy} onPress={onArchive}>
+          <Text style={styles.challengeLink}>
+            {item.status === "active" ? "Archive" : "Restore"}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 

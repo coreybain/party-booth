@@ -995,6 +995,10 @@ export interface BackendApi {
   };
   readonly photo_challenges: {
     readonly list: Query<{ eventId: EventId }, PhotoChallengeDeck>;
+    readonly listArchived: Query<
+      { eventId: EventId; paginationOpts: PaginationOptions },
+      PaginationResult<PhotoChallenge>
+    >;
     readonly create: Mutation<{ eventId: EventId; prompt: string }, PhotoChallenge>;
     readonly update: Mutation<{ challengeId: PhotoChallengeId; prompt: string }, PhotoChallenge>;
     readonly setArchived: Mutation<
