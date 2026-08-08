@@ -155,6 +155,16 @@ export function Slide({ item, muted, paused, slideSeconds, active, onDone, onFai
           }}
         />
       )}
+      {item.challengePrompt === undefined ? null : (
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-6 pb-8 pt-20 text-center">
+          <p className="mx-auto max-w-3xl text-balance text-xl font-medium text-white drop-shadow sm:text-2xl">
+            {item.challengePrompt}
+          </p>
+          <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-white/65">
+            Photo challenge
+          </p>
+        </div>
+      )}
     </div>
   );
 }

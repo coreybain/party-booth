@@ -3,6 +3,7 @@
 import { useCallback, useRef, type ChangeEvent } from "react";
 
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
+import { PhotoChallengeCard } from "@/components/guest/photo-challenge-card";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { ProgressBar } from "@/components/ui/progress-bar";
@@ -51,6 +52,9 @@ export interface CapturePanelProps {
   readonly closedReason: string;
   /** The tabbed guest shell already names the Camera area. */
   readonly showHeading?: boolean;
+  readonly eventId: string;
+  readonly photoChallengesEnabled: boolean;
+  readonly onPhotoChallengesNotNow: () => void;
 }
 
 export function CapturePanel({
@@ -59,6 +63,9 @@ export function CapturePanel({
   allowLibraryImport,
   closedReason,
   showHeading = true,
+  eventId,
+  photoChallengesEnabled,
+  onPhotoChallengesNotNow,
 }: CapturePanelProps) {
   const cameraInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
@@ -111,73 +118,86 @@ export function CapturePanel({
         </h2>
       ) : null}
 
-      <input
-        ref={cameraInput}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        onChange={onPicked("capture")}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-      />
-      {/*
+      {photoChallengesEnabled ? (
+        <PhotoChallengeCard
+          key={eventId}
+          eventId={eventId}
+          controller={controller}
+          onNotNow={onPhotoChallengesNotNow}
+        />
+      ) : null}
+
+      {controller.review ? null : (
+        <>
+          <input
+            ref={cameraInput}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={onPicked("capture")}
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+          {/*
         A **separate** input for video, rather than one accepting both.
         `accept="image/*,video/*"` with `capture` set is the one combination
         phones disagree about: some open the camera in photo mode with no way to
         switch, some open the picker instead. Two inputs means the guest gets the
         mode they pressed, on every phone.
       */}
-      <input
-        ref={videoInput}
-        type="file"
-        accept="video/*"
-        capture="environment"
-        onChange={onPicked("capture")}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-      />
-      <input
-        ref={libraryInput}
-        type="file"
-        accept="image/*,video/*"
-        onChange={onPicked("library")}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-      />
+          <input
+            ref={videoInput}
+            type="file"
+            accept="video/*"
+            capture="environment"
+            onChange={onPicked("capture")}
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+          <input
+            ref={libraryInput}
+            type="file"
+            accept="image/*,video/*"
+            onChange={onPicked("library")}
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
 
-      <div className="space-y-3">
-        <Button
-          size="lg"
-          fullWidth
-          loading={controller.preparing}
-          onClick={() => cameraInput.current?.click()}
-        >
-          Take a photo
-        </Button>
-        <Button
-          variant="secondary"
-          size="lg"
-          fullWidth
-          disabled={controller.preparing}
-          onClick={() => videoInput.current?.click()}
-        >
-          Record a video
-        </Button>
-        {allowLibraryImport ? (
-          <Button
-            variant="secondary"
-            size="lg"
-            fullWidth
-            disabled={controller.preparing}
-            onClick={() => libraryInput.current?.click()}
-          >
-            Choose from your photos
-          </Button>
-        ) : null}
-      </div>
+          <div className="space-y-3">
+            <Button
+              size="lg"
+              fullWidth
+              loading={controller.preparing}
+              onClick={() => cameraInput.current?.click()}
+            >
+              Take a photo
+            </Button>
+            <Button
+              variant="secondary"
+              size="lg"
+              fullWidth
+              disabled={controller.preparing}
+              onClick={() => videoInput.current?.click()}
+            >
+              Record a video
+            </Button>
+            {allowLibraryImport ? (
+              <Button
+                variant="secondary"
+                size="lg"
+                fullWidth
+                disabled={controller.preparing}
+                onClick={() => libraryInput.current?.click()}
+              >
+                Choose from your photos
+              </Button>
+            ) : null}
+          </div>
+        </>
+      )}
 
       {controller.preparing ? (
         <p className="text-sm text-muted" role="status" aria-live="polite">

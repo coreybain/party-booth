@@ -34,6 +34,7 @@ import type * as media from "./media";
 import type * as memberships from "./memberships";
 import type * as moderation from "./moderation";
 import type * as otp from "./otp";
+import type * as photo_challenges from "./photo_challenges";
 import type * as push from "./push";
 import schema from "./schema";
 import type * as slideshow from "./slideshow";
@@ -99,6 +100,7 @@ type FullApi = ApiFromModules<{
   memberships: typeof memberships;
   moderation: typeof moderation;
   otp: typeof otp;
+  photo_challenges: typeof photo_challenges;
   push: typeof push;
   slideshow: typeof slideshow;
   stats: typeof stats;

@@ -44,18 +44,11 @@ import {
 import { REPORT_REASON_LABELS } from "@partybooth/contracts/copy";
 import { SIGNED_HOST_REVIEW_URL_TTL_SECONDS } from "@partybooth/contracts/storage";
 import { Ionicons } from "@expo/vector-icons";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentProps,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -65,6 +58,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { captureRef } from "react-native-view-shot";
@@ -86,7 +80,13 @@ import {
 import { appConfig } from "@/env";
 import { useNow } from "@/hooks/use-now";
 import { useSignedUrlRefreshKey } from "@/hooks/use-signed-url-refresh";
-import { api, type EventSummary, type FlaggedItem, type MediaItem } from "@/lib/api";
+import {
+  api,
+  type EventSummary,
+  type FlaggedItem,
+  type MediaItem,
+  type PhotoChallenge,
+} from "@/lib/api";
 import { buildJoinUrl } from "@/lib/deep-links";
 import { describeError } from "@/lib/errors";
 import { describeEvent, describeSchedule } from "@/lib/events";
@@ -171,10 +171,191 @@ function HostTools({ event }: { event: EventSummary }) {
   return (
     <>
       <StatusSection event={event} abilities={abilities} />
+      <PhotoChallengesSection event={event} />
       {abilities.viewInviteCode ? <InviteSection event={event} abilities={abilities} /> : null}
       <FlaggedSection event={event} abilities={abilities} />
       <QueueSection event={event} abilities={abilities} />
     </>
+  );
+}
+
+function PhotoChallengesSection({ event }: { event: EventSummary }) {
+  const deck = useQuery(api.photo_challenges.list, { eventId: event.id });
+  const [showArchived, setShowArchived] = useState(false);
+  const archived = usePaginatedQuery(
+    api.photo_challenges.listArchived,
+    showArchived ? { eventId: event.id } : "skip",
+    { initialNumItems: 25 },
+  );
+  const createChallenge = useMutation(api.photo_challenges.create);
+  const updateChallenge = useMutation(api.photo_challenges.update);
+  const setArchived = useMutation(api.photo_challenges.setArchived);
+  const setEnabled = useMutation(api.photo_challenges.setEnabled);
+  const [prompt, setPrompt] = useState("");
+  const [editing, setEditing] = useState<PhotoChallenge | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = useCallback(async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (caught) {
+      setError(describeError(caught).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  if (deck === undefined) return <Loading label="Loading photo challenges…" />;
+
+  const savePrompt = () => {
+    const next = prompt.trim();
+    if (!next) return;
+    void run(async () => {
+      if (editing) await updateChallenge({ challengeId: editing.id, prompt: next });
+      else await createChallenge({ eventId: event.id, prompt: next });
+      setPrompt("");
+      setEditing(null);
+    });
+  };
+
+  return (
+    <Card>
+      <View style={styles.challengeHeader}>
+        <View style={styles.switchCopy}>
+          <Text style={styles.when}>Photo challenges</Text>
+          <MutedText>Personal prompts that inspire each guest’s next camera photo.</MutedText>
+        </View>
+        <Switch
+          value={deck.enabled}
+          disabled={busy}
+          onValueChange={(enabled) => void run(() => setEnabled({ eventId: event.id, enabled }))}
+        />
+      </View>
+      <MutedText>
+        {`${String(deck.activeCount)} active · at least ${String(deck.minimumActive)} required · maximum ${String(deck.maximumActive)}`}
+      </MutedText>
+      <TextInput
+        value={prompt}
+        maxLength={120}
+        onChangeText={setPrompt}
+        placeholder={editing ? "Edit challenge" : "Add a challenge"}
+        placeholderTextColor={colors.textFaint}
+        style={styles.challengeInput}
+      />
+      <View style={styles.actions}>
+        <Button
+          label={editing ? "Save challenge" : "Add challenge"}
+          busy={busy}
+          disabled={!prompt.trim()}
+          onPress={savePrompt}
+        />
+        {editing ? (
+          <Button
+            label="Cancel"
+            variant="secondary"
+            disabled={busy}
+            onPress={() => {
+              setEditing(null);
+              setPrompt("");
+            }}
+          />
+        ) : null}
+      </View>
+      {error ? (
+        <Notice tone="danger" title="That didn't work">
+          <MutedText>{error}</MutedText>
+        </Notice>
+      ) : null}
+      <View style={styles.challengeList}>
+        {deck.challenges.map((item) => (
+          <ChallengeRow
+            key={item.id}
+            item={item}
+            busy={busy}
+            onEdit={() => {
+              setEditing(item);
+              setPrompt(item.prompt);
+            }}
+            onArchive={() => void run(() => setArchived({ challengeId: item.id, archived: true }))}
+          />
+        ))}
+      </View>
+      <Button
+        label={showArchived ? "Hide archived challenges" : "Show archived challenges"}
+        variant="secondary"
+        disabled={busy}
+        onPress={() => setShowArchived((current) => !current)}
+      />
+      {showArchived ? (
+        <View style={styles.challengeList}>
+          <Text style={styles.when}>Archived challenges</Text>
+          {archived.status === "LoadingFirstPage" ? (
+            <ActivityIndicator color={colors.accent} />
+          ) : archived.results.length === 0 ? (
+            <MutedText>No archived challenges.</MutedText>
+          ) : (
+            archived.results.map((item) => (
+              <ChallengeRow
+                key={item.id}
+                item={item}
+                busy={busy}
+                onEdit={() => {
+                  setEditing(item);
+                  setPrompt(item.prompt);
+                }}
+                onArchive={() =>
+                  void run(() => setArchived({ challengeId: item.id, archived: false }))
+                }
+              />
+            ))
+          )}
+          {archived.status === "CanLoadMore" || archived.status === "LoadingMore" ? (
+            <Button
+              label="Load more archived challenges"
+              variant="secondary"
+              busy={archived.status === "LoadingMore"}
+              disabled={archived.status === "LoadingMore"}
+              onPress={() => archived.loadMore(25)}
+            />
+          ) : null}
+        </View>
+      ) : null}
+    </Card>
+  );
+}
+
+function ChallengeRow({
+  item,
+  busy,
+  onEdit,
+  onArchive,
+}: {
+  readonly item: PhotoChallenge;
+  readonly busy: boolean;
+  readonly onEdit: () => void;
+  readonly onArchive: () => void;
+}) {
+  return (
+    <View style={styles.challengeRow}>
+      <Text
+        style={[styles.challengeRowPrompt, item.status === "archived" && styles.challengeArchived]}
+      >
+        {item.prompt}
+      </Text>
+      <View style={styles.challengeRowActions}>
+        <Pressable accessibilityRole="button" disabled={busy} onPress={onEdit}>
+          <Text style={styles.challengeLink}>Edit</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" disabled={busy} onPress={onArchive}>
+          <Text style={styles.challengeLink}>
+            {item.status === "active" ? "Archive" : "Restore"}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -731,18 +912,9 @@ function InviteActionsModal({
   const title = mode === "copy" ? "Copy invite" : "Share invite";
 
   return (
-    <Modal
-      animationType="fade"
-      transparent
-      visible={mode !== null}
-      onRequestClose={onClose}
-    >
+    <Modal animationType="fade" transparent visible={mode !== null} onRequestClose={onClose}>
       <View style={styles.modalScrim}>
-        <View
-          accessibilityViewIsModal
-          accessibilityLabel={title}
-          style={styles.inviteActionModal}
-        >
+        <View accessibilityViewIsModal accessibilityLabel={title} style={styles.inviteActionModal}>
           <View style={styles.inviteActionModalHeader}>
             <View style={styles.inviteActionModalHeading}>
               <Text style={styles.modalTitle}>{title}</Text>
@@ -1475,6 +1647,28 @@ const styles = StyleSheet.create({
   switchRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   switchCopy: { flex: 1, gap: spacing.xs },
   effects: { gap: spacing.xs },
+  challengeHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  challengeInput: {
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+    color: colors.text,
+    ...typography.body,
+  },
+  challengeList: { gap: spacing.sm },
+  challengeRow: {
+    gap: spacing.xs,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  challengeRowPrompt: { ...typography.body, color: colors.text },
+  challengeArchived: { color: colors.textFaint, textDecorationLine: "line-through" },
+  challengeRowActions: { flexDirection: "row", gap: spacing.lg },
+  challengeLink: { ...typography.caption, color: colors.accentSoft, fontWeight: "700" },
 
   row: {
     flexDirection: "row",

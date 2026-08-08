@@ -290,6 +290,8 @@ export default defineSchema({
     accentColor: v.optional(v.string()),
     coverKey: v.optional(v.string()),
     allowLibraryImport: v.boolean(),
+    /** Missing on pre-feature events means disabled. New events opt in. */
+    photoChallengesEnabled: v.optional(v.boolean()),
     /** Anyone holding the current QR may view approved media after `endsAt`. */
     publicGalleryEnabled: v.optional(v.boolean()),
 
@@ -330,6 +332,55 @@ export default defineSchema({
     .index("by_owner", ["ownerUserId"])
     .index("by_state", ["state"])
     .index("by_owner_and_state", ["ownerUserId", "state"]),
+
+  /** Host-managed prompt deck for one event. Prompts are archived, never deleted. */
+  photoChallenges: defineTable({
+    eventId: v.id("events"),
+    prompt: v.string(),
+    normalizedPrompt: v.string(),
+    status: v.union(v.literal("active"), v.literal("archived")),
+    source: v.union(v.literal("starter"), v.literal("custom")),
+    createdByUserId: v.id("users"),
+    updatedByUserId: v.id("users"),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    archivedAt: v.optional(v.number()),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_event_and_status", ["eventId", "status"])
+    .index("by_event_and_normalized", ["eventId", "normalizedPrompt"]),
+
+  /** Immutable issued prompt snapshots. Uploads reference these, never client copy. */
+  photoChallengeAssignments: defineTable({
+    eventId: v.id("events"),
+    userId: v.id("users"),
+    challengeId: v.id("photoChallenges"),
+    promptSnapshot: v.string(),
+    cycle: v.number(),
+    status: v.union(
+      v.literal("current"),
+      v.literal("skipped"),
+      v.literal("dismissed"),
+      v.literal("used"),
+    ),
+    assignedAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+    /** Stable client id recorded for retry-safe used and dismissed resolutions. */
+    resolutionCaptureId: v.optional(v.string()),
+    usedCaptureId: v.optional(v.string()),
+  })
+    .index("by_event_and_user", ["eventId", "userId"])
+    .index("by_event_and_user_and_status", ["eventId", "userId", "status"]),
+
+  /** Bounded per-user shuffle state; seen ids reset after the active deck is exhausted. */
+  photoChallengeProgress: defineTable({
+    eventId: v.id("events"),
+    userId: v.id("users"),
+    cycle: v.number(),
+    seenChallengeIds: v.array(v.id("photoChallenges")),
+    currentAssignmentId: v.optional(v.id("photoChallengeAssignments")),
+    updatedAt: v.number(),
+  }).index("by_event_and_user", ["eventId", "userId"]),
 
   /**
    * One row per rotation of an event's join credentials. Rotating creates a new
@@ -564,6 +615,9 @@ export default defineSchema({
      * Sprint 4 meant — so this is additive and no stored row changes meaning.
      */
     sourceCarriesNoLocation: v.optional(v.boolean()),
+    /** Trusted challenge snapshot copied from a resolved assignment. Originals only. */
+    challengeId: v.optional(v.id("photoChallenges")),
+    challengePrompt: v.optional(v.string()),
 
     issuedAt: v.number(),
     expiresAt: v.number(),
@@ -722,6 +776,8 @@ export default defineSchema({
      * claim", so every pre-Sprint-4 row keeps exactly the visibility it had.
      */
     sourceCarriesNoLocation: v.optional(v.boolean()),
+    challengeId: v.optional(v.id("photoChallenges")),
+    challengePrompt: v.optional(v.string()),
     capturedAt: v.optional(v.number()),
     uploadedAt: v.optional(v.number()),
 

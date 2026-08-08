@@ -50,6 +50,8 @@ export interface IssueGrantParams {
   capturedAt?: number | undefined;
   sourceMetadataStripped?: boolean | undefined;
   sourceCarriesNoLocation?: boolean | undefined;
+  challengeId?: Id<"photoChallenges"> | undefined;
+  challengePrompt?: string | undefined;
   now: number;
   /** Injectable randomness, for deterministic tests. */
   randomBytes?: RandomBytes | undefined;
@@ -99,6 +101,8 @@ export async function issueGrant(
     ...(params.sourceCarriesNoLocation === undefined
       ? {}
       : { sourceCarriesNoLocation: params.sourceCarriesNoLocation }),
+    ...(params.challengeId === undefined ? {} : { challengeId: params.challengeId }),
+    ...(params.challengePrompt === undefined ? {} : { challengePrompt: params.challengePrompt }),
     issuedAt: params.now,
     expiresAt,
     createdAt: params.now,

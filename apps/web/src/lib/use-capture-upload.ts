@@ -94,6 +94,7 @@ export interface CaptureEventContext {
   readonly state: EventState;
   readonly allowLibraryImport: boolean;
   readonly uploadStartsAt?: number;
+  readonly photoChallengesEnabled?: boolean;
 }
 
 export interface CaptureController {
@@ -102,10 +103,14 @@ export interface CaptureController {
   readonly preparing: boolean;
   /** A failure that belongs to the picker, not to any one queued item. */
   readonly selectionError: string | undefined;
+  /** A newly captured photo held locally until the guest confirms the challenge choice. */
+  readonly review: CapturedPayload | undefined;
   readonly select: (file: File, source: MediaSource) => Promise<void>;
   readonly send: (captureId: string) => Promise<void>;
   readonly cancel: (captureId: string) => void;
   readonly discard: (captureId: string) => void;
+  readonly confirmReview: (challengeAssignmentId?: string) => void;
+  readonly discardReview: () => void;
   readonly clearSelectionError: () => void;
 }
 
@@ -131,6 +136,11 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
   const aborters = useRef(new Map<string, AbortController>());
   const [preparing, setPreparing] = useState(false);
   const [selectionError, setSelectionError] = useState<string | undefined>(undefined);
+  const [review, setReview] = useState<CapturedPayload | undefined>(undefined);
+  const reviewRef = useRef<CapturedPayload | undefined>(review);
+  useEffect(() => {
+    reviewRef.current = review;
+  }, [review]);
 
   /* ---------------------------------------------------------------------- */
   /* Choosing a photo                                                       */
@@ -191,7 +201,19 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
           return;
         }
 
-        dispatch({ type: "captured", capture });
+        if (
+          event.photoChallengesEnabled === true &&
+          capture.mediaType === "photo" &&
+          capture.mediaSource === "capture"
+        ) {
+          if (reviewRef.current?.previewUrl !== undefined) {
+            URL.revokeObjectURL(reviewRef.current.previewUrl);
+          }
+          reviewRef.current = capture;
+          setReview(capture);
+        } else {
+          dispatch({ type: "captured", capture });
+        }
       } catch (error) {
         setSelectionError(
           error instanceof DerivativeError || error instanceof Error
@@ -202,7 +224,7 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
         setPreparing(false);
       }
     },
-    [event.allowLibraryImport, event.state, event.uploadStartsAt],
+    [event.allowLibraryImport, event.photoChallengesEnabled, event.state, event.uploadStartsAt],
   );
 
   /* ---------------------------------------------------------------------- */
@@ -346,6 +368,9 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
               ...(item.durationSeconds === undefined
                 ? {}
                 : { durationSeconds: item.durationSeconds }),
+              ...(item.challengeAssignmentId === undefined
+                ? {}
+                : { challengeAssignmentId: item.challengeAssignmentId }),
             },
             aborter.signal,
           );
@@ -514,6 +539,27 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
     dispatch({ type: "forget", captureId });
   }, []);
 
+  const confirmReview = useCallback((challengeAssignmentId?: string): void => {
+    const current = reviewRef.current;
+    if (current === undefined) return;
+    reviewRef.current = undefined;
+    setReview(undefined);
+    dispatch({
+      type: "captured",
+      capture: {
+        ...current,
+        ...(challengeAssignmentId === undefined ? {} : { challengeAssignmentId }),
+      },
+    });
+  }, []);
+
+  const discardReview = useCallback((): void => {
+    const current = reviewRef.current;
+    if (current?.previewUrl !== undefined) URL.revokeObjectURL(current.previewUrl);
+    reviewRef.current = undefined;
+    setReview(undefined);
+  }, []);
+
   /* ---------------------------------------------------------------------- */
   /* Cleanup                                                                */
   /* ---------------------------------------------------------------------- */
@@ -521,9 +567,13 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
   useEffect(() => {
     const aborterMap = aborters.current;
     const held = queueRef;
+    const heldReview = reviewRef;
     return () => {
       for (const aborter of aborterMap.values()) aborter.abort();
       for (const item of held.current.items) releasePreview(item);
+      if (heldReview.current?.previewUrl !== undefined) {
+        URL.revokeObjectURL(heldReview.current.previewUrl);
+      }
     };
   }, []);
 
@@ -536,13 +586,28 @@ export function useCaptureUpload(event: CaptureEventContext): CaptureController 
       queue,
       preparing,
       selectionError,
+      review,
       select,
       send,
       cancel,
       discard,
+      confirmReview,
+      discardReview,
       clearSelectionError,
     }),
-    [cancel, clearSelectionError, discard, preparing, queue, select, selectionError, send],
+    [
+      cancel,
+      clearSelectionError,
+      confirmReview,
+      discard,
+      discardReview,
+      preparing,
+      queue,
+      review,
+      select,
+      selectionError,
+      send,
+    ],
   );
 }
 

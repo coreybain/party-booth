@@ -6,6 +6,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { CohostPanel } from "@/components/events/cohost-panel";
 import { InvitePanel } from "@/components/events/invite-panel";
+import { PhotoChallengeSettings } from "@/components/events/photo-challenge-settings";
 import { RotationPanel } from "@/components/events/rotation-panel";
 import { StateBadge } from "@/components/events/state-badge";
 import { ChevronDownIcon, MediaIcon } from "@/components/icons";
@@ -138,6 +139,14 @@ export function EventSettingsPanel({
           initialMode={event.moderationMode === "automatic" ? "automatic" : "manual"}
           disabled={!editable}
         />
+      </SettingsCard>
+
+      <SettingsCard
+        title="Photo challenges"
+        description="Give each guest a rotating idea to inspire their next photo."
+        collapsible={collapsible}
+      >
+        <PhotoChallengeSettings eventId={event.id} />
       </SettingsCard>
 
       <SettingsCard

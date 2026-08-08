@@ -32,27 +32,30 @@ erDiagram
 `auditEvents` is deliberately absent from the diagram: it references everything and is written by
 every privileged action.
 
-| Entity                  | Holds                                                                                                      | Notes                                                                        |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `users`                 | identity, verified email, display name, avatar, `onboardedAt`, account state                               | one row per human, shared across app and web                                 |
-| `organiserInvitations`  | email, token, issuing admin, expiry, redemption                                                            | the only way into the private beta                                           |
-| `cohostInvitations`     | event, email, inviting host, expiry, redemption                                                            | a co-host seat offered to an address with no account yet                     |
-| `userEmails`            | user, address, status, hashed verification code, attempts                                                  | a second address proven by OTP (Apple private relay)                         |
-| `joinAttempts`          | throttle key, failure count, window, lockout                                                               | holds no code and no event id — counters only                                |
-| `events`                | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**                      | see [ADR 0002](adr/0002-storage-region-adapter.md)                           |
-| `memberships`           | user ↔ event, role, admitting `inviteVersion`, state                                                       | a guest's presence in one event                                              |
-| `inviteVersions`        | six-digit code, high-entropy QR token, version number, active flag                                         | rotation creates a new version, never mutates the old                        |
-| `media`                 | event, submitter, capture id, type, byte size, checksum, `storageRegion`, storage + derivative keys, state | one row per submitted capture, **however many objects it is made of**        |
-| `moderationDecisions`   | media, decider, decision, reason, timestamp                                                                | append-only; the media row carries the current state                         |
-| `mediaReports`          | media, reporter, reason, free-text detail, open/actioned/dismissed                                         | a complaint, not a decision — see [ADR 0005](adr/0005-moderation-model.md)   |
-| `userBlocks`            | blocker, blocked, where it was made                                                                        | per-account and global; a filter on the blocker's own reads                  |
-| `exportJobs`            | event, requester, state, artefact key, expiry                                                              | **post-launch (P2)** — table shape reserved                                  |
-| `pushDevices`           | user, Expo push token, platform, failure count, disabled-at + reason, last seen                            | one row per **installation** — a token is a phone, not a person              |
-| `pushNotifications`     | user, device, category, title/body, delivery state, Expo ticket id, receipt outcome                        | a mutation cannot `fetch`, so the decision and the send are two transactions |
-| `notificationThrottles` | namespaced key, last-sent-at, category memory                                                              | the debounce that makes a burst one ping                                     |
-| `rotationAttempts`      | event key, count, window                                                                                   | five rotations an hour per event; counts successes                           |
-| `deletionJobs`          | subject (user or event), scheduled-at, state, requester                                                    | states ship at launch, the purge worker is post-launch (P1)                  |
-| `auditEvents`           | actor, action, subject, reason, before/after summary, timestamp                                            | immutable; every admin and host action writes one                            |
+| Entity                      | Holds                                                                                                                                   | Notes                                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `users`                     | identity, verified email, display name, avatar, `onboardedAt`, account state                                                            | one row per human, shared across app and web                                 |
+| `organiserInvitations`      | email, token, issuing admin, expiry, redemption                                                                                         | the only way into the private beta                                           |
+| `cohostInvitations`         | event, email, inviting host, expiry, redemption                                                                                         | a co-host seat offered to an address with no account yet                     |
+| `userEmails`                | user, address, status, hashed verification code, attempts                                                                               | a second address proven by OTP (Apple private relay)                         |
+| `joinAttempts`              | throttle key, failure count, window, lockout                                                                                            | holds no code and no event id — counters only                                |
+| `events`                    | name, schedule + timezone, cover, accent, moderation mode, state, **`storageRegion`**                                                   | see [ADR 0002](adr/0002-storage-region-adapter.md)                           |
+| `memberships`               | user ↔ event, role, admitting `inviteVersion`, state                                                                                    | a guest's presence in one event                                              |
+| `inviteVersions`            | six-digit code, high-entropy QR token, version number, active flag                                                                      | rotation creates a new version, never mutates the old                        |
+| `media`                     | event, submitter, capture id, type, byte size, checksum, `storageRegion`, optional challenge snapshot, storage + derivative keys, state | one row per submitted capture, **however many objects it is made of**        |
+| `photoChallenges`           | event, editable prompt, normalized duplicate key, active/archive state, source                                                          | 3–50 active prompts while enabled                                            |
+| `photoChallengeAssignments` | event, user, challenge, immutable prompt snapshot, cycle, status, optional capture id                                                   | one row per issued prompt                                                    |
+| `photoChallengeProgress`    | event, user, current assignment, cycle, seen challenge ids                                                                              | one bounded row per event/account                                            |
+| `moderationDecisions`       | media, decider, decision, reason, timestamp                                                                                             | append-only; the media row carries the current state                         |
+| `mediaReports`              | media, reporter, reason, free-text detail, open/actioned/dismissed                                                                      | a complaint, not a decision — see [ADR 0005](adr/0005-moderation-model.md)   |
+| `userBlocks`                | blocker, blocked, where it was made                                                                                                     | per-account and global; a filter on the blocker's own reads                  |
+| `exportJobs`                | event, requester, state, artefact key, expiry                                                                                           | **post-launch (P2)** — table shape reserved                                  |
+| `pushDevices`               | user, Expo push token, platform, failure count, disabled-at + reason, last seen                                                         | one row per **installation** — a token is a phone, not a person              |
+| `pushNotifications`         | user, device, category, title/body, delivery state, Expo ticket id, receipt outcome                                                     | a mutation cannot `fetch`, so the decision and the send are two transactions |
+| `notificationThrottles`     | namespaced key, last-sent-at, category memory                                                                                           | the debounce that makes a burst one ping                                     |
+| `rotationAttempts`          | event key, count, window                                                                                                                | five rotations an hour per event; counts successes                           |
+| `deletionJobs`              | subject (user or event), scheduled-at, state, requester                                                                                 | states ship at launch, the purge worker is post-launch (P1)                  |
+| `auditEvents`               | actor, action, subject, reason, before/after summary, timestamp                                                                         | immutable; every admin and host action writes one                            |
 
 ## Roles and permissions
 
@@ -148,6 +151,11 @@ reserved for the deletion flow, because reaching it must also write the `deletio
 the 30-day restore window real.
 
 ### Media
+
+A photo may carry a challenge prompt snapshot. The upload accepts only a server-issued assignment
+already resolved as `used` for the same event, account and `captureId`; the client never supplies
+the caption. Challenges apply only to original photos whose media source is `capture`. Host edits
+change future assignments and never rewrite snapshots already issued or attached.
 
 ```mermaid
 stateDiagram-v2

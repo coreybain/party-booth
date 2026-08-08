@@ -286,6 +286,7 @@ export const requestUploadGrant = mutation({
      * it meant. See `MetadataClaim` in `@partybooth/contracts/media`.
      */
     sourceCarriesNoLocation: v.optional(v.boolean()),
+    challengeAssignmentId: v.optional(v.id("photoChallengeAssignments")),
   },
   returns: grantResultValidator,
   handler: async (
@@ -422,6 +423,13 @@ export const requestUploadGrant = mutation({
       });
     }
 
+    const challenge = await trustedChallengeForGrant(ctx, {
+      assignmentId: input.challengeAssignmentId,
+      eventId: actor.event._id,
+      userId: actor.user._id,
+      captureId: input.captureId,
+    });
+
     const throttleKey = accountGrantKey(actor.user._id);
     const throttle = await checkUploadThrottle(ctx, throttleKey, now);
     if (!throttle.allowed) {
@@ -448,6 +456,7 @@ export const requestUploadGrant = mutation({
       capturedAt: input.capturedAt,
       sourceMetadataStripped: input.sourceMetadataStripped,
       sourceCarriesNoLocation: input.sourceCarriesNoLocation,
+      ...challenge,
       now,
     });
 
@@ -489,6 +498,29 @@ export const requestUploadGrant = mutation({
     };
   },
 });
+
+async function trustedChallengeForGrant(
+  ctx: MutationCtx,
+  params: {
+    assignmentId?: string;
+    eventId: Id<"events">;
+    userId: Id<"users">;
+    captureId: string;
+  },
+): Promise<{ challengeId?: Id<"photoChallenges">; challengePrompt?: string }> {
+  if (params.assignmentId === undefined) return {};
+  const assignment = await ctx.db.get(params.assignmentId as Id<"photoChallengeAssignments">);
+  if (
+    !assignment ||
+    assignment.eventId !== params.eventId ||
+    assignment.userId !== params.userId ||
+    assignment.status !== "used" ||
+    assignment.usedCaptureId !== params.captureId
+  ) {
+    throw forbidden("That photo challenge is not available for this capture.");
+  }
+  return { challengeId: assignment.challengeId, challengePrompt: assignment.promptSnapshot };
+}
 
 /**
  * May this account be granted an **original** for this capture?

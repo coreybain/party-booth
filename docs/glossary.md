@@ -24,6 +24,15 @@ the Google/Apple OAuth providers.
 media. Carries a client-generated `captureId` that survives retries, which is what makes upload
 idempotent.
 
+**Photo challenge** — an event-scoped prompt that inspires a guest's next newly captured photo.
+Each account has one current assignment per event; the prompt persists until used, skipped or
+dismissed, and no active prompt repeats until the deck's cycle is exhausted. The immutable
+assignment snapshot, not the editable deck row or a client string, is attached to media.
+
+**Photo challenge deck** — the host-managed set of active and archived photo challenges for one
+event. New events start with 24 family-friendly prompts and challenges enabled; old events default
+off. Owners and co-hosts can manage it, with 3–50 active prompts required while enabled.
+
 **Co-host** (`cohost`) — a member invited by the owner to help run an event. Moderates, rotates
 invites, sees the host surfaces. **Never** deletes or transfers the event.
 
@@ -63,7 +72,7 @@ point at which a finding can still change the build.
 **EAS** — Expo Application Services: the hosted build and submit pipeline for `apps/mobile`.
 
 **Event** — one party. Owns a schedule and timezone, a moderation mode, an invite version, a
-`storageRegion`, its memberships and all its media.
+`storageRegion`, an optional photo challenge deck, its memberships and all its media.
 
 **Global admin** (`globalAdmin`) — a platform operator, working in the separate `/admin` shell.
 Manages accounts, events and codes. Has **no media access and no impersonation**.

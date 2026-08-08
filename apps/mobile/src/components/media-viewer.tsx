@@ -38,6 +38,7 @@ export interface MediaViewerItem {
   readonly videoUri?: string | undefined;
   readonly title: string;
   readonly subtitle?: string | undefined;
+  readonly challengePrompt?: string | undefined;
   readonly status?: { readonly label: string; readonly color: string } | undefined;
 }
 
@@ -291,6 +292,11 @@ export function MediaViewer({
                   {current.subtitle}
                 </Text>
               )}
+              {current.challengePrompt === undefined ? null : (
+                <Text style={styles.challengePrompt} numberOfLines={3}>
+                  Challenge: {current.challengePrompt}
+                </Text>
+              )}
               {items.length > 1 ? (
                 <Text style={styles.hint}>Swipe to move through the gallery</Text>
               ) : null}
@@ -368,6 +374,7 @@ const styles = StyleSheet.create({
   title: { ...typography.heading, flex: 1, color: colors.text },
   subtitle: { ...typography.caption, color: colors.textMuted, lineHeight: 17 },
   hint: { ...typography.caption, color: colors.textFaint },
+  challengePrompt: { ...typography.body, color: colors.accentSoft, fontWeight: "700" },
   status: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   statusDot: { width: 7, height: 7, borderRadius: radius.pill },
   statusLabel: { ...typography.caption, fontWeight: "700", textTransform: "uppercase" },

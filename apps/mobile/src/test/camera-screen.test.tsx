@@ -40,6 +40,12 @@ const fake = vi.hoisted(() => ({
   launchImageLibraryAsync: vi.fn(),
   openSettings: vi.fn(),
   capture: vi.fn(),
+  preparePhoto: vi.fn(),
+  commitPhoto: vi.fn(),
+  discardPhoto: vi.fn(),
+  currentChallenge: vi.fn(),
+  skipChallenge: vi.fn(),
+  resolveChallenge: vi.fn(),
   captureBusy: false,
   push: vi.fn(),
   now: Date.UTC(2026, 7, 5, 21, 0, 0),
@@ -122,6 +128,28 @@ vi.mock("expo-router", () => ({
     createElement("div", { "data-testid": "redirect", "data-href": props.href }),
 }));
 
+vi.mock("convex/react", () => ({
+  useMutation: (reference: { name: string }) => {
+    if (reference.name === "photoChallenges.currentOrDraw") return fake.currentChallenge;
+    if (reference.name === "photoChallenges.skip") return fake.skipChallenge;
+    return fake.resolveChallenge;
+  },
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return {
+    ...original,
+    api: {
+      photo_challenges: {
+        currentOrDraw: { name: "photoChallenges.currentOrDraw" },
+        skip: { name: "photoChallenges.skip" },
+        resolve: { name: "photoChallenges.resolve" },
+      },
+    },
+  };
+});
+
 vi.mock("expo-image", () => ({
   Image: (props: Record<string, unknown>) =>
     createElement("img", {
@@ -144,6 +172,9 @@ vi.mock("@/hooks/use-capture", () => ({
   useCapture: () => ({
     busy: fake.captureBusy,
     capture: fake.capture,
+    preparePhoto: fake.preparePhoto,
+    commitPhoto: fake.commitPhoto,
+    discardPhoto: fake.discardPhoto,
     captureVideo: fake.captureVideo,
   }),
 }));
@@ -172,6 +203,7 @@ function anEvent(overrides: Partial<EventSummary> = {}): EventSummary {
     role: "guest",
     counts: { pending: 0, approved: 0, declined: 0, total: 0 },
     ...overrides,
+    photoChallengesEnabled: overrides.photoChallengesEnabled ?? false,
   };
 }
 
@@ -221,7 +253,10 @@ beforeEach(() => {
   });
   fake.capture.mockResolvedValue({ status: "queued", item: anUndoableItem() });
   fake.launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
-  fake.session = { activeEvent: anEvent(), eventsLoading: false };
+  fake.currentChallenge.mockResolvedValue({ outcome: "disabled", reason: "hostDisabled" });
+  fake.skipChallenge.mockResolvedValue({ outcome: "disabled", reason: "hostDisabled" });
+  fake.resolveChallenge.mockResolvedValue({ outcome: "disabled", reason: "hostDisabled" });
+  fake.session = { activeEvent: anEvent(), configured: false, eventsLoading: false };
   fake.queue = {
     offline: false,
     pendingFor: () => 0,
@@ -427,6 +462,57 @@ describe("CameraScreen — the library button", () => {
       expect(fake.launchImageLibraryAsync).toHaveBeenCalled();
     });
     expect(fake.capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("CameraScreen — photo challenges", () => {
+  it("draws and shows a personal prompt only for an enabled configured event", async () => {
+    fake.currentChallenge.mockResolvedValue({
+      outcome: "available",
+      assignment: {
+        id: "assignment_1",
+        challengeId: "challenge_1",
+        prompt: "Recreate a movie poster",
+        cycle: 0,
+        assignedAt: NOW,
+      },
+    });
+    fake.session = {
+      activeEvent: anEvent({ photoChallengesEnabled: true }),
+      configured: true,
+      eventsLoading: false,
+    };
+
+    await renderCamera();
+
+    await waitFor(() => expect(screen.getByText("Recreate a movie poster")).toBeTruthy());
+    expect(fake.currentChallenge).toHaveBeenCalledWith({ eventId: "event_1" });
+    expect(screen.getByText("PHOTO CHALLENGE")).toBeTruthy();
+  });
+
+  it("keeps Not now local to the current camera session", async () => {
+    fake.currentChallenge.mockResolvedValue({
+      outcome: "available",
+      assignment: {
+        id: "assignment_1",
+        challengeId: "challenge_1",
+        prompt: "Capture a tiny detail",
+        cycle: 0,
+        assignedAt: NOW,
+      },
+    });
+    fake.session = {
+      activeEvent: anEvent({ photoChallengesEnabled: true }),
+      configured: true,
+      eventsLoading: false,
+    };
+    await renderCamera();
+    await waitFor(() => expect(screen.getByText("Capture a tiny detail")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Not now"));
+
+    expect(screen.queryByText("Capture a tiny detail")).toBeNull();
+    expect(fake.skipChallenge).not.toHaveBeenCalled();
   });
 });
 

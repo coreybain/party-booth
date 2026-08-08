@@ -83,6 +83,15 @@ describe("uploadReducer — the happy path", () => {
     expect(findItem(queue, CAPTURE_ID)?.checksum).toBe("a".repeat(64));
     expect(findItem(queue, CAPTURE_ID)?.byteSize).toBe(812_345);
   });
+
+  it("keeps the accepted challenge assignment through retries", () => {
+    const queue = run([
+      { type: "captured", capture: capture({ challengeAssignmentId: "assignment_1" }) },
+      { type: "queued", captureId: CAPTURE_ID },
+      { type: "failed", captureId: CAPTURE_ID, message: "offline", retryable: true },
+    ]);
+    expect(findItem(queue, CAPTURE_ID)?.challengeAssignmentId).toBe("assignment_1");
+  });
 });
 
 /* -------------------------------------------------------------------------- */

@@ -36,6 +36,7 @@ import {
 import { parseInput } from "./lib/input";
 import { eventIsUsable } from "./lib/lock";
 import { notifyEventLifecycle } from "./lib/notifications";
+import { seedPhotoChallengeStarterDeck } from "./lib/photo_challenges";
 import { expireGrantsForEvent } from "./lib/upload_grants";
 import { eventState, moderationMode, storageRegion } from "./lib/validators";
 
@@ -72,6 +73,7 @@ const eventSummaryFields = {
   accentColor: v.optional(v.string()),
   coverKey: v.optional(v.string()),
   allowLibraryImport: v.boolean(),
+  photoChallengesEnabled: v.boolean(),
   publicGalleryEnabled: v.boolean(),
   storageRegion,
   /** The caller's role for this event, so a client can pick its shell. */
@@ -98,6 +100,7 @@ type EventSummary = {
   accentColor?: string;
   coverKey?: string;
   allowLibraryImport: boolean;
+  photoChallengesEnabled: boolean;
   publicGalleryEnabled: boolean;
   storageRegion: Doc<"events">["storageRegion"];
   role: "owner" | "cohost" | "guest";
@@ -117,6 +120,7 @@ function toSummary(event: Doc<"events">, role: "owner" | "cohost" | "guest"): Ev
     ...(event.accentColor === undefined ? {} : { accentColor: event.accentColor }),
     ...(event.coverKey === undefined ? {} : { coverKey: event.coverKey }),
     allowLibraryImport: event.allowLibraryImport,
+    photoChallengesEnabled: event.photoChallengesEnabled ?? false,
     publicGalleryEnabled: event.publicGalleryEnabled ?? false,
     storageRegion: event.storageRegion,
     role,
@@ -205,6 +209,7 @@ export const create = mutation({
       ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
       ...(input.coverKey === undefined ? {} : { coverKey: input.coverKey }),
       allowLibraryImport: input.allowLibraryImport,
+      photoChallengesEnabled: true,
       publicGalleryEnabled: false,
       counts: { pending: 0, approved: 0, declined: 0, total: 0 },
       createdAt: now,
@@ -223,6 +228,8 @@ export const create = mutation({
       status: "active",
       joinedAt: now,
     });
+
+    await seedPhotoChallengeStarterDeck(ctx, eventId, user._id, now);
 
     // The code and QR exist from the moment the event does. A host who creates
     // an event and immediately shows the QR is the common case, not an edge.
