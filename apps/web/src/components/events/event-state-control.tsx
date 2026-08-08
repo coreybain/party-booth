@@ -24,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { appErrorMessage } from "@/lib/app-errors";
-import { backendApi, type EventSummary } from "@/lib/convex-api";
+import { backendApi, type EventHome, type EventSummary } from "@/lib/convex-api";
 import { isEditableEventState, type HostSettableEventState } from "@/lib/contracts";
 import {
   allowedNextStates,
@@ -40,7 +40,10 @@ type PendingAction = HostSettableEventState | "startNow" | "endNow" | "delete" |
 type Confirmation = "archive" | "delete";
 
 const LIVE_BADGE_STYLES: Readonly<
-  Record<LiveEventTiming, { className: string; dotClassName: string; label: string; ariaLabel: string }>
+  Record<
+    LiveEventTiming,
+    { className: string; dotClassName: string; label: string; ariaLabel: string }
+  >
 > = {
   future: {
     className: "border-info/40 bg-info-soft text-info",
@@ -89,10 +92,12 @@ const LIVE_BADGE_STYLES: Readonly<
  */
 export function EventStateControl({
   event,
+  invite,
   isOwner,
   nowMs,
 }: {
   readonly event: EventSummary;
+  readonly invite?: EventHome["invite"];
   readonly isOwner: boolean;
   readonly nowMs: number;
 }) {
@@ -397,7 +402,12 @@ export function EventStateControl({
         )}
       </div>
 
-      <EventSettingsSheet event={event} open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <EventSettingsSheet
+        event={event}
+        invite={invite}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+      />
 
       <Dialog
         open={confirming === "archive"}

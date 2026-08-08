@@ -247,7 +247,7 @@ function GuestEventWebApp({
           </GuestEventTabPanel>
 
           <GuestEventTabPanel tab="settings" active={activeTab}>
-            <GuestEventSettings eventId={event.id} isHost={home.isHost} onOpenTab={openTab} />
+            <GuestEventSettings home={home} onOpenTab={openTab} />
           </GuestEventTabPanel>
         </div>
       </GuestEventCard>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
 import { CohostPanel } from "@/components/events/cohost-panel";
+import { InvitePanel } from "@/components/events/invite-panel";
 import { RotationPanel } from "@/components/events/rotation-panel";
 import { StateBadge } from "@/components/events/state-badge";
 import { MediaIcon } from "@/components/icons";
@@ -21,7 +22,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { appErrorMessage } from "@/lib/app-errors";
-import { backendApi, type EventSummary } from "@/lib/convex-api";
+import { cn } from "@/lib/cn";
+import { backendApi, type EventHome, type EventSummary } from "@/lib/convex-api";
 import { isEditableEventState, type LaunchModerationMode } from "@/lib/contracts";
 import { formatSchedule, timeZoneAbbreviation } from "@/lib/datetime";
 import { MODERATION_MODE_COPY } from "@/lib/event-view";
@@ -36,10 +38,12 @@ import { MODERATION_MODE_COPY } from "@/lib/event-view";
  */
 export function EventSettingsSheet({
   event,
+  invite,
   open,
   onOpenChange,
 }: {
   readonly event: EventSummary;
+  readonly invite?: EventHome["invite"];
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) {
@@ -53,8 +57,10 @@ export function EventSettingsSheet({
           </SheetDescription>
         </SheetHeader>
 
-        <EventSettingsBody
+        <EventSettingsPanel
           event={event}
+          invite={invite}
+          className="mt-6"
           onRequestClose={() => {
             onOpenChange(false);
           }}
@@ -64,19 +70,41 @@ export function EventSettingsSheet({
   );
 }
 
-function EventSettingsBody({
+export function EventSettingsPanel({
   event,
+  invite,
   onRequestClose,
+  className,
 }: {
   readonly event: EventSummary;
-  readonly onRequestClose: () => void;
+  readonly invite?: EventHome["invite"];
+  readonly onRequestClose?: () => void;
+  readonly className?: string;
 }) {
   const router = useRouter();
   const me = useQuery(backendApi.users.currentUser, {});
   const editable = isEditableEventState(event.state);
 
   return (
-    <div className="mt-6 space-y-4">
+    <div className={cn("space-y-4", className)}>
+      {invite === undefined ? null : (
+        <section className="rounded-2xl border border-line bg-canvas/35 p-4">
+          <SectionHeading
+            title="Join code & QR"
+            description="Hold this up so guests can scan it, or give them the six-digit code."
+          />
+          <div className="mt-4">
+            <InvitePanel
+              code={invite.code}
+              token={invite.token}
+              version={invite.version}
+              state={event.state}
+              eventName={event.name}
+            />
+          </div>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-line bg-canvas/35 p-4">
         <SectionHeading
           title="Schedule & moderation"
@@ -95,7 +123,7 @@ function EventSettingsBody({
             size="sm"
             disabled={!editable}
             onClick={() => {
-              onRequestClose();
+              onRequestClose?.();
               router.push(`/events/${event.id}/edit`);
             }}
           >

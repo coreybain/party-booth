@@ -5,22 +5,34 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
+import { EventSettingsPanel } from "@/components/events/event-settings-sheet";
 import type { GuestEventTab } from "@/components/guest/guest-event-tabs";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { appErrorMessage } from "@/lib/app-errors";
-import { backendApi } from "@/lib/convex-api";
+import { backendApi, type EventHome, type EventSummary } from "@/lib/convex-api";
+
+export function eventRoleLabel(role: EventSummary["role"]): string {
+  switch (role) {
+    case "owner":
+      return "Host";
+    case "cohost":
+      return "Co-host";
+    default:
+      return "Guest";
+  }
+}
 
 export function GuestEventSettings({
-  eventId,
-  isHost,
+  home,
   onOpenTab,
 }: {
-  readonly eventId: string;
-  readonly isHost: boolean;
+  readonly home: EventHome;
   readonly onOpenTab: (tab: GuestEventTab) => void;
 }) {
+  const { event, invite, isHost } = home;
+  const eventId = event.id;
   const router = useRouter();
   const me = useQuery(backendApi.users.currentUser, {});
   const events = useQuery(backendApi.events.myEvents, {});
@@ -65,6 +77,39 @@ export function GuestEventSettings({
         </section>
       )}
 
+      {isHost ? (
+        <section aria-labelledby="host-settings-heading" className="space-y-3">
+          <div>
+            <h2
+              id="host-settings-heading"
+              className="text-xs font-semibold uppercase tracking-widest text-faint"
+            >
+              Host settings
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Manage how guests join, how photos are accepted, and who can help host.
+            </p>
+          </div>
+
+          <EventSettingsPanel event={event} invite={invite} />
+
+          <Button
+            variant="secondary"
+            size="lg"
+            fullWidth
+            onClick={() => router.push(`/events/${eventId}`)}
+          >
+            Open the full host console
+          </Button>
+        </section>
+      ) : (
+        <Callout tone="info">
+          You’re attending {event.name} as a guest, so this event’s host settings are not available
+          to this account. Ask the owner to add {me?.email ?? "this account"} as a co-host, or
+          switch to an event you host below.
+        </Callout>
+      )}
+
       <section aria-label="Quick actions">
         <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
           <Button size="lg" fullWidth onClick={() => onOpenTab("camera")}>
@@ -102,7 +147,9 @@ export function GuestEventSettings({
         ) : events.length === 0 ? null : events.length === 1 ? (
           <div className="rounded-xl border border-line bg-raised/60 px-4 py-3">
             <p className="text-sm font-medium text-ink">{events[0]?.name}</p>
-            <p className="mt-0.5 text-xs text-positive">Current event</p>
+            <p className="mt-0.5 text-xs text-muted">
+              Current event · {events[0] === undefined ? "Guest" : eventRoleLabel(events[0].role)}
+            </p>
           </div>
         ) : (
           <label className="block text-sm font-medium text-ink">
@@ -118,7 +165,7 @@ export function GuestEventSettings({
             >
               {events.map((event) => (
                 <option key={event.id} value={event.id}>
-                  {event.name}
+                  {event.name} — {eventRoleLabel(event.role)}
                 </option>
               ))}
             </select>
@@ -129,17 +176,6 @@ export function GuestEventSettings({
           Join another event
         </Button>
       </section>
-
-      {isHost ? (
-        <Button
-          variant="secondary"
-          size="lg"
-          fullWidth
-          onClick={() => router.push(`/events/${eventId}`)}
-        >
-          Open the host console
-        </Button>
-      ) : null}
 
       <section aria-labelledby="legal-heading" className="space-y-3 border-t border-line pt-5">
         <h2

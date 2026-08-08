@@ -99,7 +99,12 @@ function EventHomeLive({ eventId, nowMs }: { readonly eventId: string; readonly 
                   eventName={event.name}
                 />
               )}
-              <EventStateControl event={event} isOwner={event.role === "owner"} nowMs={now} />
+              <EventStateControl
+                event={event}
+                invite={invite}
+                isOwner={event.role === "owner"}
+                nowMs={now}
+              />
             </>
           ) : isGuest ? (
             <GuestEventMenu eventId={event.id} showGallery={galleryIsVisible(event.state)} />
